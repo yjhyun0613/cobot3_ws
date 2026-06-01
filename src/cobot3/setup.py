@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'control_tower = cobot3.control_tower_node:main',
         ],
     },
 )

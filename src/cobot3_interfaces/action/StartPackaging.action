@@ -1,0 +1,11 @@
+# Goal: 포장 공정 개시 명령
+string workstation_id      # 포장할 작업대 ID
+string today_date          # 출고 ID 생성용 오늘 날짜 (YYYYMMDD)
+---
+# Result: 작업대 내 모든 포장 완료 결과
+bool success               # 4개 칸 포장 완수 여부
+string[] final_output_ids  # 생성된 출고 ID 리스트 ([작업대ID]+[칸번호]+[날짜]+[시간])
+---
+# Feedback: 파이프라이닝을 위한 실시간 포장 상황
+int32 completed_slots      # 포장이 완료되어 나간 칸의 개수 (1 -> 2 -> 3 -> 4)
+string last_packed_slot    # 방금 포장 끝난 칸 번호 (예: "slot_3")

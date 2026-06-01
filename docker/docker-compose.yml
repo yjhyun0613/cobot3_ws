@@ -1,0 +1,60 @@
+services:
+  # 마스터 RDBMS (PostgreSQL)
+  postgres:
+    image: postgres:15-alpine
+    container_name: warehouse_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: rokey
+      POSTGRES_PASSWORD: rokey_pass
+      POSTGRES_DB: warehouse_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - warehouse_network
+
+  # 실시간 상태 캐시 및 AMR 작업 큐 (Redis)
+  redis:
+    image: redis:7-alpine
+    container_name: warehouse_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - warehouse_network
+
+  # PostgreSQL GUI 웹 브라우저 뷰어 (쉽게 테이블 조회 및 데이터 저장 가능)
+  adminer:
+    image: adminer:latest
+    container_name: warehouse_adminer
+    restart: always
+    ports:
+      - "8080:8080"
+    networks:
+      - warehouse_network
+
+  # Redis GUI 웹 브라우저 뷰어 (AMR 큐 시각화)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: warehouse_redis_commander
+    restart: always
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    networks:
+      - warehouse_network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  warehouse_network:
+    driver: bridge

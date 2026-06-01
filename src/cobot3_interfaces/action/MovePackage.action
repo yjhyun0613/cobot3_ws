@@ -1,0 +1,12 @@
+# Goal: 단일 택배 창고 직송 명령
+string package_id          # 이동할 택배 ID
+string customer_name       # 수령인 이름
+string destination_zone    # 창고 내 목적지 구역 코드
+---
+# Result: 이동 완료 결과
+bool success               # 적재 성공 여부
+string error_msg           # 실패 시 에러 메시지
+---
+# Feedback: 실시간 이동 상태
+string current_position    # AMR의 현재 위치 좌표 또는 구역명
+float32 progress           # 이동 진행률 (0.0 ~ 100.0 %)
