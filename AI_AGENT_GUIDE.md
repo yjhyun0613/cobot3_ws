@@ -1,0 +1,98 @@
+# 🤖 AI 에이전트 프로젝트 인수인계 및 분석 가이드 (AI Agent Guide)
+
+> [!IMPORTANT]
+> **AI 에이전트 가이드**: 이 문서를 읽는 AI 에이전트는 본 프로젝트에 관해서 분석, 기록 및 작성을 수행해야 합니다.
+
+이 문서는 본 프로젝트를 이어받는 차기 AI 에이전트가 시스템의 동작 구조, 데이터 흐름, ArUco 마커 규격 등을 즉시 파악하고 이어서 개발할 수 있도록 요약한 공식 가이드 파일입니다.
+
+---
+
+## 📌 1. 시스템 아키텍처 개요
+
+본 시스템은 **ROS2 Humble**, **PostgreSQL(관계형 DB)**, 및 **Redis(메시지 큐)**를 결합하여 구성한 **쿠팡 물류창고 자동 분류 및 적재 관제 센터(Control Tower)**입니다.
+
+```mermaid
+graph TD
+    Sorter[bg2: 컨베이어 분류 로봇] -->|GetPackageRoute| CT[Control Tower Node]
+    Inbound[sg2_in_XX: 적재 로봇] -->|CheckWarehouseStatus / ReportInbound| CT
+    Outbound[sg2_out_00: 포장 로봇] -->|StartPackaging| CT
+    CT <-->|SQL / Real-time Query| DB[(PostgreSQL)]
+    CT <-->|LPUSH / RPOP Tasks| Redis[(Redis Command Queue)]
+```
+
+---
+
+## 🏷️ 2. ArUco 마커 식별자 매핑 규격
+
+시스템의 모든 물리적 개체는 ArUco 마커 ID를 사용하여 식별됩니다.
+
+| 대상군 (Entities) | ArUco 마커 ID 범위 | 매핑되는 식별자 형태 (DB) | 비고 |
+| :--- | :--- | :--- | :--- |
+| **로봇 (Robots)** | `1` ~ `5` | `bg2`, `sg2_in_01~03`, `sg2_out_00` | 로봇 타입 및 역할 식별 |
+| **작업대 (Workstations)** | `11` ~ `20` | `WS01` ~ `WS10` | 2x2 적재 플레이트 (총 10대) |
+| **상자 (Packages)** | `100` 이상 | `PKG_RAND_001` 또는 `PKG_ARUCO_XXX` | 입고되는 개별 택배 박스 |
+
+---
+
+## 🗄️ 3. 데이터베이스 스키마 및 상태 정의
+
+### ① PostgreSQL 테이블 구조
+* **`robots`**: 관제 대상 로봇 식별 정보.
+* **`workstations`**: 작업대 실시간 위치 및 4개 슬롯 점유 현황.
+* **`warehouse_locations`**: 창고 내 10개 주차 스팟(`spot_01` ~ `spot_10`)의 실시간 점유 상태.
+* **`packages`**: 택배 상태(`WAITING`, `IN_WORKSTATION`, `IN_WAREHOUSE`, `COMPLETED`) 및 이력.
+
+```mermaid
+erDiagram
+    WORKSTATIONS ||--o| WAREHOUSE_LOCATIONS : "parked at (1:1)"
+    WORKSTATIONS ||--o{ PACKAGES : "contains"
+```
+
+### ② 초기 상태 규격 (Initial State)
+* 시스템 최초 부팅 시, **10대의 작업대(`WS01` ~ `WS10`)는 창고의 주차 구역(`spot_01` ~ `spot_10`)에 모두 주차(`OCCUPIED`)**된 상태로 기동합니다.
+* AMR은 분류 로봇이 상자를 분류할 때 창고 스팟에서 빈 작업대를 가져와 배치합니다.
+
+---
+
+## 🔄 4. 핵심 제어 및 데이터 연동 로직
+
+### ① 창고 입/출고 시 주차 스팟 관리
+* **작업대를 창고로 입고할 때 (`target == 'warehouse'`)**:
+  1. `warehouse_locations`에서 `status = 'EMPTY'`인 스팟 중 번호가 가장 빠른 곳을 조회합니다. (예: `spot_01`)
+  2. 해당 스팟의 상태를 `OCCUPIED`로 변경하고 `workstation_id`를 매핑합니다.
+  3. 작업대의 최종 위치를 해당 스팟 ID(`spot_01`)로 설정합니다.
+* **작업대가 창고에서 출고될 때 (`start.startswith('spot_')`)**:
+  1. 출발지 스팟 정보를 `status = 'EMPTY'`, `workstation_id = NULL`로 변경하여 즉시 빈 자리로 해제합니다.
+
+### ② Look-ahead (사전 예비 배치) 메커니즘
+* **인바운드 적재 대기**:
+  * 특정 작업대의 **3번째 슬롯**에 상자가 적재되면, 관제탑은 창고 스팟(`spot_XX`)에 대기 중인 작업대 중 **4개 슬롯이 전부 비어있는 작업대**를 찾아 해당 적재 로봇 뒤로 미리 배치하도록 AMR 명령을 수행합니다.
+* **아웃바운드 포장 대기**:
+  * 포장 완료 직전(마지막 1칸 남음)에 창고에 대기 중인 꽉 찬 작업대를 포장 로봇 앞으로 즉시 예비 이송시킵니다.
+
+### ③ 출고 바코드 생성 규칙 (`outbound_id`)
+포장 로봇(`sg2_out_00`)이 포장을 완료하면 다음과 같은 포장 로봇 고유 Prefix가 붙은 바코드가 DB에 기록됩니다.
+* **포맷**: `[포장로봇ID]_[작업대ID]+[칸번호]+[날짜]+[시간]`
+* **예시**: `sg2_out_00_WS01-1-202606021153`
+
+---
+
+## 💻 5. 개발자를 위한 빌드 및 구동 가이드
+
+### ① 빌드
+```bash
+cd ~/cobot3_ws
+colcon build
+source install/setup.bash
+```
+
+### ② 관제 센터 노드 실행
+```bash
+ros2 run cobot3 control_tower
+```
+
+### ③ 데이터베이스 초기화
+PostgreSQL 및 Redis 컨테이너가 켜진 상태에서 아래 명령어로 스키마를 재구성합니다.
+```bash
+docker exec -i warehouse_postgres psql -U rokey -d warehouse_db < docker/init.sql
+```
