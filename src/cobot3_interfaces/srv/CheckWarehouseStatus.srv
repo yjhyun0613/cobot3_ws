@@ -1,6 +1,7 @@
 # Request: 적재 직전 택배 확인
 string customer_name       # 수령인 이름
 string package_id          # 택배 ID
+int32 aruco_id             # ArUco 마커 ID
 ---
 # Response: 창고 보관 여부 및 지시
 bool is_already_in_warehouse  # 창고에 기존 물량이 있으면 True, 없으면 False

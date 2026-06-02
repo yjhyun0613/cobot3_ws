@@ -47,3 +47,14 @@
 
 * **00:12** - **데이터베이스 GUI 모니터링 툴 통합**
   * 데이터 조회를 쉽게 하고 이력을 내려받을 수 있도록 `docker-compose.yml`에 웹 뷰어인 **Adminer(PostgreSQL GUI)** 및 **Redis Commander(Redis GUI)** 컨테이너 추가 구축.
+
+* **11:35** - **ArUco 마커 기반 고유 번호 식별 및 매핑 구조 고도화**
+  * 각 박스, 작업대 및 로봇의 고유 식별을 위해 PostgreSQL 데이터베이스(`robots`, `workstations`, `packages`)에 `aruco_id` 고유 칼럼 추가 및 기본 데이터 갱신.
+  * ROS2 서비스 (`GetPackageRoute.srv`, `CheckWarehouseStatus.srv`, `ReportInboundProgress.srv`) 및 액션 (`MovePackage.action`, `ManageWorkstation.action`, `StartPackaging.action`)에 ArUco ID 관련 필드 추가 적용.
+  * 관제탑 노드(`control_tower_node.py`) 내 서비스 콜백 및 AMR 액션 구동부에서 ArUco ID를 우선 스캔 및 쿼리하여 데이터베이스 정보와 실시간으로 매핑 및 연동하도록 업데이트 완료.
+
+* **12:15** - **창고 세부 주차 스팟(Spot) 관리 DB 및 10대 작업대 최적화**
+  * 창고 내부 주차 스팟을 개별적으로 관리할 수 있는 `warehouse_locations` 테이블 구축.
+  * 초기 작업대 수량을 총 10대(`WS01` ~ `WS10`, ArUco `11` ~ `20`)로 확장하고, 창고 내 10개 주차 스팟(`spot_01` ~ `spot_10`)에 주차된 상태로 초기 데이터 변경.
+  * 관제 센터 노드(`control_tower_node.py`)에서 작업대 창고 입출고 시 비어 있는 스팟 자동 배정 및 해제 로직 구현.
+  * 포장 완료된 작업대가 창고 스팟으로 자동으로 복귀하고, 인바운드 분류 작업 시 창고의 빈 작업대를 유기적으로 호출해 오는 무대기 루프 흐름 고도화.

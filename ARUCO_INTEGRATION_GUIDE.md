@@ -1,0 +1,116 @@
+# 🏷️ ArUco 마커 연동 데이터 및 코드 매뉴얼 (Cheat Sheet)
+
+이 문서는 쿠팡 물류창고 관제 시스템(Control Tower)에 적용된 **ArUco 마커 ID 매핑 테이블**과 각 단계별 **DB 쿼리**, **ROS2 파이썬 예제 코드**를 모아둔 통합 매뉴얼입니다. 개발 시 참고하여 필요한 데이터를 입력해 주세요.
+
+---
+
+## 📌 1. ArUco 마커 ID 고유 번호 매핑 테이블
+
+물리적으로 장착될 마커 번호와 데이터베이스의 ID 매핑 현황입니다. 중복되지 않도록 고유 번호를 유지해야 합니다.
+
+### ① 로봇 (Robots)
+| 로봇 문자열 ID (`robot_id`) | 로봇 종류 (`robot_type`) | ArUco 마커 ID (`aruco_id`) |
+| :--- | :--- | :--- |
+| **`bg2`** | 컨베이어 분류기 (CONVEYOR_SORTER) | **`1`** |
+| **`sg2_in_01`** | 적재 로봇 (MANIPULATOR) | **`2`** |
+| **`sg2_in_02`** | 적재 로봇 (MANIPULATOR) | **`3`** |
+| **`sg2_in_03`** | 적재 로봇 (MANIPULATOR) | **`4`** |
+| **`sg2_out_00`** | 포장 로봇 (MANIPULATOR) | **`5`** |
+
+### ② 작업대 (Workstations)
+| 작업대 문자열 ID (`workstation_id`) | 현재 위치 (`current_location`) | ArUco 마커 ID (`aruco_id`) |
+| :--- | :--- | :--- |
+| **`WS01`** | `sg2_in_01` (오늘 분류 라인) | **`11`** |
+| **`WS02`** | `sg2_in_02` (내일 분류 라인) | **`12`** |
+| **`WS03`** | `sg2_in_03` (모레 분류 라인) | **`13`** |
+
+### ③ 기본 등록 택배 (Packages)
+| 택배 ID (`package_id`) | 수령인 (`customer_name`) | 배송 목적지 (`route_zone`) | ArUco 마커 ID (`aruco_id`) |
+| :--- | :--- | :--- | :--- |
+| `PKG_RAND_001` | 김철수 | `2026-06-01` | **`101`** |
+| `PKG_RAND_002` | 이영희 | `2026-06-02` | **`102`** |
+| `PKG_RAND_003` | 박민수 | `2026-06-03` | **`103`** |
+| `PKG_RAND_004` | 김철수 | `2026-06-01` | **`104`** |
+| `PKG_RAND_005` | 최독고 | `2026-06-01` | **`105`** |
+| `PKG_RAND_006` | 이영희 | `2026-06-02` | **`106`** |
+| `PKG_RAND_007` | 홍길동 | `2026-06-01` | **`107`** |
+| `PKG_RAND_008` | 김철수 | `2026-06-01` | **`108`** |
+
+---
+
+## 🗄️ 2. 데이터베이스(DB) 입력 양식 (SQL)
+
+새로운 객체(로봇, 작업대, 상자)를 DB에 등록하고 마커 번호를 연동할 때 사용하는 템플릿입니다.
+
+```sql
+-- 1. 신규 로봇 등록 시 (마커 ID: 6번)
+INSERT INTO robots (robot_id, robot_type, aruco_id) 
+VALUES ('bg3', 'CONVEYOR_SORTER', 6);
+
+-- 2. 신규 작업대 등록 시 (마커 ID: 14번)
+INSERT INTO workstations (workstation_id, current_location, aruco_id) 
+VALUES ('WS04', 'sg2_in_01', 14);
+
+-- 3. 신규 택배 등록 시 (마커 ID: 109번)
+INSERT INTO packages (package_id, customer_name, route_zone, status, aruco_id) 
+VALUES ('PKG_RAND_009', '이순신', '2026-06-01', 'WAITING', 109);
+```
+
+---
+
+## 💻 3. ROS2 로봇 노드 통신 코드 예시 (Python)
+
+로봇이 카메라 센서로부터 ArUco 마커 ID를 입력받아 관제탑 노드로 서비스 및 액션 요청을 보낼 때 사용하는 코드 예제입니다.
+
+### ① 택배 분류 목적지 요청 (`GetPackageRoute`)
+컨베이어 분류 로봇(`bg2`)이 박스의 ArUco 마커를 찍은 후 목적지를 받아옵니다.
+```python
+from cobot3_interfaces.srv import GetPackageRoute
+
+# 서비스 클라이언트 생성 및 요청 작성
+client = node.create_client(GetPackageRoute, 'get_package_route')
+request = GetPackageRoute.Request()
+
+# 스캔한 ArUco ID(101)와 기타 정보를 입력
+request.aruco_id = 101       # 필수: 박스의 ArUco 마커 ID
+request.package_id = ""      # 옵션
+request.customer_name = ""   # 옵션
+
+# 비동기 호출
+future = client.call_async(request)
+```
+
+### ② 창고 보관 여부 검사 요청 (`CheckWarehouseStatus`)
+적재 로봇(`sg2_in_XX`)이 적재 작업 직전에 동일 수령인의 물품이 창고에 있는지 조회합니다.
+```python
+from cobot3_interfaces.srv import CheckWarehouseStatus
+
+client = node.create_client(CheckWarehouseStatus, 'check_warehouse_status')
+request = CheckWarehouseStatus.Request()
+
+# 적재 전 상자의 ArUco ID(101)를 입력
+request.aruco_id = 101       # 필수: 검사 대상 상자의 ArUco 마커 ID
+request.package_id = ""      # 옵션
+request.customer_name = ""   # 옵션
+
+future = client.call_async(request)
+```
+
+### ③ 적재 완료 및 진척도 보고 (`ReportInboundProgress`)
+적재 로봇(`sg2_in_XX`)이 2x2 작업대에 상자를 안전하게 적재했을 때 이를 보고합니다.
+```python
+from cobot3_interfaces.srv import ReportInboundProgress
+
+client = node.create_client(ReportInboundProgress, 'report_inbound_progress')
+request = ReportInboundProgress.Request()
+
+# 작업대 및 박스의 ArUco ID를 각각 입력
+request.workstation_aruco_id = 11  # 필수: 작업대의 ArUco 마커 ID (예: WS01)
+request.package_aruco_id = 101     # 필수: 적재한 박스의 ArUco 마커 ID (예: PKG_RAND_001)
+request.filled_slots_count = 1     # 필수: 현재 채워진 칸의 개수 (1~4)
+request.robot_id = "sg2_in_01"     # 필수: 보고하는 로봇의 문자열 ID
+request.workstation_id = ""        # 옵션
+request.package_id = ""            # 옵션
+
+future = client.call_async(request)
+```

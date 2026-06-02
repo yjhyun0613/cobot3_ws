@@ -1,5 +1,6 @@
 # Request: 입고된 택배 정보
 string package_id          # 무작위 생성된 택배 ID
 string customer_name       # 수령인 이름
+int32 aruco_id             # ArUco 마커 ID
 ---
 string route_destination   # 분류 목적지 날짜 ("YYYY-MM-DD")

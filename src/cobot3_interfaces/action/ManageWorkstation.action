@@ -2,6 +2,7 @@
 string workstation_id      # 대상 작업대 ID
 string start_location      # 출발지 (예: "sg2_in_01", "warehouse")
 string target_location     # 목적지 (예: "warehouse", "sg2_out_00")
+int32 workstation_aruco_id # 작업대 ArUco 마커 ID
 ---
 # Result: 작업대 이동 완료 결과
 bool success               # 이동 및 안착 성공 여부

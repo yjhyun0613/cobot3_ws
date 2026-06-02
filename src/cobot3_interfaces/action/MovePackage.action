@@ -2,6 +2,7 @@
 string package_id          # 이동할 택배 ID
 string customer_name       # 수령인 이름
 string destination_zone    # 창고 내 목적지 구역 코드
+int32 package_aruco_id     # 택배 ArUco 마커 ID
 ---
 # Result: 이동 완료 결과
 bool success               # 적재 성공 여부
