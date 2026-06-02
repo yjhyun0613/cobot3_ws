@@ -98,7 +98,8 @@ def run_client_scenario(node):
     req = GetPackageRoute.Request()
     req.aruco_id = 101
     future = node.get_route_client.call_async(req)
-    rclpy.spin_until_future_complete(node, future)
+    while rclpy.ok() and not future.done():
+        time.sleep(0.1)
     res = future.result()
     node.get_logger().info(f'[Scenario] 분류 목적지 응답 완료 -> {res.route_destination}')
 
@@ -107,7 +108,8 @@ def run_client_scenario(node):
     req2 = CheckWarehouseStatus.Request()
     req2.aruco_id = 101
     future2 = node.check_warehouse_client.call_async(req2)
-    rclpy.spin_until_future_complete(node, future2)
+    while rclpy.ok() and not future2.done():
+        time.sleep(0.1)
     res2 = future2.result()
     node.get_logger().info(f'[Scenario] 창고 중복 조회 응답 완료 -> {res2.is_already_in_warehouse}')
 
@@ -122,7 +124,8 @@ def run_client_scenario(node):
     req3.filled_slots_count = 1
     req3.robot_id = 'sg2_in_01'
     future3 = node.report_inbound_client.call_async(req3)
-    rclpy.spin_until_future_complete(node, future3)
+    while rclpy.ok() and not future3.done():
+        time.sleep(0.1)
     
     # 4. ReportInboundProgress 2번째 슬롯 적재 보고
     node.get_logger().info('[Scenario] ④ 2번 슬롯 적재 보고...')
@@ -132,7 +135,8 @@ def run_client_scenario(node):
     req4.filled_slots_count = 2
     req4.robot_id = 'sg2_in_01'
     future4 = node.report_inbound_client.call_async(req4)
-    rclpy.spin_until_future_complete(node, future4)
+    while rclpy.ok() and not future4.done():
+        time.sleep(0.1)
 
     # 5. ReportInboundProgress 3번째 슬롯 적재 보고 (Look-ahead 트리거 발생 구간!)
     node.get_logger().info('[Scenario] ⑤ 3번 슬롯 적재 보고 -> Look-ahead (사전 예비 배치) 트리거 유도!')
@@ -142,7 +146,8 @@ def run_client_scenario(node):
     req5.filled_slots_count = 3
     req5.robot_id = 'sg2_in_01'
     future5 = node.report_inbound_client.call_async(req5)
-    rclpy.spin_until_future_complete(node, future5)
+    while rclpy.ok() and not future5.done():
+        time.sleep(0.1)
     
     node.get_logger().info('=== [Scenario] 시나리오 호출 종료. 백그라운드 작업 관찰 중... ===')
 

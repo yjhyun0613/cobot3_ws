@@ -96,8 +96,8 @@ def get_status():
         redis_tasks = []
         if redis_client:
             try:
-                # Redis 큐 'amr_task_queue' 에 쌓인 전체 데이터 조회 (비파괴적)
-                tasks_raw = redis_client.lrange('amr_task_queue', 0, -1)
+                # Redis 큐 'queue:amr_tasks' 에 쌓인 전체 데이터 조회 (비파괴적)
+                tasks_raw = redis_client.lrange('queue:amr_tasks', 0, -1)
                 for t in tasks_raw:
                     try:
                         redis_tasks.append(json.loads(t))
@@ -138,7 +138,7 @@ def reset_db():
             
         # 2. Redis 큐 초기화
         if redis_client:
-            redis_client.delete('amr_task_queue')
+            redis_client.delete('queue:amr_tasks')
             
         pg_conn.close()
         return {"success": True, "message": "데이터베이스가 성공적으로 초기화되었습니다."}
@@ -226,7 +226,7 @@ def simulate_inbound():
                     "description": f"Look-ahead: {ws_id} 3번째 슬롯 적재 감지로 예비 작업대 호출",
                     "workstation_aruco_id": ws_aruco
                 }
-                redis_client.lpush('amr_task_queue', json.dumps(task_data))
+                redis_client.lpush('queue:amr_tasks', json.dumps(task_data))
                 lookahead_triggered = True
 
         pg_conn.close()
@@ -930,3 +930,7 @@ def index():
 </body>
 </html>
     """
+
+if __name__ == "__main__":
+    uvicorn.run("dashboard_server:app", host="0.0.0.0", port=8000, reload=True)
+
