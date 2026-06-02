@@ -49,6 +49,9 @@ NVIDIA Isaac Sim 시뮬레이터 환경에서 다중 로봇(컨베이어 분류 
 * **관제 센터 핵심 노드 (`control_tower_node.py`)**:
   * PostgreSQL/Redis 라이브러리 연동 및 멀티스레드 비동기 콜백 적용.
   * 서비스 서버와 액션 클라이언트를 유기적으로 스케줄링하는 `task_scheduler_loop` 탑재 및 ArUco ID 우선 매핑/조회 로직 추가.
+* **웹 대시보드 및 테스트 스크립트 (`scratch/` 디렉토리)**:
+  * `dashboard_server.py`: FastAPI와 HTML/JS를 이용한 실시간 다크 모드 대시보드로, 10개의 작업대 및 창고 구역 상태, Redis AMR 큐, 패키지 상태를 종합 모니터링하고 모의 적재 시뮬레이션을 원클릭으로 수행할 수 있음.
+  * `run_simulation_test.py`: ROS2 액션 서버와 서비스 클라이언트를 모킹하여 실제 환경 없이도 전체 프로세스의 정상 컴파일 및 통신 루프(ArUco ID 연동 및 Look-ahead 등)를 검증함.
 
 ---
 

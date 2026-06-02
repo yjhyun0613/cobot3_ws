@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > **AI 에이전트 가이드**: 이 문서를 읽는 AI 에이전트는 본 프로젝트에 관해서 분석, 기록 및 작성을 수행해야 합니다.
 
-이 문서는 창고(Warehouse) 내부의 작업대 보관 위치를 개별 스팟 단위(`spot_01` ~ `spot_05`)로 관리하기 위해 **신규 DB 테이블 스키마 설계 및 파이썬 코드 연동 방안**을 정리한 계획서입니다.
+이 문서는 창고(Warehouse) 내부의 작업대 보관 위치를 개별 스팟 단위(`spot_01` ~ `spot_10`)로 관리하기 위해 **신규 DB 테이블 스키마 설계 및 파이썬 코드 연동 방안**을 정리한 계획서입니다.
 
 ---
 
@@ -14,12 +14,12 @@
 ```mermaid
 erDiagram
     WORKSTATIONS {
-        VARCHAR workstation_id PK "작업대 ID (WS01~03)"
+        VARCHAR workstation_id PK "작업대 ID (WS01~10)"
         VARCHAR current_location "작업대 실시간 위치"
-        INT aruco_id UNIQUE "ArUco ID (11~13)"
+        INT aruco_id UNIQUE "ArUco ID (11~20)"
     }
     WAREHOUSE_LOCATIONS {
-        VARCHAR spot_id PK "창고 주차 구역 (spot_01~05)"
+        VARCHAR spot_id PK "창고 주차 구역 (spot_01~10)"
         VARCHAR workstation_id FK "보관된 작업대 ID (NULL 허용)"
         VARCHAR status "스팟 점유 상태 (EMPTY, OCCUPIED)"
     }
@@ -37,7 +37,7 @@ erDiagram
 
 | 열 이름 (Column) | 데이터 타입 (Type) | 제약 조건 (Constraints) | 설명 (Description) | 예시 데이터 |
 | :--- | :--- | :--- | :--- | :--- |
-| **`spot_id`** | `VARCHAR(50)` | `PRIMARY KEY` | 창고 내 고유 주차 구역 ID | `'spot_01'`, `'spot_02'`, `'spot_03'` |
+| **`spot_id`** | `VARCHAR(50)` | `PRIMARY KEY` | 창고 내 고유 주차 구역 ID | `'spot_01'`, `'spot_02'`, `'spot_10'` |
 | **`workstation_id`** | `VARCHAR(50)` | `FOREIGN KEY` (참조: `workstations`) | 주차된 작업대 ID (비어있으면 `NULL`) | `'WS01'`, `NULL` |
 | **`status`** | `VARCHAR(20)` | `DEFAULT 'EMPTY'` | 스팟 점유 상태 (`EMPTY` / `OCCUPIED`) | `'OCCUPIED'`, `'EMPTY'` |
 
