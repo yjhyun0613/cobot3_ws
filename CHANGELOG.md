@@ -77,3 +77,8 @@
   * 맵 구성 파일 `src/cobot3/resource/map/warehouse.yaml`의 맵 이미지 매핑 파일명 수정 반영 (`World0.png` -> `warehouse.png`).
 * **11:22** - **시스템 개선 및 고도화 계획서 작성**
   * 사용자 피드백을 기반으로 데이터베이스 정규화, QR코드 생성/인식 방법, 이중 버퍼(Double Buffer) 작업 구역 배치, Redis Sorted Set 기반 우선순위 큐, 단일 장애점(SPOF) 대응 방안을 담은 `SYSTEM_IMPROVEMENT_PLAN.md` 신규 설계 및 작성 완료.
+
+* **13:40** - **데이터베이스 구조 정규화 및 소스코드 전면 연동**
+  * `workstations` 테이블에서 중복 저장되던 1~4번 슬롯 정보(`slot_X_customer`, `slot_X_status`)를 완전히 삭제하여 DB 스키마 정규화 완료 (`docker/init.sql`).
+  * `control_tower_node.py` 및 `dashboard_server.py`의 쿼리와 슬롯 계산 로직을 `packages` 테이블의 외래키(`workstation_id`, `slot_number`)와 상태(`IN_WORKSTATION`)를 결합해 동적으로 계산하도록 전면 재설계.
+  * DB 설계 문서(`DATABASE_SCHEMA.md`)를 변경된 정규화 구조에 맞춰 ERD 및 예시 데이터 시나리오 설명까지 전면 동기화 업데이트 완료.

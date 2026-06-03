@@ -7,7 +7,10 @@
 
 ---
 
-## 📌 1. 데이터베이스 구조 정규화 (DB Schema Optimization)
+## 📌 1. 데이터베이스 구조 정규화 (DB Schema Optimization) - [완료]
+
+> [!NOTE]
+> **적용 완료**: 2026년 6월 3일 구현 완료. `workstations` 테이블의 중복 슬롯 정보가 `packages` 테이블의 외래키 정보로 통합 정규화되었습니다.
 
 ### 1.1 현재 문제점
 * `workstations` 테이블에 1~4번 슬롯의 수령인 및 상태 컬럼(`slot_X_customer`, `slot_X_status`)을 컬럼 형태로 직접 정의함.
