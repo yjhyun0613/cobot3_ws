@@ -20,14 +20,6 @@ erDiagram
         VARCHAR workstation_id PK "작업대 고유 ID (WS01~10)"
         VARCHAR current_location "작업대 물리적 위치 (sg2_in_01, spot_01 등)"
         INT aruco_id UNIQUE "물리 ArUco 마커 ID (11~20)"
-        VARCHAR slot_1_customer "슬롯 1 수령인 성함"
-        VARCHAR slot_1_status "슬롯 1 상태 (EMPTY / FULL)"
-        VARCHAR slot_2_customer "슬롯 2 수령인 성함"
-        VARCHAR slot_2_status "슬롯 2 상태 (EMPTY / FULL)"
-        VARCHAR slot_3_customer "슬롯 3 수령인 성함"
-        VARCHAR slot_3_status "슬롯 3 상태 (EMPTY / FULL)"
-        VARCHAR slot_4_customer "슬롯 4 수령인 성함"
-        VARCHAR slot_4_status "슬롯 4 상태 (EMPTY / FULL)"
     }
     WAREHOUSE_LOCATIONS {
         VARCHAR spot_id PK "창고 주차 구역 (spot_01~10)"
@@ -67,7 +59,7 @@ erDiagram
 ---
 
 ### ② 작업대 정보 테이블 (`workstations`)
-로봇들이 상자를 싣는 2x2 슬롯 기반 작업대의 실시간 위치와 내부 슬롯별 점유 상태를 기록합니다.
+로봇들이 상자를 싣는 2x2 슬롯 기반 작업대의 실시간 물리적 위치와 식별 마커 정보를 관리합니다.
 
 * **Primary Key**: `workstation_id`
 
@@ -76,14 +68,6 @@ erDiagram
 | **`workstation_id`** | `VARCHAR(50)` | `PRIMARY KEY` | 작업대 고유 문자열 ID | `'WS01'`, `'WS10'` |
 | **`current_location`** | `VARCHAR(50)` | `NOT NULL` | 작업대의 실시간 위치 | `'sg2_in_01'`, `'spot_01'`, `'sg2_out_00'` |
 | **`aruco_id`** | `INT` | `UNIQUE` | 물리 마커 번호 (11~20) | `11`, `20` |
-| **`slot_1_customer`** | `VARCHAR(100)` | `NULL 허용` | 1번 슬롯 적재 수령인 | `'김철수'`, `NULL` |
-| **`slot_1_status`** | `VARCHAR(20)` | `DEFAULT 'EMPTY'` | 1번 슬롯 적재 여부 (`EMPTY` / `FULL`) | `'FULL'`, `'EMPTY'` |
-| **`slot_2_customer`** | `VARCHAR(100)` | `NULL 허용` | 2번 슬롯 적재 수령인 | `'이영희'`, `NULL` |
-| **`slot_2_status`** | `VARCHAR(20)` | `DEFAULT 'EMPTY'` | 2번 슬롯 적재 여부 (`EMPTY` / `FULL`) | `'EMPTY'` |
-| **`slot_3_customer`** | `VARCHAR(100)` | `NULL 허용` | 3번 슬롯 적재 수령인 | `NULL` |
-| **`slot_3_status`** | `VARCHAR(20)` | `DEFAULT 'EMPTY'` | 3번 슬롯 적재 여부 (`EMPTY` / `FULL`) | `'EMPTY'` |
-| **`slot_4_customer`** | `VARCHAR(100)` | `NULL 허용` | 4번 슬롯 적재 수령인 | `NULL` |
-| **`slot_4_status`** | `VARCHAR(20)` | `DEFAULT 'EMPTY'` | 4번 슬롯 적재 여부 (`EMPTY` / `FULL`) | `'EMPTY'` |
 
 ---
 
@@ -157,8 +141,7 @@ erDiagram
 
 ### ① 적재 전 상태 (초기 상태)
 * **`workstations` 테이블 (`workstation_id = 'WS01'`)**
-  * `slot_1_customer`: `NULL`
-  * `slot_1_status`: `'EMPTY'`
+  * `current_location`: `'spot_01'`
 * **`packages` 테이블 (`package_id = 'PKG_RAND_001'`)**
   * `status`: `'WAITING'`
   * `workstation_id`: `NULL`
@@ -166,8 +149,7 @@ erDiagram
 
 ### ② 적재 완료 후 상태 (`ReportInboundProgress` 호출 후)
 * **`workstations` 테이블 (`workstation_id = 'WS01'`)**
-  * `slot_1_customer`: `'김철수'` (상자 수령인 자동 연동)
-  * `slot_1_status`: `'FULL'`
+  * `current_location`: `'sg2_in_01'`
 * **`packages` 테이블 (`package_id = 'PKG_RAND_001'`)**
   * `status`: `'IN_WORKSTATION'`
   * `workstation_id`: `'WS01'`

@@ -15,15 +15,7 @@ CREATE TABLE robots (
 CREATE TABLE workstations (
     workstation_id VARCHAR(50) PRIMARY KEY,
     current_location VARCHAR(50) NOT NULL, -- sg2_in_01, warehouse, sg2_out_00, spot_XX, etc.
-    aruco_id INT UNIQUE,
-    slot_1_customer VARCHAR(100),
-    slot_1_status VARCHAR(20) DEFAULT 'EMPTY', -- EMPTY, FILLING, FULL
-    slot_2_customer VARCHAR(100),
-    slot_2_status VARCHAR(20) DEFAULT 'EMPTY',
-    slot_3_customer VARCHAR(100),
-    slot_3_status VARCHAR(20) DEFAULT 'EMPTY',
-    slot_4_customer VARCHAR(100),
-    slot_4_status VARCHAR(20) DEFAULT 'EMPTY'
+    aruco_id INT UNIQUE
 );
 
 -- 4. warehouse_locations 테이블 생성

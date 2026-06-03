@@ -39,27 +39,37 @@ def get_status():
         
     try:
         with pg_conn.cursor() as cursor:
-            # 1. Workstations
+            # 1. Fetch workstations
+            cursor.execute("SELECT workstation_id, current_location, aruco_id FROM workstations ORDER BY workstation_id;")
+            ws_rows = cursor.fetchall()
+            
+            # 2. Fetch packages in workstations
             cursor.execute("""
-                SELECT workstation_id, current_location, aruco_id,
-                       slot_1_customer, slot_1_status,
-                       slot_2_customer, slot_2_status,
-                       slot_3_customer, slot_3_status,
-                       slot_4_customer, slot_4_status
-                FROM workstations ORDER BY workstation_id;
+                SELECT workstation_id, slot_number, customer_name 
+                FROM packages 
+                WHERE status = 'IN_WORKSTATION' AND workstation_id IS NOT NULL;
             """)
+            pkg_rows = cursor.fetchall()
+            ws_pkg_map = {}
+            for ws_id, slot_num, customer in pkg_rows:
+                if ws_id not in ws_pkg_map:
+                    ws_pkg_map[ws_id] = {}
+                ws_pkg_map[ws_id][slot_num] = customer
+            
             workstations = []
-            for row in cursor.fetchall():
+            for row in ws_rows:
+                ws_id = row[0]
+                slots = []
+                for s in range(1, 5):
+                    customer = ws_pkg_map.get(ws_id, {}).get(s, None)
+                    status = "FULL" if customer else "EMPTY"
+                    slots.append({"slot_number": s, "customer": customer, "status": status})
+                
                 workstations.append({
-                    "workstation_id": row[0],
+                    "workstation_id": ws_id,
                     "current_location": row[1],
                     "aruco_id": row[2],
-                    "slots": [
-                        {"slot_number": 1, "customer": row[3], "status": row[4]},
-                        {"slot_number": 2, "customer": row[5], "status": row[6]},
-                        {"slot_number": 3, "customer": row[7], "status": row[8]},
-                        {"slot_number": 4, "customer": row[9], "status": row[10]},
-                    ]
+                    "slots": slots
                 })
             
             # 2. Warehouse Locations
@@ -185,28 +195,22 @@ def simulate_inbound():
 
             # 3. 해당 작업대의 다음 빈 슬롯 찾기
             cursor.execute("""
-                SELECT slot_1_status, slot_2_status, slot_3_status, slot_4_status 
-                FROM workstations WHERE workstation_id = %s;
+                SELECT slot_number FROM packages 
+                WHERE workstation_id = %s AND status = 'IN_WORKSTATION';
             """, (ws_id,))
-            s1, s2, s3, s4 = cursor.fetchone()
+            filled_slots = {r[0] for r in cursor.fetchall()}
             
             slot_num = None
-            if s1 == 'EMPTY': slot_num = 1
-            elif s2 == 'EMPTY': slot_num = 2
-            elif s3 == 'EMPTY': slot_num = 3
-            elif s4 == 'EMPTY': slot_num = 4
+            for s in range(1, 5):
+                if s not in filled_slots:
+                    slot_num = s
+                    break
             
             if slot_num is None:
                 pg_conn.close()
                 return {"success": False, "message": f"작업대 {ws_id}의 모든 슬롯이 찼습니다!"}
                 
-            # 4. 데이터베이스 업데이트 (패키지 정보 및 작업대 슬롯 정보)
-            cursor.execute(f"""
-                UPDATE workstations 
-                SET slot_{slot_num}_customer = %s, slot_{slot_num}_status = 'FULL'
-                WHERE workstation_id = %s;
-            """, (cust_name, ws_id))
-            
+            # 4. 데이터베이스 업데이트 (패키지 정보)
             cursor.execute("""
                 UPDATE packages 
                 SET status = 'IN_WORKSTATION', workstation_id = %s, slot_number = %s

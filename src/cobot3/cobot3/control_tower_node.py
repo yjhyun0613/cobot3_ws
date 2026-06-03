@@ -281,17 +281,7 @@ class ControlTowerNode(Node):
                     row = cursor.fetchone()
                     customer_name = row[0] if row else 'UNKNOWN'
 
-                    slot_column_status = f"slot_{filled_slots_count}_status"
-                    slot_column_customer = f"slot_{filled_slots_count}_customer"
-
-                    # 3. 작업대 슬롯 상태 및 수령인 업데이트
-                    cursor.execute(
-                        f"UPDATE workstations SET {slot_column_status} = 'FULL', {slot_column_customer} = %s "
-                        f"WHERE workstation_id = %s;",
-                        (customer_name, workstation_id)
-                    )
-
-                    # 4. 개별 패키지 위치 정보 매핑 및 상태 갱신
+                    # 3. 개별 패키지 위치 정보 매핑 및 상태 갱신
                     cursor.execute(
                         "UPDATE packages SET workstation_id = %s, slot_number = %s, status = 'IN_WORKSTATION' "
                         "WHERE package_id = %s;",
@@ -381,9 +371,10 @@ class ControlTowerNode(Node):
                         cursor.execute(
                             "SELECT workstation_id, current_location, aruco_id FROM workstations "
                             "WHERE current_location LIKE 'spot_%%' "
-                            "AND slot_1_status = 'EMPTY' AND slot_2_status = 'EMPTY' "
-                            "AND slot_3_status = 'EMPTY' AND slot_4_status = 'EMPTY' "
-                            "LIMIT 1;"
+                            "AND workstation_id NOT IN ("
+                            "    SELECT DISTINCT workstation_id FROM packages "
+                            "    WHERE workstation_id IS NOT NULL AND status = 'IN_WORKSTATION'"
+                            ") LIMIT 1;"
                         )
                         row = cursor.fetchone()
                         if row:
@@ -413,9 +404,11 @@ class ControlTowerNode(Node):
             with self.pg_conn.cursor() as cursor:
                 # 4칸 모두 FULL인 작업대 조회 (aruco_id 추가 선택)
                 cursor.execute(
-                    "SELECT workstation_id, current_location, aruco_id FROM workstations "
-                    "WHERE slot_1_status = 'FULL' AND slot_2_status = 'FULL' "
-                    "AND slot_3_status = 'FULL' AND slot_4_status = 'FULL';"
+                    "SELECT w.workstation_id, w.current_location, w.aruco_id "
+                    "FROM workstations w "
+                    "JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WORKSTATION' "
+                    "GROUP BY w.workstation_id, w.current_location, w.aruco_id "
+                    "HAVING COUNT(p.package_id) = 4;"
                 )
                 rows = cursor.fetchall()
                 for row in rows:
@@ -637,17 +630,7 @@ class ControlTowerNode(Node):
             if self.pg_conn:
                 try:
                     with self.pg_conn.cursor() as cursor:
-                        # 1. 작업대 슬롯 정보를 다시 EMPTY로 초기화
-                        cursor.execute(
-                            "UPDATE workstations SET "
-                            "slot_1_customer = NULL, slot_1_status = 'EMPTY', "
-                            "slot_2_customer = NULL, slot_2_status = 'EMPTY', "
-                            "slot_3_customer = NULL, slot_3_status = 'EMPTY', "
-                            "slot_4_customer = NULL, slot_4_status = 'EMPTY' "
-                            "WHERE workstation_id = %s;",
-                            (workstation_id,)
-                        )
-                        # 2. 해당 작업대에 매핑되었던 패키지들의 상태를 COMPLETED로 업데이트
+                        # 1. 해당 작업대에 매핑되었던 패키지들의 상태를 COMPLETED로 업데이트
                         raw_outbound_id = result.final_output_ids[0] if result.final_output_ids else 'OUT_ERR'
                         robot_prefix = "sg2_out_00_"
                         if raw_outbound_id != 'OUT_ERR' and not raw_outbound_id.startswith(robot_prefix):
