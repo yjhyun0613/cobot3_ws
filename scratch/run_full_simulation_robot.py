@@ -206,7 +206,7 @@ def inbound_sim_loop(node):
                 pkg_id, cust_name, pkg_qr = pkg_row
                 
                 # Step A: QR코드 생성 및 카메라 비전 인식 흉내
-                qr_file = generate_qr_code(pkg_id)
+                qr_file = generate_qr_code(pkg_qr or pkg_id)
                 decoded_qr = decode_qr_code(qr_file)
                 node.get_logger().info(f'[Scenario] 🚀 패키지 {pkg_id} 입고 처리 시작 (QR: {decoded_qr})')
 

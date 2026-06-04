@@ -3,9 +3,11 @@ import os
 import psycopg2
 import redis
 import json
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 import uvicorn
+import csv
+import io
 
 app = FastAPI(title="Coupang Warehouse Control Panel")
 
@@ -161,6 +163,56 @@ def get_status():
         if pg_conn:
             pg_conn.close()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/upload_packages")
+async def upload_packages(request: Request):
+    try:
+        content_bytes = await request.body()
+        content = content_bytes.decode('utf-8')
+        csv_reader = csv.DictReader(io.StringIO(content))
+        
+        # 1. 컬럼 유효성 검사
+        required_fields = ['package_id', 'customer_name', 'route_zone']
+        if not csv_reader.fieldnames or not all(field in csv_reader.fieldnames for field in required_fields):
+            raise HTTPException(
+                status_code=400, 
+                detail=f"CSV file must contain columns: {', '.join(required_fields)}"
+            )
+        
+        pg_conn, _ = get_db_connections()
+        if not pg_conn:
+            raise HTTPException(status_code=500, detail="Database connection failed.")
+            
+        success_count = 0
+        with pg_conn.cursor() as cursor:
+            for row in csv_reader:
+                pkg_id = row.get('package_id', '').strip()
+                cust_name = row.get('customer_name', '').strip()
+                route_zone = row.get('route_zone', '').strip()
+                status = row.get('status', 'WAITING').strip() or 'WAITING'
+                qr_id = row.get('qr_id', pkg_id).strip() or pkg_id
+                
+                if not pkg_id or not cust_name or not route_zone:
+                    continue
+                
+                cursor.execute("""
+                    INSERT INTO packages (package_id, customer_name, route_zone, status, qr_id)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (package_id) 
+                    DO UPDATE SET 
+                        customer_name = EXCLUDED.customer_name,
+                        route_zone = EXCLUDED.route_zone,
+                        status = EXCLUDED.status,
+                        qr_id = EXCLUDED.qr_id;
+                """, (pkg_id, cust_name, route_zone, status, qr_id))
+                success_count += 1
+                
+        pg_conn.close()
+        return {"success": True, "message": f"Successfully loaded {success_count} packages."}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process CSV file: {str(e)}")
 
 @app.post("/api/reset")
 def reset_db():
@@ -784,6 +836,19 @@ def index():
             transform: translateY(-2px);
         }
 
+        .btn-upload {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            color: #10b981;
+        }
+
+        .btn-upload:hover {
+            background: #10b981;
+            color: #000;
+            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.2);
+            transform: translateY(-2px);
+        }
+
         /* Grid sections */
         .dashboard-grid {
             display: grid;
@@ -1121,6 +1186,10 @@ def index():
             <button class="btn-packaging" onclick="simulatePackaging()" style="background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); border: none; color: #000; box-shadow: 0 4px 15px rgba(245, 158, 11, 0.25);">
                 <span>📦</span> 시뮬레이션 포장 수행
             </button>
+            <button class="btn-upload" onclick="triggerCSVUpload()">
+                <span>📥</span> CSV 입고 명단 업로드
+            </button>
+            <input type="file" accept=".csv" id="csv-file-input" style="display:none" onchange="uploadCSV()">
             <button class="btn-reset" onclick="resetDatabase()">
                 <span>🔄</span> 데이터베이스 초기화
             </button>
@@ -1220,6 +1289,46 @@ def index():
             } catch (err) {
                 showToast("❌ API 통신 오류 발생");
             }
+        }
+
+        function triggerCSVUpload() {
+            document.getElementById('csv-file-input').click();
+        }
+
+        async function uploadCSV() {
+            const fileInput = document.getElementById('csv-file-input');
+            if (fileInput.files.length === 0) return;
+
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+
+            reader.onload = async function(e) {
+                const textContent = e.target.result;
+                showToast("⏳ CSV 파일을 업로드하는 중...");
+
+                try {
+                    const response = await fetch('/api/upload_packages', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'text/plain; charset=utf-8'
+                        },
+                        body: textContent
+                    });
+                    const data = await response.json();
+                    if (response.ok && data.success) {
+                        showToast("✅ " + data.message);
+                        fetchStatus();
+                    } else {
+                        showToast("❌ 업로드 실패: " + (data.detail || data.message || "알 수 없는 오류"));
+                    }
+                } catch (err) {
+                    showToast("❌ API 통신 오류 발생");
+                } finally {
+                    fileInput.value = "";
+                }
+            };
+
+            reader.readAsText(file);
         }
 
         // 2. DB 초기화 트리거

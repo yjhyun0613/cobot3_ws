@@ -1,0 +1,4 @@
+package_id,customer_name,route_zone,qr_id
+PKG_CSV_001,손흥민,2026-06-01,QR_SON_001
+PKG_CSV_002,황희찬,2026-06-02,QR_HWANG_002
+PKG_CSV_003,이강인,2026-06-03,QR_LEE_003
