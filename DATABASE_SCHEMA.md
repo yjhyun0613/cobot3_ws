@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > **AI 에이전트 가이드**: 이 문서를 읽는 AI 에이전트는 본 프로젝트에 관해서 분석, 기록 및 작성을 수행해야 하며, 변경사항이 발생하면 관련 마크다운 문서를 지속적으로 자동 갱신해야 합니다.
 
-이 문서는 ArUco 마커 ID가 통합된 **관계형 DB(PostgreSQL) 및 Redis 캐시 시스템**의 전체 구조와 데이터 테이블을 한눈에 파악하기 위해 작성되었습니다.
+이 문서는 QR코드 식별자가 통합된 **관계형 DB(PostgreSQL) 및 Redis 캐시 시스템**의 전체 구조와 데이터 테이블을 한눈에 파악하기 위해 작성되었습니다.
 
 ---
 
@@ -14,12 +14,12 @@ erDiagram
     ROBOTS {
         VARCHAR robot_id PK "로봇 고유 문자열 ID"
         VARCHAR robot_type "로봇 역할군 (CONVEYOR, MANIPULATOR 등)"
-        INT aruco_id UNIQUE "물리 ArUco 마커 ID (1~5)"
+        VARCHAR qr_id UNIQUE "로봇 고유 QR코드 ID"
     }
     WORKSTATIONS {
         VARCHAR workstation_id PK "작업대 고유 ID (WS01~10)"
-        VARCHAR current_location "작업대 물리적 위치 (sg2_in_01, spot_01 등)"
-        INT aruco_id UNIQUE "물리 ArUco 마커 ID (11~20)"
+        VARCHAR current_location "작업대 물리적 위치 (sg2_in_01_A, spot_01 등)"
+        VARCHAR qr_id UNIQUE "작업대 고유 QR코드 ID"
     }
     WAREHOUSE_LOCATIONS {
         VARCHAR spot_id PK "창고 주차 구역 (spot_01~10)"
@@ -34,7 +34,16 @@ erDiagram
         VARCHAR outbound_id "출고 고유 ID"
         VARCHAR workstation_id FK "적재된 작업대 ID"
         INT slot_number "적재된 작업대의 슬롯 번호 (1~8)"
-        INT aruco_id UNIQUE "물리 ArUco 마커 ID (100+)"
+        VARCHAR qr_id UNIQUE "택배 고유 QR코드 ID"
+    }
+    FLOOR_QR_MAP {
+        VARCHAR qr_id PK "바닥 QR코드 고유 ID (FLOOR_X_xx_Y_yy)"
+        DOUBLE x_coord "물리 X 좌표 (m)"
+        DOUBLE y_coord "물리 Y 좌표 (m)"
+        DOUBLE z_coord "물리 Z 좌표 (m)"
+        VARCHAR location_name "매핑 논리 위치명"
+        VARCHAR location_type "위치 타입"
+        TEXT description "설명"
     }
     
     WORKSTATIONS ||--o{ PACKAGES : "contains"
@@ -46,7 +55,7 @@ erDiagram
 ## 🗄️ 2. PostgreSQL 테이블 상세 정의
 
 ### ① 로봇 정보 테이블 (`robots`)
-관제 센터가 제어하는 모든 물류 로봇의 정보와 물리 ArUco 마커 번호의 매핑 테이블입니다.
+관제 센터가 제어하는 모든 물류 로봇의 정보와 물리 QR코드 식별자의 매핑 테이블입니다.
 
 * **Primary Key**: `robot_id`
 
@@ -54,20 +63,20 @@ erDiagram
 | :--- | :--- | :--- | :--- | :--- |
 | **`robot_id`** | `VARCHAR(50)` | `PRIMARY KEY` | 로봇 고유 문자열 ID | `'bg2'`, `'sg2_in_01'` |
 | **`robot_type`** | `VARCHAR(50)` | `NOT NULL` | 로봇의 분류/역할군 | `'CONVEYOR_SORTER'`, `'MANIPULATOR'` |
-| **`aruco_id`** | `INT` | `UNIQUE` | 물리 마커 번호 (1~5) | `1`, `2` |
+| **`qr_id`** | `VARCHAR(100)` | `UNIQUE` | 로봇 고유 QR코드 ID | `'ROBOT_bg2'`, `'ROBOT_sg2_in_01'` |
 
 ---
 
 ### ② 작업대 정보 테이블 (`workstations`)
-로봇들이 상자를 싣는 2x4 슬롯 기반 작업대의 실시간 물리적 위치와 식별 마커 정보를 관리합니다.
+로봇들이 상자를 싣는 2x4 슬롯 기반 작업대의 실시간 물리적 위치와 식별 QR코드 정보를 관리합니다.
 
 * **Primary Key**: `workstation_id`
 
 | 열 이름 (Column) | 데이터 타입 (Type) | 제약 조건 (Constraints) | 설명 (Description) | 예시 데이터 |
 | :--- | :--- | :--- | :--- | :--- |
 | **`workstation_id`** | `VARCHAR(50)` | `PRIMARY KEY` | 작업대 고유 문자열 ID | `'WS01'`, `'WS10'` |
-| **`current_location`** | `VARCHAR(50)` | `NOT NULL` | 작업대의 실시간 위치 | `'sg2_in_01'`, `'spot_01'`, `'sg2_out_00'` |
-| **`aruco_id`** | `INT` | `UNIQUE` | 물리 마커 번호 (11~20) | `11`, `20` |
+| **`current_location`** | `VARCHAR(50)` | `NOT NULL` | 작업대의 실시간 위치 | `'sg2_in_01_A'`, `'spot_01'`, `'sg2_out_00'` |
+| **`qr_id`** | `VARCHAR(100)` | `UNIQUE` | 작업대 고유 QR코드 ID | `'WORKSTATION_WS01'`, `'WORKSTATION_WS10'` |
 
 ---
 
@@ -100,7 +109,24 @@ erDiagram
 | **`outbound_id`** | `VARCHAR(100)` | `NULL 허용` | 포장 후 출고 고유 바코드 | `'sg2_out_00_WS01-1-202606021153'` |
 | **`workstation_id`** | `VARCHAR(50)` | `FOREIGN KEY` | 적재된 작업대 ID | `'WS01'`, `NULL` |
 | **`slot_number`** | `INT` | `NULL 허용` | 작업대 내 적재 슬롯 번호 (1~8) | `1`, `NULL` |
-| **`aruco_id`** | `INT` | `UNIQUE` | 물리 마커 번호 (101 이상) | `101` |
+| **`qr_id`** | `VARCHAR(100)` | `UNIQUE` | 택배 고유 QR코드 ID | `'PKG_RAND_001'` |
+
+---
+
+### ⑤ 공간 바닥 QR코드 격자 맵 테이블 (`floor_qr_map`)
+AMR의 3D 공간 자율주행 및 위치 좌표 해석(Localization)을 위해 바닥에 매핑된 QR코드 격자 맵 정보를 관리합니다.
+
+* **Primary Key**: `qr_id`
+
+| 열 이름 (Column) | 데이터 타입 (Type) | 제약 조건 (Constraints) | 설명 (Description) | 예시 데이터 |
+| :--- | :--- | :--- | :--- | :--- |
+| **`qr_id`** | `VARCHAR(100)` | `PRIMARY KEY` | 바닥 QR코드 고유 ID | `'FLOOR_X_1.5_Y_3.0'` |
+| **`x_coord`** | `DOUBLE PRECISION`| `NOT NULL` | 물리 X 좌표 (m) | `1.5` |
+| **`y_coord`** | `DOUBLE PRECISION`| `NOT NULL` | 물리 Y 좌표 (m) | `3.0` |
+| **`z_coord`** | `DOUBLE PRECISION`| `DEFAULT 0.0` | 물리 Z 좌표 (m) | `0.0` |
+| **`location_name`** | `VARCHAR(50)`| `NULL 허용` | 매핑되는 논리적 위치명 | `'spot_01'`, `'sg2_in_01_A'` |
+| **`location_type`** | `VARCHAR(50)`| `NULL 허용` | 위치 용도 분류 | `'PARKING_SPOT'`, `'PATHWAY'` |
+| **`description`** | `TEXT` | `NULL 허용` | 세부 위치 설명 | `'1번 주차장 구역 바닥 격자'` |
 
 ---
 
