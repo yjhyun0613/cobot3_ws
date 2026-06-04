@@ -105,5 +105,10 @@
   * Isaac Sim 내장 `pxr` (Universal Scene Description) API와 `SimulationApp`을 연동한 `scratch/add_all_qr_to_usd.py` 자동화 스크립트 작성.
   * 기존 비어있던 `src/cobot3/resource/map.usd` 맵 파일에 2,303개의 격자 평면(Quad Mesh)과 PBR 텍스처 재질(Material)을 10초 만에 완벽히 추가 및 바인딩하여 맵 최종 갱신 완료 (용량 473KB로 최적화).
 
+* **10:46** - **바닥 반사 방지 및 QR 시인성 향상을 위한 USD 조명 최적화 완료**
+  * 강한 직사광으로 발생하던 바닥의 하얗게 타는 현상(Specular Glare)을 해결하기 위해 기존 `defaultLight` (DistantLight) 세기를 3000.0에서 600.0으로 대폭 낮춤.
+  * 사방에서 균일하고 부드러운 환경 빛을 제공하는 `domeLight` (DomeLight, 세기 1200.0)를 새로 추가하여 그림자를 제거하고 전체 밝기를 균일하게 맞추어 카메라 센서의 QR코드 비전 인식률을 최적화함.
+
+
 
 
