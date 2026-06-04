@@ -272,8 +272,27 @@ def simulate_inbound():
 
             target_loc = f"{target_robot}_A"
             
-            # 2. 해당 로봇의 A 구역에 작업대 찾기
-            cursor.execute("SELECT workstation_id FROM workstations WHERE current_location = %s LIMIT 1;", (target_loc,))
+            # 2. 해당 로봇 라인에 연관된 작업대 찾기 (A구역 -> 회전중 -> A로 이동중 -> B구역 -> B로 이동중 순으로 선호)
+            loc_a = f"{target_robot}_A"
+            loc_a_rot = f"{target_robot}_A_ROTATING"
+            loc_a_mov = f"MOVING_TO_{target_robot.upper()}_A"
+            loc_b = f"{target_robot}_B"
+            loc_b_mov = f"MOVING_TO_{target_robot.upper()}_B"
+            
+            cursor.execute("""
+                SELECT workstation_id, current_location FROM workstations 
+                WHERE current_location IN (%s, %s, %s, %s, %s)
+                ORDER BY 
+                    CASE current_location
+                        WHEN %s THEN 1
+                        WHEN %s THEN 2
+                        WHEN %s THEN 3
+                        WHEN %s THEN 4
+                        WHEN %s THEN 5
+                        ELSE 6
+                    END
+                LIMIT 1;
+            """, (loc_a, loc_a_rot, loc_a_mov, loc_b, loc_b_mov, loc_a, loc_a_rot, loc_a_mov, loc_b, loc_b_mov))
             ws_row = cursor.fetchone()
             if ws_row:
                 ws_id = ws_row[0]
@@ -368,17 +387,24 @@ def simulate_inbound():
                 ws_qr = ws_qr_row[0] if ws_qr_row else ""
                 
                 if target_robot == 'sg2_in_01':
-                    # 오늘 날짜 분류 라인 -> 포장존(sg2_out_00)으로 이송
+                    # 오늘 날짜 분류 라인 -> 포장존(sg2_out_00_A 또는 B)으로 이송
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM workstations 
+                        WHERE current_location = 'sg2_out_00_A' OR current_location = 'MOVING_TO_SG2_OUT_00_A';
+                    """)
+                    out_a_count = cursor.fetchone()[0]
+                    target_out = 'sg2_out_00_A' if out_a_count == 0 else 'sg2_out_00_B'
+
                     cursor.execute(
-                        "UPDATE workstations SET current_location = 'sg2_out_00' WHERE workstation_id = %s;",
-                        (ws_id,)
+                        "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
+                        (target_out, ws_id)
                     )
                     task_retrieve = {
                         "task_type": "RETRIEVE_FULL_WORKSTATION",
                         "workstation_id": ws_id,
                         "from": target_loc,
-                        "to": "sg2_out_00",
-                        "description": f"완충 작업대 {ws_id} 회수 → 포장존(sg2_out_00) 이동",
+                        "to": target_out,
+                        "description": f"완충 작업대 {ws_id} 회수 → 포장존({target_out}) 이동",
                         "workstation_qr_id": ws_qr
                     }
                 else:
@@ -852,15 +878,9 @@ def index():
         /* Grid sections */
         .dashboard-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 1fr;
             gap: 2rem;
             margin-bottom: 2rem;
-        }
-
-        @media (max-width: 1024px) {
-            .dashboard-grid {
-                grid-template-columns: 1fr;
-            }
         }
 
         .panel-card {
@@ -887,7 +907,7 @@ def index():
         /* Warehouse spots styling */
         .spots-container {
             display: grid;
-            grid-template-columns: repeat(5, 1fr);
+            grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
             gap: 12px;
         }
 
@@ -945,11 +965,8 @@ def index():
         /* Workstations styling */
         .workstations-container {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 16px;
-            max-height: 480px;
-            overflow-y: auto;
-            padding-right: 4px;
         }
 
         .workstations-container::-webkit-scrollbar {
@@ -975,15 +992,17 @@ def index():
 
         .ws-header {
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
+            flex-direction: column;
+            align-items: flex-start;
+            margin-bottom: 12px;
+            gap: 6px;
         }
 
         .ws-id {
-            font-size: 1rem;
-            font-weight: 700;
+            font-size: 1.25rem;
+            font-weight: 800;
             color: #fff;
+            letter-spacing: -0.5px;
         }
 
         .ws-loc {
@@ -1391,7 +1410,7 @@ def index():
 
                     card.innerHTML = `
                         <div class="ws-header">
-                            <span class="ws-id">${ws.workstation_id} (QR: ${ws.qr_id})</span>
+                            <span class="ws-id">${ws.workstation_id}</span>
                             <span class="ws-loc ${isMoving ? 'moving' : ''}">${ws.current_location}</span>
                         </div>
                         <div class="ws-slots-grid">
