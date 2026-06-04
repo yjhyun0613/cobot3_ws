@@ -87,13 +87,24 @@ def main():
         generate_qr(robot, path)
         print(f"  └─ 생성 완료: {path}")
 
-    # 2. 작업대 QR코드 생성
-    print("\n[2] 작업대 식별 QR코드 생성 중...")
+    # 2. 작업대 및 슬롯 QR코드 생성
+    print("\n[2] 작업대 및 슬롯 식별 QR코드 생성 중...")
+    os.makedirs(os.path.join(output_dir, "workstations", "slots"), exist_ok=True)
     for i in range(1, 11):
-        ws = f"WORKSTATION_WS{i:02d}"
+        ws_id = f"WS{i:02d}"
+        ws = f"WORKSTATION_{ws_id}"
         path = os.path.join(output_dir, "workstations", f"{ws}.png")
         generate_qr(ws, path)
-        print(f"  └─ 생성 완료: {path}")
+        print(f"  ├─ 작업대 생성 완료: {path}")
+        
+        # 각 작업대별 4개 슬롯 QR코드 생성
+        for slot in range(1, 5):
+            slot_str = f"WORKSTATION_{ws_id}_SLOT_{slot}"
+            slot_path = os.path.join(output_dir, "workstations", "slots", f"{slot_str}.png")
+            generate_qr(slot_str, slot_path)
+            # 로그 줄이기 위해 요약 출력 또는 매번 출력
+        print(f"  │  └─ 슬롯 1~4 QR코드 생성 완료: {ws_id}")
+
 
     # 3. 바닥 격자 QR코드 생성
     print("\n[3] 바닥 격자 QR코드 생성 중...")
