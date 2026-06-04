@@ -580,32 +580,36 @@ class ControlTowerNode(Node):
         if completed_slots == 7:
             self.get_logger().info('[Look-ahead] 7번째 칸 포장 완료 감지! 다음 작업대 사전 호출을 예약합니다.')
             
-            # 다음 포장 대기 중인 작업대를 창고에서 포장존으로 가져오도록 큐에 태스크 추가
-            next_ws_id = 'WS02'
-            next_ws_qr_id = "WORKSTATION_WS02"
             if self.pg_conn:
                 try:
                     with self.pg_conn.cursor() as cursor:
-                        # 완충되어 창고에 보관된 작업대를 우선순위로 조회
+                        # 완충되어 창고(spot_XX)에 보관된 작업대를 조회
                         cursor.execute(
-                            "SELECT workstation_id, qr_id FROM workstations "
-                            "WHERE current_location = 'warehouse' LIMIT 1;"
+                            "SELECT w.workstation_id, w.qr_id "
+                            "FROM workstations w "
+                            "JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WORKSTATION' "
+                            "WHERE w.current_location LIKE 'spot_%%' "
+                            "GROUP BY w.workstation_id, w.qr_id "
+                            "HAVING COUNT(p.package_id) = 8 "
+                            "LIMIT 1;"
                         )
                         row = cursor.fetchone()
                         if row:
                             next_ws_id = row[0]
                             next_ws_qr_id = row[1] if row[1] is not None else ""
-                            self.get_logger().info(f'[Look-ahead] 다음 포장 대상 작업대 조회 성공: {next_ws_id}(QR: {next_ws_qr_id})')
+                            self.get_logger().info(f'[Look-ahead] 다음 포장 대상 작업대 선점 성공: {next_ws_id}(QR: {next_ws_qr_id})')
+                            
+                            self.push_amr_task({
+                                'task_type': 'PRE_FETCH_WORKSTATION',
+                                'workstation_id': next_ws_id,
+                                'from': 'warehouse',
+                                'to': 'sg2_out_00',
+                                'workstation_qr_id': next_ws_qr_id
+                            })
+                        else:
+                            self.get_logger().info('[Look-ahead] 창고에 대기 중인 완충 작업대가 없어 사전 호출을 생략합니다.')
                 except Exception as e:
                     self.get_logger().error(f'[Look-ahead] 다음 작업대 조회 중 오류: {str(e)}')
-
-            self.push_amr_task({
-                'task_type': 'PRE_FETCH_WORKSTATION',
-                'workstation_id': next_ws_id,
-                'from': 'warehouse',
-                'to': 'sg2_out_00',
-                'workstation_qr_id': next_ws_qr_id
-            })
 
     def packaging_response_callback(self, future, workstation_id):
         """포장 명령 수락 콜백"""

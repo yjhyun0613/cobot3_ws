@@ -175,7 +175,6 @@ def simulate_inbound():
             pkg_id, cust_name, zone, pkg_qr = pkg_row
             
             # 2. 현재 적재 대기 중인(예: sg2_in_01에 있는) 작업대 찾기
-            # 만약 없으면 WS01을 강제로 임바운드에 매핑하고, 원래 있던 창고 주차 스팟을 비워줍니다.
             cursor.execute("SELECT workstation_id FROM workstations WHERE current_location = 'sg2_in_01' LIMIT 1;")
             ws_row = cursor.fetchone()
             ws_id = "WS01"
@@ -217,27 +216,325 @@ def simulate_inbound():
                 WHERE package_id = %s;
             """, (ws_id, slot_num, pkg_id))
             
-            # 5. 만약 3번째 슬롯에 상자가 올라갔다면 Redis 큐에 Look-ahead 작업 추가
+            # 5. 7번째 슬롯 적재 시 → Look-ahead: 다음 빈 작업대 사전 호출
             lookahead_triggered = False
             if slot_num == 7 and redis_client:
-                # QR ID 구하기
                 cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
                 ws_qr = cursor.fetchone()[0]
                 
                 task_data = {
                     "task_type": "PRE_FETCH_EMPTY_WORKSTATION",
                     "target_robot": "sg2_in_01",
-                    "description": f"Look-ahead: {ws_id} 7번째 슬롯 적재 감지로 예비 작업대 호출",
+                    "description": f"Look-ahead: {ws_id} 7번째 슬롯 적재 감지 → 예비 빈 작업대 호출",
                     "workstation_qr_id": ws_qr
                 }
                 redis_client.lpush('queue:amr_tasks', json.dumps(task_data))
                 lookahead_triggered = True
+            
+            # 6. 8번째 슬롯 적재 시 → 완충 작업대 교체: 다 찬 작업대 회수 + 새 작업대 교체 배치
+            swap_triggered = False
+            if slot_num == 8 and redis_client:
+                cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
+                ws_qr_row = cursor.fetchone()
+                ws_qr = ws_qr_row[0] if ws_qr_row else ""
+                
+                # 6-1. 다 찬 작업대를 창고로 회수하는 태스크
+                # 빈 창고 스팟 배정
+                cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1;")
+                empty_spot_row = cursor.fetchone()
+                target_spot = empty_spot_row[0] if empty_spot_row else "warehouse"
+                
+                if empty_spot_row:
+                    cursor.execute(
+                        "UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;",
+                        (ws_id, target_spot)
+                    )
+                
+                # 작업대 상태를 IN_WAREHOUSE로 전이, 패키지 상태도 업데이트
+                cursor.execute(
+                    "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE workstation_id = %s AND status = 'IN_WORKSTATION';",
+                    (ws_id,)
+                )
+                cursor.execute(
+                    "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
+                    (target_spot, ws_id)
+                )
+                
+                task_retrieve = {
+                    "task_type": "RETRIEVE_FULL_WORKSTATION",
+                    "workstation_id": ws_id,
+                    "from": "sg2_in_01",
+                    "to": target_spot,
+                    "description": f"완충 작업대 {ws_id} 회수 → {target_spot} 입고",
+                    "workstation_qr_id": ws_qr
+                }
+                redis_client.lpush('queue:amr_tasks', json.dumps(task_retrieve))
+                
+                # 6-2. 새 빈 작업대를 적재 라인으로 가져오기
+                cursor.execute("""
+                    SELECT w.workstation_id, w.current_location, w.qr_id
+                    FROM workstations w
+                    WHERE w.current_location LIKE 'spot_%%'
+                    AND w.workstation_id NOT IN (
+                        SELECT DISTINCT workstation_id FROM packages
+                        WHERE workstation_id IS NOT NULL AND status IN ('IN_WORKSTATION', 'IN_WAREHOUSE')
+                    ) LIMIT 1;
+                """)
+                new_ws_row = cursor.fetchone()
+                if new_ws_row:
+                    new_ws_id, new_ws_loc, new_ws_qr = new_ws_row
+                    new_ws_qr = new_ws_qr if new_ws_qr else ""
+                    
+                    # 새 작업대를 적재 라인으로 이동
+                    cursor.execute(
+                        "UPDATE workstations SET current_location = 'sg2_in_01' WHERE workstation_id = %s;",
+                        (new_ws_id,)
+                    )
+                    # 해당 창고 스팟 비우기
+                    cursor.execute(
+                        "UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;",
+                        (new_ws_loc,)
+                    )
+                    
+                    task_deploy = {
+                        "task_type": "DEPLOY_EMPTY_WORKSTATION",
+                        "workstation_id": new_ws_id,
+                        "from": new_ws_loc,
+                        "to": "sg2_in_01",
+                        "description": f"새 빈 작업대 {new_ws_id} 배치 → sg2_in_01 (교체)",
+                        "workstation_qr_id": new_ws_qr
+                    }
+                    redis_client.lpush('queue:amr_tasks', json.dumps(task_deploy))
+                
+                swap_triggered = True
 
         pg_conn.close()
         msg = f"상자 {pkg_id}를 작업대 {ws_id}의 {slot_num}번 슬롯에 적재했습니다."
         if lookahead_triggered:
             msg += " (★ Look-ahead 예비 작업대 호출 트리거 발동!)"
+        if swap_triggered:
+            msg += " (🔄 완충! 작업대 교체 수행: 회수 + 새 작업대 배치 완료)"
             
+        return {"success": True, "message": msg}
+    except Exception as e:
+        if pg_conn:
+            pg_conn.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/simulate_packaging")
+def simulate_packaging():
+    """포장 시뮬레이션: 포장존(sg2_out_00)에 있는 작업대의 패키지를 하나씩 포장 완료 처리"""
+    pg_conn, redis_client = get_db_connections()
+    if not pg_conn:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    
+    try:
+        with pg_conn.cursor() as cursor:
+            # 1. 포장존(sg2_out_00)에 위치한 작업대 찾기
+            cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = 'sg2_out_00' LIMIT 1;")
+            ws_row = cursor.fetchone()
+            
+            if not ws_row:
+                # 포장존에 작업대가 없으면, 창고에서 IN_WAREHOUSE 패키지가 있는 작업대를 가져옴
+                cursor.execute("""
+                    SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
+                    FROM workstations w
+                    JOIN packages p ON w.workstation_id = p.workstation_id
+                    WHERE p.status = 'IN_WAREHOUSE'
+                    LIMIT 1;
+                """)
+                warehouse_ws = cursor.fetchone()
+                if not warehouse_ws:
+                    pg_conn.close()
+                    return {"success": False, "message": "포장할 작업대가 없습니다. 먼저 적재 시뮬레이션으로 작업대를 완충시켜 주세요."}
+                
+                ws_id, ws_loc, ws_qr = warehouse_ws
+                ws_qr = ws_qr if ws_qr else ""
+                
+                # 창고 스팟 비우기
+                if ws_loc.startswith('spot_'):
+                    cursor.execute(
+                        "UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;",
+                        (ws_loc,)
+                    )
+                
+                # 작업대를 포장존으로 이동
+                cursor.execute("UPDATE workstations SET current_location = 'sg2_out_00' WHERE workstation_id = %s;", (ws_id,))
+                
+                # 패키지 상태를 IN_WORKSTATION으로 복원 (포장 대기 상태)
+                cursor.execute(
+                    "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
+                    (ws_id,)
+                )
+                
+                if redis_client:
+                    task_fetch = {
+                        "task_type": "FETCH_FOR_PACKAGING",
+                        "workstation_id": ws_id,
+                        "from": ws_loc,
+                        "to": "sg2_out_00",
+                        "description": f"포장용 작업대 {ws_id} 호출 → sg2_out_00",
+                        "workstation_qr_id": ws_qr
+                    }
+                    redis_client.lpush('queue:amr_tasks', json.dumps(task_fetch))
+                
+                pg_conn.close()
+                return {"success": True, "message": f"작업대 {ws_id}를 창고({ws_loc})에서 포장존(sg2_out_00)으로 이송했습니다."}
+            
+            ws_id, ws_qr = ws_row
+            ws_qr = ws_qr if ws_qr else ""
+            
+            # 2. 해당 작업대에서 아직 포장 안 된(IN_WORKSTATION) 패키지 하나 선택
+            cursor.execute("""
+                SELECT package_id, slot_number, customer_name
+                FROM packages
+                WHERE workstation_id = %s AND status = 'IN_WORKSTATION'
+                ORDER BY slot_number ASC
+                LIMIT 1;
+            """, (ws_id,))
+            pkg_row = cursor.fetchone()
+            
+            if not pkg_row:
+                pg_conn.close()
+                return {"success": False, "message": f"작업대 {ws_id}에 포장할 패키지가 없습니다."}
+            
+            pkg_id, slot_num, cust_name = pkg_row
+            
+            # 3. 포장 완료 처리: 출고 ID 생성 및 상태 COMPLETED로 변경
+            from datetime import datetime
+            outbound_id = f"sg2_out_00_{ws_id}-{slot_num}-{datetime.now().strftime('%Y%m%d%H%M')}"
+            cursor.execute("""
+                UPDATE packages
+                SET status = 'COMPLETED', outbound_id = %s
+                WHERE package_id = %s;
+            """, (outbound_id, pkg_id))
+            
+            # 4. 포장 완료된 슬롯 수 계산
+            cursor.execute("""
+                SELECT COUNT(*) FROM packages
+                WHERE workstation_id = %s AND status = 'COMPLETED';
+            """, (ws_id,))
+            completed_count = cursor.fetchone()[0]
+            
+            # 5. 남은 미포장 패키지 수 확인
+            cursor.execute("""
+                SELECT COUNT(*) FROM packages
+                WHERE workstation_id = %s AND status = 'IN_WORKSTATION';
+            """, (ws_id,))
+            remaining_count = cursor.fetchone()[0]
+            
+            # 6. 7번째 포장 완료 시 → Look-ahead: 다음 포장 대기 작업대 사전 호출
+            lookahead_triggered = False
+            if completed_count == 7 and redis_client:
+                # 창고에 IN_WAREHOUSE 패키지가 있는 작업대 조회
+                cursor.execute("""
+                    SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
+                    FROM workstations w
+                    JOIN packages p ON w.workstation_id = p.workstation_id
+                    WHERE p.status = 'IN_WAREHOUSE'
+                    AND w.workstation_id != %s
+                    LIMIT 1;
+                """, (ws_id,))
+                next_ws_row = cursor.fetchone()
+                
+                if next_ws_row:
+                    next_ws_id, next_ws_loc, next_ws_qr = next_ws_row
+                    next_ws_qr = next_ws_qr if next_ws_qr else ""
+                    
+                    task_data = {
+                        "task_type": "PRE_FETCH_PACKAGING_WORKSTATION",
+                        "workstation_id": next_ws_id,
+                        "from": next_ws_loc,
+                        "to": "sg2_out_00",
+                        "description": f"Look-ahead: {ws_id} 7번째 포장 완료 → 다음 작업대 {next_ws_id} 사전 호출",
+                        "workstation_qr_id": next_ws_qr
+                    }
+                    redis_client.lpush('queue:amr_tasks', json.dumps(task_data))
+                    lookahead_triggered = True
+            
+            # 7. 8번째(마지막) 포장 완료 시 → 작업대 교체: 빈 작업대 회수 + 다음 작업대 배치
+            swap_triggered = False
+            if remaining_count == 0 and redis_client:
+                # 7-1. 포장 완료된 빈 작업대를 창고로 회수
+                cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1;")
+                empty_spot_row = cursor.fetchone()
+                target_spot = empty_spot_row[0] if empty_spot_row else "warehouse"
+                
+                if empty_spot_row:
+                    cursor.execute(
+                        "UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;",
+                        (ws_id, target_spot)
+                    )
+                
+                # 패키지의 workstation 매핑 해제 (포장 완료 후 작업대에서 분리)
+                cursor.execute(
+                    "UPDATE packages SET workstation_id = NULL, slot_number = NULL WHERE workstation_id = %s AND status = 'COMPLETED';",
+                    (ws_id,)
+                )
+                cursor.execute(
+                    "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
+                    (target_spot, ws_id)
+                )
+                
+                task_retrieve = {
+                    "task_type": "RETRIEVE_EMPTY_WORKSTATION",
+                    "workstation_id": ws_id,
+                    "from": "sg2_out_00",
+                    "to": target_spot,
+                    "description": f"포장 완료 빈 작업대 {ws_id} 회수 → {target_spot}",
+                    "workstation_qr_id": ws_qr
+                }
+                redis_client.lpush('queue:amr_tasks', json.dumps(task_retrieve))
+                
+                # 7-2. 다음 작업대를 포장존으로 배치
+                cursor.execute("""
+                    SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
+                    FROM workstations w
+                    JOIN packages p ON w.workstation_id = p.workstation_id
+                    WHERE p.status = 'IN_WAREHOUSE'
+                    AND w.workstation_id != %s
+                    LIMIT 1;
+                """, (ws_id,))
+                next_ws_row = cursor.fetchone()
+                
+                if next_ws_row:
+                    next_ws_id, next_ws_loc, next_ws_qr = next_ws_row
+                    next_ws_qr = next_ws_qr if next_ws_qr else ""
+                    
+                    # 창고 스팟 비우기
+                    if next_ws_loc.startswith('spot_'):
+                        cursor.execute(
+                            "UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;",
+                            (next_ws_loc,)
+                        )
+                    
+                    # 작업대를 포장존으로 이동 + 패키지 상태 복원
+                    cursor.execute("UPDATE workstations SET current_location = 'sg2_out_00' WHERE workstation_id = %s;", (next_ws_id,))
+                    cursor.execute(
+                        "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
+                        (next_ws_id,)
+                    )
+                    
+                    task_deploy = {
+                        "task_type": "DEPLOY_PACKAGING_WORKSTATION",
+                        "workstation_id": next_ws_id,
+                        "from": next_ws_loc,
+                        "to": "sg2_out_00",
+                        "description": f"다음 포장 작업대 {next_ws_id} 배치 → sg2_out_00 (교체)",
+                        "workstation_qr_id": next_ws_qr
+                    }
+                    redis_client.lpush('queue:amr_tasks', json.dumps(task_deploy))
+                
+                swap_triggered = True
+        
+        pg_conn.close()
+        msg = f"📦 {pkg_id} (슬롯 {slot_num}, {cust_name}) 포장 완료! 출고ID: {outbound_id} [{completed_count}/8]"
+        if lookahead_triggered:
+            msg += " (★ Look-ahead: 다음 포장 작업대 사전 호출!)"
+        if swap_triggered:
+            msg += " (🔄 전체 포장 완료! 작업대 교체: 빈 작업대 회수 + 새 작업대 배치)"
+        
         return {"success": True, "message": msg}
     except Exception as e:
         if pg_conn:
@@ -716,6 +1013,9 @@ def index():
             <button class="btn-simulate" onclick="simulateInbound()">
                 <span>⚡</span> 시뮬레이션 적재 발생
             </button>
+            <button class="btn-packaging" onclick="simulatePackaging()" style="background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); border: none; color: #000; box-shadow: 0 4px 15px rgba(245, 158, 11, 0.25);">
+                <span>📦</span> 시뮬레이션 포장 수행
+            </button>
             <button class="btn-reset" onclick="resetDatabase()">
                 <span>🔄</span> 데이터베이스 초기화
             </button>
@@ -789,6 +1089,22 @@ def index():
         async function simulateInbound() {
             try {
                 const response = await fetch('/api/simulate', { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    showToast(data.message);
+                    fetchStatus();
+                } else {
+                    showToast("❌ Error: " + data.message);
+                }
+            } catch (err) {
+                showToast("❌ API 통신 오류 발생");
+            }
+        }
+
+        // 1-2. 모의 포장 이벤트 트리거
+        async function simulatePackaging() {
+            try {
+                const response = await fetch('/api/simulate_packaging', { method: 'POST' });
                 const data = await response.json();
                 if (data.success) {
                     showToast(data.message);

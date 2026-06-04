@@ -114,6 +114,16 @@
   * `generate_all_qr_codes.py` 및 `add_all_qr_to_usd.py` 내부의 좌표 생성 루프를 수정하여 필터 로직 삽입 완료.
   * 범위 제한 결과 총 격자 마커의 개수가 기존 2,303개에서 **1,813개**로 최적화되었으며, `generate_all_qr_codes.py`를 실행하여 제한된 영역의 QR코드 이미지 자산을 재생성하고, `add_all_qr_to_usd.py`를 사용해 `map.usd` 파일에 격자 평면을 성공적으로 다시 갱신함.
 
+* **15:50** - **인바운드/아웃바운드 작업대 자동 교체(Swap) 시뮬레이션 기능 구현**
+  * `dashboard_server.py`의 `/api/simulate` 엔드포인트에 8번째(마지막) 슬롯 적재 시 **완충 작업대 자동 교체** 로직 추가: 다 찬 작업대를 창고로 회수(`RETRIEVE_FULL_WORKSTATION`)하고 새 빈 작업대를 적재 라인으로 배치(`DEPLOY_EMPTY_WORKSTATION`)하는 AMR 태스크를 Redis 큐에 동시 등록.
+  * 포장 공정 시뮬레이션을 위한 `/api/simulate_packaging` 엔드포인트 신규 추가: 포장존(`sg2_out_00`)에 있는 작업대의 패키지를 한 칸씩 포장 완료 처리하며, 7번째 포장 시 Look-ahead(`PRE_FETCH_PACKAGING_WORKSTATION`), 전체 포장 완료 시 빈 작업대 회수(`RETRIEVE_EMPTY_WORKSTATION`) + 다음 작업대 배치(`DEPLOY_PACKAGING_WORKSTATION`) 교체 루프를 자동 수행.
+  * 대시보드 UI에 **[📦 시뮬레이션 포장 수행]** 버튼 추가 및 JavaScript 핸들러 연결.
+  * 브라우저 테스트를 통해 적재 8회 → 작업대 교체(WS01→창고, WS02→적재라인) → 포장 호출(WS01→포장존) 전체 사이클이 정상 동작함을 검증 완료.
 
+* **18:00** - **통합 로봇 에뮬레이션 시나리오 구축 및 ROS2 멀티스레딩 데드락 핫픽스 완료**
+  * `scratch/run_full_simulation_robot.py` 스크립트를 구현하여 실제 물리 로봇과 AMR 장비 없이도 관제탑 노드와 로컬 DB/Redis를 연동해 전체 물류 라이프사이클(적재 -> Look-ahead 사전이송 -> Swap -> 포장 -> 회수)을 시연/검증 가능한 통합 가상 로봇 노드를 탑재함.
+  * 백그라운드 스레드에서 `spin_until_future_complete` 서비스 호출 시 발생하던 ROS2 내부 스레드 락(Lock)에 의한 **데드락(교착 상태)**을 예방하기 위해 `future.done()` 기반의 논블로킹(Non-blocking) 대기 루프로 구조를 전면 리팩토링.
+  * 7번째 포장 완료 피드백 시점에서 다른 완충 작업대 사전 이송 대상을 조회할 때, `current_location LIKE 'spot_%%'`에 위치한 8개 가득 찬 작업대를 정상 식별하도록 SQL 조인문 교정 및 예외 방어 로직을 `control_tower_node.py`에 적용.
+  * 사용자 터미널 수동 실행을 돕기 위해 로컬 도커 기동 권한 우회(`sudo docker-compose`), 대시보드 포트 충돌 시 프로세스 종료(`fuser -k`), ROS2 Humble setup 소싱을 포괄하는 단계별 가이드를 수립하여 가이드 문서에 통합.
 
 

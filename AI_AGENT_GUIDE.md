@@ -22,17 +22,17 @@ graph TD
 
 ---
 
-## 🏷️ 2. ArUco 및 QR코드 식별자 매핑 규격
+## 🏷️ 2. QR코드 식별자 매핑 규격
 
-시스템의 물리적 개체 식별 및 자율 격자 주행을 위해 ArUco 마커와 QR코드를 혼합 사용하여 식별합니다.
+시스템의 물리적 개체 식별 및 자율 격자 주행을 위해 QR코드를 사용하여 식별합니다.
 
-### ① ArUco 마커 식별자 매핑 (고정 설비용)
-| 대상군 (Entities) | ArUco 마커 ID 범위 | 매핑되는 식별자 형태 (DB) | 비고 |
+### ① 고정 설비 (Robots & Workstations)
+| 대상군 (Entities) | QR코드 ID 포맷 (qr_id) | 매핑되는 식별자 형태 (DB) | 비고 |
 | :--- | :--- | :--- | :--- |
-| **로봇 (Robots)** | `1` ~ `5` | `bg2`, `sg2_in_01~03`, `sg2_out_00` | 로봇 타입 및 역할 식별 |
-| **작업대 (Workstations)** | `11` ~ `20` | `WS01` ~ `WS10` | 2x4 적재 플레이트 (총 10대) |
+| **로봇 (Robots)** | `ROBOT_{robot_id}` | `bg2`, `sg2_in_01~03`, `sg2_out_00` | 로봇 타입 및 역할 식별 |
+| **작업대 (Workstations)** | `WORKSTATION_{workstation_id}` | `WS01` ~ `WS10` | 2x8 적재 플레이트 (총 10대) |
 
-### ② QR코드 식별자 매핑 (유동 박스/위치 격자용)
+### ② 유동 객체 및 위치 격자 (Packages, Slots, Floor Grid)
 | 대상군 (Entities) | QR 인코딩 포맷 | 설명 | 개수/비고 |
 | :--- | :--- | :--- | :--- |
 | **상자 (Packages)** | `PKG_RAND_XXX` | 입고되는 개별 택배 박스 | 유동적 생성 |

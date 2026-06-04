@@ -7,52 +7,48 @@
 
 ---
 
-## 📌 1. ArUco 및 QR코드 식별자 매핑 테이블
+## 📌 1. QR코드 및 식별자 매핑 테이블
 
-
-물리적으로 장착될 마커 번호와 데이터베이스의 ID 매핑 현황입니다. 중복되지 않도록 고유 번호를 유지해야 합니다.
+물리적으로 인식할 QR코드 ID와 데이터베이스의 ID 매핑 현황입니다. 중복되지 않도록 고유 형식을 유지해야 합니다.
 
 ### ① 로봇 (Robots)
-| 로봇 문자열 ID (`robot_id`) | 로봇 종류 (`robot_type`) | ArUco 마커 ID (`aruco_id`) |
+| 로봇 문자열 ID (`robot_id`) | 로봇 종류 (`robot_type`) | QR코드 ID (`qr_id`) |
 | :--- | :--- | :--- |
-| **`bg2`** | 컨베이어 분류기 (CONVEYOR_SORTER) | **`1`** |
-| **`sg2_in_01`** | 적재 로봇 (MANIPULATOR) | **`2`** |
-| **`sg2_in_02`** | 적재 로봇 (MANIPULATOR) | **`3`** |
-| **`sg2_in_03`** | 적재 로봇 (MANIPULATOR) | **`4`** |
-| **`sg2_out_00`** | 포장 로봇 (MANIPULATOR) | **`5`** |
+| **`bg2`** | 컨베이어 분류기 (CONVEYOR_SORTER) | **`ROBOT_bg2`** |
+| **`sg2_in_01`** | 적재 로봇 (MANIPULATOR) | **`ROBOT_sg2_in_01`** |
+| **`sg2_in_02`** | 적재 로봇 (MANIPULATOR) | **`ROBOT_sg2_in_02`** |
+| **`sg2_in_03`** | 적재 로봇 (MANIPULATOR) | **`ROBOT_sg2_in_03`** |
+| **`sg2_out_00`** | 포장 로봇 (MANIPULATOR) | **`ROBOT_sg2_out_00`** |
 
 ### ② 작업대 (Workstations)
-| 작업대 문자열 ID (`workstation_id`) | 초기 위치 (`current_location`) | ArUco 마커 ID (`aruco_id`) |
+| 작업대 문자열 ID (`workstation_id`) | 초기 위치 (`current_location`) | QR코드 ID (`qr_id`) |
 | :--- | :--- | :--- |
-| **`WS01`** | `spot_01` (창고 주차 스팟 1) | **`11`** |
-| **`WS02`** | `spot_02` (창고 주차 스팟 2) | **`12`** |
-| **`WS03`** | `spot_03` (창고 주차 스팟 3) | **`13`** |
-| **`WS04`** | `spot_04` (창고 주차 스팟 4) | **`14`** |
-| **`WS05`** | `spot_05` (창고 주차 스팟 5) | **`15`** |
-| **`WS06`** | `spot_06` (창고 주차 스팟 6) | **`16`** |
-| **`WS07`** | `spot_07` (창고 주차 스팟 7) | **`17`** |
-| **`WS08`** | `spot_08` (창고 주차 스팟 8) | **`18`** |
-| **`WS09`** | `spot_09` (창고 주차 스팟 9) | **`19`** |
-| **`WS10`** | `spot_10` (창고 주차 스팟 10) | **`20`** |
+| **`WS01`** | `spot_01` (창고 주차 스팟 1) | **`WORKSTATION_WS01`** |
+| **`WS02`** | `spot_02` (창고 주차 스팟 2) | **`WORKSTATION_WS02`** |
+| **`WS03`** | `spot_03` (창고 주차 스팟 3) | **`WORKSTATION_WS03`** |
+| **`WS04`** | `spot_04` (창고 주차 스팟 4) | **`WORKSTATION_WS04`** |
+| **`WS05`** | `spot_05` (창고 주차 스팟 5) | **`WORKSTATION_WS05`** |
+| **`WS06`** | `spot_06` (창고 주차 스팟 6) | **`WORKSTATION_WS06`** |
+| **`WS07`** | `spot_07` (창고 주차 스팟 7) | **`WORKSTATION_WS07`** |
+| **`WS08`** | `spot_08` (창고 주차 스팟 8) | **`WORKSTATION_WS08`** |
+| **`WS09`** | `spot_09` (창고 주차 스팟 9) | **`WORKSTATION_WS09`** |
+| **`WS10`** | `spot_10` (창고 주차 스팟 10) | **`WORKSTATION_WS10`** |
 
-### ③ 기본 등록 택배 (Packages)
-| 택배 ID (`package_id`) | 수령인 (`customer_name`) | 배송 목적지 (`route_zone`) | ArUco 마커 ID (`aruco_id`) |
+### ③ 기본 등록 택배 (Packages) - 일부 예시
+| 택배 ID (`package_id`) | 수령인 (`customer_name`) | 배송 목적지 (`route_zone`) | QR코드 ID (`qr_id`) |
 | :--- | :--- | :--- | :--- |
-| `PKG_RAND_001` | 김철수 | `2026-06-01` | **`101`** |
-| `PKG_RAND_002` | 이영희 | `2026-06-02` | **`102`** |
-| `PKG_RAND_003` | 박민수 | `2026-06-03` | **`103`** |
-| `PKG_RAND_004` | 김철수 | `2026-06-01` | **`104`** |
-| `PKG_RAND_005` | 최독고 | `2026-06-01` | **`105`** |
-| `PKG_RAND_006` | 이영희 | `2026-06-02` | **`106`** |
-| `PKG_RAND_007` | 홍길동 | `2026-06-01` | **`107`** |
-| `PKG_RAND_008` | 김철수 | `2026-06-01` | **`108`** |
+| `PKG_RAND_001` | 김태희 | `2026-06-01` | **`PKG_RAND_001`** |
+| `PKG_RAND_002` | 김철수 | `2026-06-03` | **`PKG_RAND_002`** |
+| `PKG_RAND_003` | 이경규 | `2026-06-01` | **`PKG_RAND_003`** |
+| `PKG_RAND_004` | 유재석 | `2026-06-01` | **`PKG_RAND_004`** |
+| `PKG_RAND_005` | 공유 | `2026-06-01` | **`PKG_RAND_005`** |
 
 ### ④ 작업대 슬롯별 QR코드 식별자 (Slots)
 * **포맷**: `WORKSTATION_WSxx_SLOT_y`
 * **예시**:
   * `WORKSTATION_WS01_SLOT_1` ~ `WORKSTATION_WS01_SLOT_4`
   * ...
-  * `WORKSTATION_WS10_SLOT_1` ~ `WORKSTATION_WS10_SLOT_4`
+  * `WORKSTATION_WS10_SLOT_1` ~ `WORKSTATION_WS10_SLOT_8`
 
 ### ⑤ 바닥 자율주행 격자용 QR코드 식별자 (Floor Grid)
 * **포맷**: `FLOOR_X_{x}_Y_{y}` (실제 월드 좌표 미터 단위 소수점 3자리 매핑)
@@ -69,30 +65,31 @@
 
 ## 🗄️ 2. 데이터베이스(DB) 입력 양식 (SQL)
 
-새로운 객체(로봇, 작업대, 상자)를 DB에 등록하고 마커 번호를 연동할 때 사용하는 템플릿입니다.
+새로운 객체(로봇, 작업대, 상자)를 DB에 등록하고 QR코드 식별자를 연동할 때 사용하는 템플릿입니다.
 
 ```sql
--- 1. 신규 로봇 등록 시 (마커 ID: 6번)
-INSERT INTO robots (robot_id, robot_type, aruco_id) 
-VALUES ('bg3', 'CONVEYOR_SORTER', 6);
+-- 1. 신규 로봇 등록 시 (QR ID: ROBOT_bg3)
+INSERT INTO robots (robot_id, robot_type, qr_id) 
+VALUES ('bg3', 'CONVEYOR_SORTER', 'ROBOT_bg3');
 
--- 2. 신규 작업대 등록 시 (마커 ID: 14번)
-INSERT INTO workstations (workstation_id, current_location, aruco_id) 
-VALUES ('WS04', 'sg2_in_01', 14);
+-- 2. 신규 작업대 등록 시 (QR ID: WORKSTATION_WS11)
+INSERT INTO workstations (workstation_id, current_location, qr_id) 
+VALUES ('WS11', 'spot_01', 'WORKSTATION_WS11');
 
--- 3. 신규 택배 등록 시 (마커 ID: 109번)
-INSERT INTO packages (package_id, customer_name, route_zone, status, aruco_id) 
-VALUES ('PKG_RAND_009', '이순신', '2026-06-01', 'WAITING', 109);
+-- 3. 신규 택배 등록 시 (QR ID: PKG_RAND_100)
+INSERT INTO packages (package_id, customer_name, route_zone, status, qr_id) 
+VALUES ('PKG_RAND_100', '이순신', '2026-06-01', 'WAITING', 'PKG_RAND_100');
 ```
 
 ---
 
+
 ## 💻 3. ROS2 로봇 노드 통신 코드 예시 (Python)
 
-로봇이 카메라 센서로부터 ArUco 마커 ID를 입력받아 관제탑 노드로 서비스 및 액션 요청을 보낼 때 사용하는 코드 예제입니다.
+로봇이 카메라 센서로부터 QR코드를 디코딩한 후 관제탑 노드로 서비스 및 액션 요청을 보낼 때 사용하는 코드 예제입니다.
 
 ### ① 택배 분류 목적지 요청 (`GetPackageRoute`)
-컨베이어 분류 로봇(`bg2`)이 박스의 ArUco 마커를 찍은 후 목적지를 받아옵니다.
+컨베이어 분류 로봇(`bg2`)이 박스의 QR코드를 찍은 후 목적지를 받아옵니다.
 ```python
 from cobot3_interfaces.srv import GetPackageRoute
 
@@ -100,10 +97,10 @@ from cobot3_interfaces.srv import GetPackageRoute
 client = node.create_client(GetPackageRoute, 'get_package_route')
 request = GetPackageRoute.Request()
 
-# 스캔한 ArUco ID(101)와 기타 정보를 입력
-request.aruco_id = 101       # 필수: 박스의 ArUco 마커 ID
-request.package_id = ""      # 옵션
-request.customer_name = ""   # 옵션
+# 스캔한 QR코드 문자열과 기타 정보를 입력
+request.qr_id = "PKG_RAND_001"   # 필수: 박스의 QR코드 ID (카메라 디코딩 결과)
+request.package_id = ""          # 옵션 (QR ID가 있으면 자동 매핑)
+request.customer_name = ""       # 옵션
 
 # 비동기 호출
 future = client.call_async(request)
@@ -117,10 +114,10 @@ from cobot3_interfaces.srv import CheckWarehouseStatus
 client = node.create_client(CheckWarehouseStatus, 'check_warehouse_status')
 request = CheckWarehouseStatus.Request()
 
-# 적재 전 상자의 ArUco ID(101)를 입력
-request.aruco_id = 101       # 필수: 검사 대상 상자의 ArUco 마커 ID
-request.package_id = ""      # 옵션
-request.customer_name = ""   # 옵션
+# 적재 전 상자의 QR코드 ID를 입력
+request.qr_id = "PKG_RAND_001"   # 필수: 검사 대상 상자의 QR코드 ID
+request.package_id = ""          # 옵션
+request.customer_name = ""       # 옵션
 
 future = client.call_async(request)
 ```
@@ -133,13 +130,13 @@ from cobot3_interfaces.srv import ReportInboundProgress
 client = node.create_client(ReportInboundProgress, 'report_inbound_progress')
 request = ReportInboundProgress.Request()
 
-# 작업대 및 박스의 ArUco ID를 각각 입력
-request.workstation_aruco_id = 11  # 필수: 작업대의 ArUco 마커 ID (예: WS01)
-request.package_aruco_id = 101     # 필수: 적재한 박스의 ArUco 마커 ID (예: PKG_RAND_001)
-request.filled_slots_count = 1     # 필수: 현재 채워진 칸의 개수 (1~8)
-request.robot_id = "sg2_in_01"     # 필수: 보고하는 로봇의 문자열 ID
-request.workstation_id = ""        # 옵션
-request.package_id = ""            # 옵션
+# 작업대 및 박스의 QR코드 ID를 각각 입력
+request.workstation_qr_id = "WORKSTATION_WS01"  # 필수: 작업대의 QR코드 ID
+request.package_qr_id = "PKG_RAND_001"          # 필수: 적재한 박스의 QR코드 ID
+request.filled_slots_count = 1                   # 필수: 현재 채워진 칸의 개수 (1~8)
+request.robot_id = "sg2_in_01"                   # 필수: 보고하는 로봇의 문자열 ID
+request.workstation_id = ""                      # 옵션 (QR ID가 있으면 자동 매핑)
+request.package_id = ""                          # 옵션
 
 future = client.call_async(request)
 ```
@@ -160,4 +157,5 @@ def detect_and_decode_qr(frame):
             return barcode.text
     return None
 ```
+
 
