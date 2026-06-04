@@ -49,7 +49,7 @@
 ---
 
 ### ③ `ReportInboundProgress.srv`
-적재 매니퓰레이터(`sg2_in_XX`)가 2x2 작업대에 상자를 안전하게 얹어놓을 때마다 관제 센터로 진척도를 실시간 보고합니다.
+적재 매니퓰레이터(`sg2_in_XX`)가 2x4 작업대에 상자를 안전하게 얹어놓을 때마다 관제 센터로 진척도를 실시간 보고합니다.
 
 * **변경 내역 (Request)**:
   * `int32 workstation_aruco_id` 추가 (작업대 마커 번호)
@@ -59,7 +59,7 @@
 | :--- | :--- | :--- | :--- | :--- |
 | **Request** | `workstation_id` | `string` | 유지 | 작업대 고유 ID (기본값: 공백 허용) |
 | | `robot_id` | `string` | 유지 | 적재를 보고하는 로봇 식별자 (예: `'sg2_in_01'`) |
-| | `filled_slots_count` | `int32` | 유지 | 적재된 슬롯 위치 번호 (`1` ~ `4`) |
+| | `filled_slots_count` | `int32` | 유지 | 적재된 슬롯 위치 번호 (`1` ~ `8`) |
 | | `package_id` | `string` | 유지 | 적재한 패키지 ID (기본값: 공백 허용) |
 | | **`workstation_aruco_id`** | **`int32`** | **신규 추가** | **적재 중인 작업대의 ArUco 마커 번호 (예: 11)** |
 | | **`package_aruco_id`** | **`int32`** | **신규 추가** | **적재된 상자의 ArUco 마커 번호 (예: 101)** |
@@ -104,7 +104,7 @@ AMR에게 작업대를 다른 공정존이나 보관용 창고로 이송하도�
 ---
 
 ### ③ `StartPackaging.action`
-포장 로봇(`sg2_out_00`)에게 특정 작업대에 도달한 상자 4칸의 포장 공정을 명령합니다.
+포장 로봇(`sg2_out_00`)에게 특정 작업대에 도달한 상자 8칸의 포장 공정을 명령합니다.
 
 * **변경 내역 (Goal)**:
   * `int32 workstation_aruco_id` 추가 (작업대 마커 번호)
@@ -116,5 +116,5 @@ AMR에게 작업대를 다른 공정존이나 보관용 창고로 이송하도�
 | | **`workstation_aruco_id`** | **`int32`** | **신규 추가** | **작업대 고유 ArUco 마커 ID (예: 11)** |
 | **Result** | `success` | `bool` | 유지 | 포장 공정 완료 여부 |
 | | `final_output_ids` | `string[]` | 유지 | 생성된 고유 출고 ID 리스트 (포장 로봇 ID prefix 포함) |
-| **Feedback**| `completed_slots` | `int32` | 유지 | 현재 포장 완료된 슬롯 누적 갯수 (1~4) |
+| **Feedback**| `completed_slots` | `int32` | 유지 | 현재 포장 완료된 슬롯 누적 갯수 (1~8) |
 | | `last_packed_slot` | `int32` | 유지 | 직전에 포장 완료된 슬롯 번호 |

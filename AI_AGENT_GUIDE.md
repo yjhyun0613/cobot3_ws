@@ -30,13 +30,13 @@ graph TD
 | 대상군 (Entities) | ArUco 마커 ID 범위 | 매핑되는 식별자 형태 (DB) | 비고 |
 | :--- | :--- | :--- | :--- |
 | **로봇 (Robots)** | `1` ~ `5` | `bg2`, `sg2_in_01~03`, `sg2_out_00` | 로봇 타입 및 역할 식별 |
-| **작업대 (Workstations)** | `11` ~ `20` | `WS01` ~ `WS10` | 2x2 적재 플레이트 (총 10대) |
+| **작업대 (Workstations)** | `11` ~ `20` | `WS01` ~ `WS10` | 2x4 적재 플레이트 (총 10대) |
 
 ### ② QR코드 식별자 매핑 (유동 박스/위치 격자용)
 | 대상군 (Entities) | QR 인코딩 포맷 | 설명 | 개수/비고 |
 | :--- | :--- | :--- | :--- |
 | **상자 (Packages)** | `PKG_RAND_XXX` | 입고되는 개별 택배 박스 | 유동적 생성 |
-| **작업대 슬롯 (Slots)** | `WORKSTATION_WSxx_SLOT_y` | 각 작업대의 2x2 슬롯 개별 식별용 | 총 40개 (`WS01_SLOT_1` ~ `WS10_SLOT_4`) |
+| **작업대 슬롯 (Slots)** | `WORKSTATION_WSxx_SLOT_y` | 각 작업대의 2x4 슬롯 개별 식별용 | 총 80개 (`WS01_SLOT_1` ~ `WS10_SLOT_8`) |
 | **바닥 격자 (Floor Grid)** | `FLOOR_X_{x}_Y_{y}` | AMR 격자 주행용 미터법 절대 좌표 마커 | 총 1,813개 (간격 1.5m, 창고 영역 내 제한) |
 
 ---
@@ -46,7 +46,7 @@ graph TD
 
 ### ① PostgreSQL 테이블 구조
 * **`robots`**: 관제 대상 로봇 식별 정보.
-* **`workstations`**: 작업대 실시간 위치 및 4개 슬롯 점유 현황.
+* **`workstations`**: 작업대 실시간 위치 및 8개 슬롯 점유 현황.
 * **`warehouse_locations`**: 창고 내 10개 주차 스팟(`spot_01` ~ `spot_10`)의 실시간 점유 상태.
 * **`packages`**: 택배 상태(`WAITING`, `IN_WORKSTATION`, `IN_WAREHOUSE`, `COMPLETED`) 및 이력.
 
@@ -74,7 +74,7 @@ erDiagram
 
 ### ② Look-ahead (사전 예비 배치) 메커니즘
 * **인바운드 적재 대기**:
-  * 특정 작업대의 **3번째 슬롯**에 상자가 적재되면, 관제탑은 창고 스팟(`spot_XX`)에 대기 중인 작업대 중 **4개 슬롯이 전부 비어있는 작업대**를 찾아 해당 적재 로봇 뒤로 미리 배치하도록 AMR 명령을 수행합니다.
+  * 특정 작업대의 **7번째 슬롯**에 상자가 적재되면, 관제탑은 창고 스팟(`spot_XX`)에 대기 중인 작업대 중 **8개 슬롯이 전부 비어있는 작업대**를 찾아 해당 적재 로봇 뒤로 미리 배치하도록 AMR 명령을 수행합니다.
 * **아웃바운드 포장 대기**:
   * 포장 완료 직전(마지막 1칸 남음)에 창고에 대기 중인 꽉 찬 작업대를 포장 로봇 앞으로 즉시 예비 이송시킵니다.
 
@@ -136,7 +136,7 @@ python3 scratch/run_qr_simulation_test.py
 
 ### ⑥ Isaac Sim USD 맵 QR코드 생성 및 배치
 ```bash
-# 1. 1,813개 바닥 격자 및 40개 슬롯 QR 이미지 생성
+# 1. 1,813개 바닥 격자 및 80개 슬롯 QR 이미지 생성
 python3 scratch/generate_all_qr_codes.py
 
 # 2. map.usd 파일에 1,813개 바닥 QR코드 메쉬/텍스처 자동 생성 및 매핑 (Isaac Sim Python 필요)

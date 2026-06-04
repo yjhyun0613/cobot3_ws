@@ -13,9 +13,9 @@
 > **적용 완료**: 2026년 6월 3일 구현 완료. `workstations` 테이블의 중복 슬롯 정보가 `packages` 테이블의 외래키 정보로 통합 정규화되었습니다.
 
 ### 1.1 현재 문제점
-* `workstations` 테이블에 1~4번 슬롯의 수령인 및 상태 컬럼(`slot_X_customer`, `slot_X_status`)을 컬럼 형태로 직접 정의함.
+* `workstations` 테이블에 1~8번 슬롯의 수령인 및 상태 컬럼(`slot_X_customer`, `slot_X_status`)을 컬럼 형태로 직접 정의함.
 * `packages` 테이블 역시 `workstation_id`와 `slot_number`를 가지고 있어 **데이터 중복 및 불일치 위험**이 존재함.
-* 4칸 외에 슬롯 개수가 변경(예: 3x3 layout)될 경우 DB 스키마 및 쿼리 전체를 수정해야 하므로 확장성이 떨어짐.
+* 8칸 외에 슬롯 개수가 변경(예: 3x3 layout)될 경우 DB 스키마 및 쿼리 전체를 수정해야 하므로 확장성이 떨어짐.
 
 ### 1.2 개선 방향
 * `workstations` 테이블의 슬롯별 상세 정보 컬럼들을 삭제하고, **작업대 고유 식별자(`workstation_id`) 및 실시간 물리 위치(`current_location`) 정보만 유지**함.
@@ -36,7 +36,7 @@ ORDER BY slot_number;
 > [!NOTE]
 > **적용 완료**: 2026년 6월 4일 구현 완료. 
 > - 패키지 및 설비용 QR코드 자동 생성 패키지(`scratch/qr_handler.py`)와 종단간 테스트(`scratch/run_qr_simulation_test.py`) 완료.
-> - `warehouse.yaml` 기반 월드 좌표계 파싱 및 1,813개 바닥 격자/40개 작업대 슬롯 QR코드 일괄 생성 완료 (`scratch/generate_all_qr_codes.py`).
+> - `warehouse.yaml` 기반 월드 좌표계 파싱 및 1,813개 바닥 격자/80개 작업대 슬롯 QR코드 일괄 생성 완료 (`scratch/generate_all_qr_codes.py`).
 > - Isaac Sim `map.usd` 내 1,813개 바닥 QR코드 메쉬/재질 자동 배치 완료 (`scratch/add_all_qr_to_usd.py`).
 > - 바닥 글레어 현상 방지용 환경광(DomeLight) 보강 및 조명 최적화 완료 (`scratch/adjust_usd_lighting.py`).
 
@@ -47,7 +47,7 @@ ORDER BY slot_number;
 * **바닥 격자 마커 (Floor Grid)**: 
   * 맵 설정(`warehouse.yaml`) 및 사용자 지정 창고 영역 경계 제한(X: [-38.0, 38.0], Y: [-36.08472, 25.0])을 적용하여 1.5m 간격으로 1,813개의 격자점 좌표를 산출.
   * 각 격자의 실제 미터법 좌표 값(예: `FLOOR_X_-34.775_Y_-29.025`)을 인코딩한 QR코드를 일괄 생성.
-* **작업대 슬롯 마커 (Slots)**: 10개 작업대의 슬롯별 식별자(예: `WORKSTATION_WS01_SLOT_1` ~ `WORKSTATION_WS10_SLOT_4`, 총 40개) 생성 완료.
+* **작업대 슬롯 마커 (Slots)**: 10개 작업대의 슬롯별 식별자(예: `WORKSTATION_WS01_SLOT_1` ~ `WORKSTATION_WS10_SLOT_8`, 총 80개) 생성 완료.
 
 ### 2.2 USD 3D 맵 매핑 및 시각화
 * Isaac Sim의 `SimulationApp` 및 Pixar USD (`pxr`) API를 이용해 `src/cobot3/resource/map.usd` 맵 상에 1,813개의 30cm 크기의 격자 메쉬(Plane)와 개별 QR 텍스처를 바인딩한 재질(Material)을 자동 배치하여 맵을 갱신하였습니다.

@@ -126,7 +126,7 @@ future = client.call_async(request)
 ```
 
 ### ③ 적재 완료 및 진척도 보고 (`ReportInboundProgress`)
-적재 로봇(`sg2_in_XX`)이 2x2 작업대에 상자를 안전하게 적재했을 때 이를 보고합니다.
+적재 로봇(`sg2_in_XX`)이 2x4 작업대에 상자를 안전하게 적재했을 때 이를 보고합니다.
 ```python
 from cobot3_interfaces.srv import ReportInboundProgress
 
@@ -136,7 +136,7 @@ request = ReportInboundProgress.Request()
 # 작업대 및 박스의 ArUco ID를 각각 입력
 request.workstation_aruco_id = 11  # 필수: 작업대의 ArUco 마커 ID (예: WS01)
 request.package_aruco_id = 101     # 필수: 적재한 박스의 ArUco 마커 ID (예: PKG_RAND_001)
-request.filled_slots_count = 1     # 필수: 현재 채워진 칸의 개수 (1~4)
+request.filled_slots_count = 1     # 필수: 현재 채워진 칸의 개수 (1~8)
 request.robot_id = "sg2_in_01"     # 필수: 보고하는 로봇의 문자열 ID
 request.workstation_id = ""        # 옵션
 request.package_id = ""            # 옵션
