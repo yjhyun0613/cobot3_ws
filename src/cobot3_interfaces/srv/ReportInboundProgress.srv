@@ -1,7 +1,7 @@
 # Request: 적재 진척도 보고
 string workstation_id      # 현재 적재 중인 작업대 ID
 string robot_id            # 보고하는 로봇 ID (예: "sg2_in_01")
-int32 filled_slots_count   # 현재 채워진 칸의 개수 (1 ~ 4)
+int32 filled_slots_count   # 현재 채워진 칸의 개수 (1 ~ 8)
 string package_id          # 적재된 택배 ID
 string workstation_qr_id   # 작업대 QR코드 ID
 string package_qr_id       # 적재된 택배 QR코드 ID

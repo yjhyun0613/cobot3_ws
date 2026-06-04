@@ -120,16 +120,17 @@ erDiagram
   }
   ```
 
-### ② AMR 비동기 제어 명령 대기열 (Queue / List Type)
+### ② AMR 비동기 제어 명령 대기열 (Priority Queue / Sorted Set Type)
 * **키 형식**: `queue:amr_tasks`
-* **관리 데이터**: 관제 센터 스케줄러가 AMR에 순차적으로 이송 명령을 보낼 때 저장되는 JSON 배열 데이터입니다.
+* **관리 데이터**: 관제 센터 스케줄러가 AMR에 우선순위 점수(Score)와 함께 비동기로 명령을 적재할 때 사용하는 Sorted Set 구조의 멤버(JSON 문자열)입니다. 중복 방지를 위해 고유한 `uuid`가 딕셔너리 내에 포함됩니다.
   ```json
   {
       "task_type": "PRE_FETCH_WORKSTATION", // 태스크 종류
       "workstation_id": "WS01",
       "from": "sg2_in_01",
       "to": "sg2_out_00",
-      "workstation_aruco_id": 11
+      "workstation_qr_id": "WORKSTATION_WS01",
+      "uuid": "4e7b8f9e-2b1d-4007-9890-e78a06db3d49"
   }
   ```
 

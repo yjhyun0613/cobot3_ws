@@ -9,7 +9,7 @@
 
 ## 📌 1. 시스템 아키텍처 개요
 
-본 시스템은 **ROS2 Humble**, **PostgreSQL(관계형 DB)**, 및 **Redis(메시지 큐)**를 결합하여 구성한 **쿠팡 물류창고 자동 분류 및 적재 관제 센터(Control Tower)**입니다.
+본 시스템은 **ROS2 Humble**, **PostgreSQL(관계형 DB)**, 및 **Redis(우선순위 큐)**를 결합하여 구성한 **쿠팡 물류창고 자동 분류 및 적재 관제 센터(Control Tower)**입니다.
 
 ```mermaid
 graph TD
@@ -17,7 +17,7 @@ graph TD
     Inbound[sg2_in_XX: 적재 로봇] -->|CheckWarehouseStatus / ReportInbound| CT
     Outbound[sg2_out_00: 포장 로봇] -->|StartPackaging| CT
     CT <-->|SQL / Real-time Query| DB[(PostgreSQL)]
-    CT <-->|LPUSH / RPOP Tasks| Redis[(Redis Command Queue)]
+    CT <-->|ZADD / ZPOPMAX Priority Tasks| Redis[(Redis Command Queue)]
 ```
 
 ---
@@ -72,9 +72,11 @@ erDiagram
 * **작업대가 창고에서 출고될 때 (`start.startswith('spot_')`)**:
   1. 출발지 스팟 정보를 `status = 'EMPTY'`, `workstation_id = NULL`로 변경하여 즉시 빈 자리로 해제합니다.
 
-### ② Look-ahead (사전 예비 배치) 메커니즘
-* **인바운드 적재 대기**:
-  * 특정 작업대의 **7번째 슬롯**에 상자가 적재되면, 관제탑은 창고 스팟(`spot_XX`)에 대기 중인 작업대 중 **8개 슬롯이 전부 비어있는 작업대**를 찾아 해당 적재 로봇 뒤로 미리 배치하도록 AMR 명령을 수행합니다.
+### ② Look-ahead (사전 예비 배치) 및 A/B 이중 버퍼 메커니즘
+* **인바운드 적재 대기 및 승격 (Promotion)**:
+  * 각 적재 로봇 라인은 활성 적재 구역인 **A 구역 (`sg2_in_XX_A`)**과 예비 대기 구역인 **B 구역 (`sg2_in_XX_B`)**의 이중 버퍼 레이아웃을 사용합니다.
+  * A 구역 작업대의 **3번째 슬롯**에 상자가 적재되면, 관제탑은 창고 스팟(`spot_XX`)에서 빈 작업대를 찾아 해당 라인의 **B 구역 (`sg2_in_XX_B`)**으로 미리 호출(`PRE_FETCH_EMPTY_WORKSTATION`)합니다.
+  * A 구역 작업대가 8개 가득 차 완충되면 포장존 또는 창고로 회수되고, B 구역에 대기 중이던 예비 작업대가 자동으로 A 구역으로 승격(`DEPLOY_EMPTY_WORKSTATION`)되어 공정이 연속적으로 진행됩니다.
 * **아웃바운드 포장 대기**:
   * 포장 완료 직전(마지막 1칸 남음)에 창고에 대기 중인 꽉 찬 작업대를 포장 로봇 앞으로 즉시 예비 이송시킵니다.
 
@@ -126,13 +128,10 @@ python3 scratch/dashboard_server.py
 
 ### ⑤ 모의 시뮬레이션 시나리오 테스트
 ```bash
-# 기본 ArUco 시뮬레이션 테스트
-python3 scratch/run_simulation_test.py
-
-# 신규 QR코드 비전 해독 시뮬레이션 테스트
-python3 scratch/run_qr_simulation_test.py
+# 통합 패키지 분류 및 A/B 이중 버퍼/Look-ahead 검증 시뮬레이션 실행
+python3 scratch/run_full_simulation_robot.py
 ```
-* ROS2 통신을 모의하여 관제탑 노드가 정상적으로 반응하고 Redis 큐에 태스크를 삽입하는지 검증합니다.
+* ROS2 Humble 환경 및 DB/Redis 연동 하에 각 분류 상자 입고, A/B 구역 간 작업대 승격, Look-ahead 및 포장 회수 전 과정을 검증합니다.
 
 ### ⑥ Isaac Sim USD 맵 QR코드 생성 및 배치
 ```bash

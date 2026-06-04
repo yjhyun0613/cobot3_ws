@@ -31,6 +31,37 @@ def get_db_connections():
         print(f"DB Connection Error: {e}")
         return None, None
 
+def get_task_priority(task_type):
+    """태스크 종류별 우선순위 점수 반환"""
+    if task_type in ['DIRECT_WAREHOUSE', 'RETRIEVE_FULL_WORKSTATION', 'ROTATE_WORKSTATION']:
+        return 100
+    elif task_type == 'DEPLOY_EMPTY_WORKSTATION':
+        return 90
+    elif task_type in ['DEPLOY_PACKAGING_WORKSTATION', 'FETCH_FOR_PACKAGING']:
+        return 80
+    elif task_type == 'PRE_FETCH_PACKAGING_WORKSTATION':
+        return 70
+    elif task_type == 'PRE_FETCH_EMPTY_WORKSTATION':
+        return 50
+    elif task_type == 'RETRIEVE_EMPTY_WORKSTATION':
+        return 20
+    return 30
+
+def push_priority_task(redis_client, task_dict):
+    """AMR 태스크를 Redis Sorted Set 기반 우선순위 큐에 추가"""
+    import uuid
+    task_dict['uuid'] = str(uuid.uuid4())
+    task_type = task_dict.get('task_type', 'TASK')
+    score = get_task_priority(task_type)
+    if redis_client:
+        try:
+            redis_client.zadd('queue:amr_tasks', {json.dumps(task_dict): score})
+        except Exception as e:
+            if "WRONGTYPE" in str(e):
+                redis_client.delete('queue:amr_tasks')
+                redis_client.zadd('queue:amr_tasks', {json.dumps(task_dict): score})
+
+
 @app.get("/api/status")
 def get_status():
     pg_conn, redis_client = get_db_connections()
@@ -102,18 +133,21 @@ def get_status():
                     "qr_id": row[7]
                 })
                 
-        # 4. Redis Active Queue Tasks
+        # 4. Redis Active Queue Tasks (Sorted Set, 내림차순 조회)
         redis_tasks = []
         if redis_client:
             try:
-                # Redis 큐 'queue:amr_tasks' 에 쌓인 전체 데이터 조회 (비파괴적)
-                tasks_raw = redis_client.lrange('queue:amr_tasks', 0, -1)
-                for t in tasks_raw:
+                tasks_raw = redis_client.zrevrange('queue:amr_tasks', 0, -1, withscores=True)
+                for t_raw, score in tasks_raw:
                     try:
-                        redis_tasks.append(json.loads(t))
+                        task_item = json.loads(t_raw)
+                        task_item['priority_score'] = int(score)
+                        redis_tasks.append(task_item)
                     except:
-                        redis_tasks.append({"raw_task": t})
+                        redis_tasks.append({"raw_task": t_raw, "priority_score": int(score)})
             except Exception as re:
+                if "WRONGTYPE" in str(re):
+                    redis_client.delete('queue:amr_tasks')
                 print(f"Redis Queue Query Error: {re}")
 
         pg_conn.close()
@@ -174,23 +208,43 @@ def simulate_inbound():
             
             pkg_id, cust_name, zone, pkg_qr = pkg_row
             
-            # 2. 현재 적재 대기 중인(예: sg2_in_01에 있는) 작업대 찾기
-            cursor.execute("SELECT workstation_id FROM workstations WHERE current_location = 'sg2_in_01' LIMIT 1;")
+            # 목적지 분류에 따른 대상 로봇 결정
+            if zone == '2026-06-01':
+                target_robot = 'sg2_in_01'
+            elif zone == '2026-06-02':
+                target_robot = 'sg2_in_02'
+            elif zone == '2026-06-03':
+                target_robot = 'sg2_in_03'
+            else:
+                target_robot = 'sg2_in_01'
+
+            target_loc = f"{target_robot}_A"
+            
+            # 2. 해당 로봇의 A 구역에 작업대 찾기
+            cursor.execute("SELECT workstation_id FROM workstations WHERE current_location = %s LIMIT 1;", (target_loc,))
             ws_row = cursor.fetchone()
-            ws_id = "WS01"
             if ws_row:
                 ws_id = ws_row[0]
             else:
-                # 원래 WS01이 위치하고 있던 창고 주차 스팟을 조회해 EMPTY로 비워줍니다.
-                cursor.execute("SELECT spot_id FROM warehouse_locations WHERE workstation_id = 'WS01';")
-                spot_row = cursor.fetchone()
-                if spot_row:
-                    spot_id = spot_row[0]
-                    cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (spot_id,))
-                
-                # WS01을 적재 라인으로 강제 매핑
-                cursor.execute("UPDATE workstations SET current_location = 'sg2_in_01' WHERE workstation_id = 'WS01';")
-                ws_id = "WS01"
+                # 작업대가 없다면, 창고에서 비거나 대기중인 것 중 하나를 배정
+                cursor.execute("""
+                    SELECT workstation_id, current_location FROM workstations 
+                    WHERE current_location LIKE 'spot_%%'
+                    AND workstation_id NOT IN (
+                        SELECT DISTINCT workstation_id FROM packages 
+                        WHERE status = 'IN_WORKSTATION' AND workstation_id IS NOT NULL
+                    ) LIMIT 1;
+                """)
+                empty_ws_row = cursor.fetchone()
+                if empty_ws_row:
+                    ws_id, current_loc = empty_ws_row
+                    # 출발 창고 스팟 비우기
+                    cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (current_loc,))
+                    # A 구역으로 강제 매핑
+                    cursor.execute("UPDATE workstations SET current_location = %s WHERE workstation_id = %s;", (target_loc, ws_id))
+                else:
+                    pg_conn.close()
+                    return {"success": False, "message": f"{target_robot}_A 에 배치할 빈 작업대가 없습니다."}
 
             # 3. 해당 작업대의 다음 빈 슬롯 찾기
             cursor.execute("""
@@ -216,102 +270,153 @@ def simulate_inbound():
                 WHERE package_id = %s;
             """, (ws_id, slot_num, pkg_id))
             
-            # 5. 7번째 슬롯 적재 시 → Look-ahead: 다음 빈 작업대 사전 호출
+            # 5. 3번째 슬롯 적재 시 → Look-ahead: 다음 빈 작업대 사전 호출
             lookahead_triggered = False
-            if slot_num == 7 and redis_client:
+            if slot_num == 3 and redis_client:
                 cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
                 ws_qr = cursor.fetchone()[0]
                 
                 task_data = {
                     "task_type": "PRE_FETCH_EMPTY_WORKSTATION",
-                    "target_robot": "sg2_in_01",
-                    "description": f"Look-ahead: {ws_id} 7번째 슬롯 적재 감지 → 예비 빈 작업대 호출",
+                    "target_robot": target_robot,
+                    "description": f"Look-ahead: {ws_id} 3번째 슬롯 적재 감지 → B구역 예비 작업대 호출",
                     "workstation_qr_id": ws_qr
                 }
-                redis_client.lpush('queue:amr_tasks', json.dumps(task_data))
+                push_priority_task(redis_client, task_data)
                 lookahead_triggered = True
+
+            # 5-1. 4번째 슬롯 적재 시 → 180도 회전 태스크 발행 및 로봇 대기 유도
+            rotation_triggered = False
+            if slot_num == 4 and redis_client:
+                cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
+                ws_qr = cursor.fetchone()[0]
+                
+                # DB 상태를 ROTATING으로 변경하여 로봇 대기 유도
+                cursor.execute(
+                    "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
+                    (f"{target_robot}_A_ROTATING", ws_id)
+                )
+                
+                task_data = {
+                    "task_type": "ROTATE_WORKSTATION",
+                    "workstation_id": ws_id,
+                    "from": f"{target_robot}_A_ROTATING",
+                    "to": target_loc,
+                    "description": f"제자리 회전: {ws_id} 4번째 슬롯 적재 완료 → 180도 회전",
+                    "workstation_qr_id": ws_qr
+                }
+                push_priority_task(redis_client, task_data)
+                rotation_triggered = True
             
-            # 6. 8번째 슬롯 적재 시 → 완충 작업대 교체: 다 찬 작업대 회수 + 새 작업대 교체 배치
+            # 6. 8번째 슬롯 적재 시 → 완충 작업대 교체: 다 찬 작업대 회수 (포장존 또는 창고) + 새 작업대 교체 배치
             swap_triggered = False
             if slot_num == 8 and redis_client:
                 cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
                 ws_qr_row = cursor.fetchone()
                 ws_qr = ws_qr_row[0] if ws_qr_row else ""
                 
-                # 6-1. 다 찬 작업대를 창고로 회수하는 태스크
-                # 빈 창고 스팟 배정
-                cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1;")
-                empty_spot_row = cursor.fetchone()
-                target_spot = empty_spot_row[0] if empty_spot_row else "warehouse"
-                
-                if empty_spot_row:
+                if target_robot == 'sg2_in_01':
+                    # 오늘 날짜 분류 라인 -> 포장존(sg2_out_00)으로 이송
                     cursor.execute(
-                        "UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;",
-                        (ws_id, target_spot)
+                        "UPDATE workstations SET current_location = 'sg2_out_00' WHERE workstation_id = %s;",
+                        (ws_id,)
                     )
-                
-                # 작업대 상태를 IN_WAREHOUSE로 전이, 패키지 상태도 업데이트
-                cursor.execute(
-                    "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE workstation_id = %s AND status = 'IN_WORKSTATION';",
-                    (ws_id,)
-                )
-                cursor.execute(
-                    "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
-                    (target_spot, ws_id)
-                )
-                
-                task_retrieve = {
-                    "task_type": "RETRIEVE_FULL_WORKSTATION",
-                    "workstation_id": ws_id,
-                    "from": "sg2_in_01",
-                    "to": target_spot,
-                    "description": f"완충 작업대 {ws_id} 회수 → {target_spot} 입고",
-                    "workstation_qr_id": ws_qr
-                }
-                redis_client.lpush('queue:amr_tasks', json.dumps(task_retrieve))
-                
-                # 6-2. 새 빈 작업대를 적재 라인으로 가져오기
-                cursor.execute("""
-                    SELECT w.workstation_id, w.current_location, w.qr_id
-                    FROM workstations w
-                    WHERE w.current_location LIKE 'spot_%%'
-                    AND w.workstation_id NOT IN (
-                        SELECT DISTINCT workstation_id FROM packages
-                        WHERE workstation_id IS NOT NULL AND status IN ('IN_WORKSTATION', 'IN_WAREHOUSE')
-                    ) LIMIT 1;
-                """)
-                new_ws_row = cursor.fetchone()
-                if new_ws_row:
-                    new_ws_id, new_ws_loc, new_ws_qr = new_ws_row
-                    new_ws_qr = new_ws_qr if new_ws_qr else ""
+                    task_retrieve = {
+                        "task_type": "RETRIEVE_FULL_WORKSTATION",
+                        "workstation_id": ws_id,
+                        "from": target_loc,
+                        "to": "sg2_out_00",
+                        "description": f"완충 작업대 {ws_id} 회수 → 포장존(sg2_out_00) 이동",
+                        "workstation_qr_id": ws_qr
+                    }
+                else:
+                    # 내일/모레 분류 라인 -> 창고(warehouse)로 이송
+                    # 빈 창고 스팟 배정
+                    cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1;")
+                    empty_spot_row = cursor.fetchone()
+                    target_spot = empty_spot_row[0] if empty_spot_row else "warehouse"
                     
-                    # 새 작업대를 적재 라인으로 이동
+                    if empty_spot_row:
+                        cursor.execute(
+                            "UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;",
+                            (ws_id, target_spot)
+                        )
+                    
                     cursor.execute(
-                        "UPDATE workstations SET current_location = 'sg2_in_01' WHERE workstation_id = %s;",
-                        (new_ws_id,)
+                        "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE workstation_id = %s AND status = 'IN_WORKSTATION';",
+                        (ws_id,)
                     )
-                    # 해당 창고 스팟 비우기
                     cursor.execute(
-                        "UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;",
-                        (new_ws_loc,)
+                        "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
+                        (target_spot, ws_id)
                     )
+                    
+                    task_retrieve = {
+                        "task_type": "RETRIEVE_FULL_WORKSTATION",
+                        "workstation_id": ws_id,
+                        "from": target_loc,
+                        "to": target_spot,
+                        "description": f"완충 작업대 {ws_id} 회수 → 창고 {target_spot} 입고",
+                        "workstation_qr_id": ws_qr
+                    }
+                
+                push_priority_task(redis_client, task_retrieve)
+                
+                # B구역에 대기 중인 작업대가 있다면 A구역으로 승격시키고 DEPLOY 태스크 발행
+                cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = %s LIMIT 1;", (f"{target_robot}_B",))
+                b_ws_row = cursor.fetchone()
+                if b_ws_row:
+                    b_ws_id, b_ws_qr = b_ws_row
+                    b_ws_qr = b_ws_qr if b_ws_qr else ""
+                    
+                    cursor.execute("UPDATE workstations SET current_location = %s WHERE workstation_id = %s;", (target_loc, b_ws_id))
                     
                     task_deploy = {
                         "task_type": "DEPLOY_EMPTY_WORKSTATION",
-                        "workstation_id": new_ws_id,
-                        "from": new_ws_loc,
-                        "to": "sg2_in_01",
-                        "description": f"새 빈 작업대 {new_ws_id} 배치 → sg2_in_01 (교체)",
-                        "workstation_qr_id": new_ws_qr
+                        "workstation_id": b_ws_id,
+                        "from": f"{target_robot}_B",
+                        "to": target_loc,
+                        "description": f"대기 작업대 {b_ws_id} 배치 → {target_loc} (승격)",
+                        "workstation_qr_id": b_ws_qr
                     }
-                    redis_client.lpush('queue:amr_tasks', json.dumps(task_deploy))
+                    push_priority_task(redis_client, task_deploy)
+                else:
+                    # B구역에 없다면 창고에서 직접 가져오기
+                    cursor.execute("""
+                        SELECT w.workstation_id, w.current_location, w.qr_id
+                        FROM workstations w
+                        WHERE w.current_location LIKE 'spot_%%'
+                        AND w.workstation_id NOT IN (
+                            SELECT DISTINCT workstation_id FROM packages
+                            WHERE workstation_id IS NOT NULL AND status IN ('IN_WORKSTATION', 'IN_WAREHOUSE')
+                        ) LIMIT 1;
+                    """)
+                    new_ws_row = cursor.fetchone()
+                    if new_ws_row:
+                        new_ws_id, new_ws_loc, new_ws_qr = new_ws_row
+                        new_ws_qr = new_ws_qr if new_ws_qr else ""
+                        
+                        cursor.execute("UPDATE workstations SET current_location = %s WHERE workstation_id = %s;", (target_loc, new_ws_id))
+                        cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (new_ws_loc,))
+                        
+                        task_deploy = {
+                            "task_type": "DEPLOY_EMPTY_WORKSTATION",
+                            "workstation_id": new_ws_id,
+                            "from": new_ws_loc,
+                            "to": target_loc,
+                            "description": f"새 빈 작업대 {new_ws_id} 배치 → {target_loc} (창고 직송)",
+                            "workstation_qr_id": new_ws_qr
+                        }
+                        push_priority_task(redis_client, task_deploy)
                 
                 swap_triggered = True
 
         pg_conn.close()
-        msg = f"상자 {pkg_id}를 작업대 {ws_id}의 {slot_num}번 슬롯에 적재했습니다."
+        msg = f"상자 {pkg_id}를 {target_robot} 라인의 작업대 {ws_id} {slot_num}번 슬롯에 적재했습니다."
         if lookahead_triggered:
             msg += " (★ Look-ahead 예비 작업대 호출 트리거 발동!)"
+        if rotation_triggered:
+            msg += " (🔄 180도 회전 태스크 발행 및 로봇 대기 적용!)"
         if swap_triggered:
             msg += " (🔄 완충! 작업대 교체 수행: 회수 + 새 작업대 배치 완료)"
             
@@ -377,7 +482,7 @@ def simulate_packaging():
                         "description": f"포장용 작업대 {ws_id} 호출 → sg2_out_00",
                         "workstation_qr_id": ws_qr
                     }
-                    redis_client.lpush('queue:amr_tasks', json.dumps(task_fetch))
+                    push_priority_task(redis_client, task_fetch)
                 
                 pg_conn.close()
                 return {"success": True, "message": f"작업대 {ws_id}를 창고({ws_loc})에서 포장존(sg2_out_00)으로 이송했습니다."}
@@ -450,7 +555,7 @@ def simulate_packaging():
                         "description": f"Look-ahead: {ws_id} 7번째 포장 완료 → 다음 작업대 {next_ws_id} 사전 호출",
                         "workstation_qr_id": next_ws_qr
                     }
-                    redis_client.lpush('queue:amr_tasks', json.dumps(task_data))
+                    push_priority_task(redis_client, task_data)
                     lookahead_triggered = True
             
             # 7. 8번째(마지막) 포장 완료 시 → 작업대 교체: 빈 작업대 회수 + 다음 작업대 배치
@@ -485,7 +590,7 @@ def simulate_packaging():
                     "description": f"포장 완료 빈 작업대 {ws_id} 회수 → {target_spot}",
                     "workstation_qr_id": ws_qr
                 }
-                redis_client.lpush('queue:amr_tasks', json.dumps(task_retrieve))
+                push_priority_task(redis_client, task_retrieve)
                 
                 # 7-2. 다음 작업대를 포장존으로 배치
                 cursor.execute("""
@@ -524,7 +629,7 @@ def simulate_packaging():
                         "description": f"다음 포장 작업대 {next_ws_id} 배치 → sg2_out_00 (교체)",
                         "workstation_qr_id": next_ws_qr
                     }
-                    redis_client.lpush('queue:amr_tasks', json.dumps(task_deploy))
+                    push_priority_task(redis_client, task_deploy)
                 
                 swap_triggered = True
         
@@ -1205,13 +1310,34 @@ def index():
                     data.redis_tasks.forEach(task => {
                         const item = document.createElement('div');
                         item.className = 'task-item';
+                        
+                        const score = task.priority_score || 0;
+                        let badgeBg = 'rgba(255,255,255,0.1)';
+                        let badgeColor = 'var(--text-muted)';
+                        if (score >= 90) {
+                            badgeBg = 'rgba(239, 68, 68, 0.2)';
+                            badgeColor = '#ef4444';
+                        } else if (score >= 80) {
+                            badgeBg = 'rgba(245, 158, 11, 0.2)';
+                            badgeColor = '#f59e0b';
+                        } else if (score >= 50) {
+                            badgeBg = 'rgba(59, 130, 246, 0.2)';
+                            badgeColor = '#3b82f6';
+                        }
+
                         item.innerHTML = `
                             <div>
-                                <div class="task-name">${task.task_type || 'TASK'}</div>
+                                <div class="task-name" style="display: flex; align-items: center; gap: 6px;">
+                                    ${task.task_type || 'TASK'}
+                                    <span style="font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; background: ${badgeBg}; color: ${badgeColor}; font-weight: 700;">
+                                        P-${score}
+                                    </span>
+                                </div>
                                 <div class="task-desc">${task.description || ''}</div>
                             </div>
-                            <div style="font-size: 0.75rem; color: var(--text-muted);">
-                                QR: ${task.workstation_qr_id || 'N/A'}
+                            <div style="font-size: 0.72rem; color: var(--text-muted); text-align: right;">
+                                <div>QR: ${task.workstation_qr_id || 'N/A'}</div>
+                                <div style="font-size: 0.55rem; opacity: 0.7; margin-top: 2px;">UUID: ${task.uuid ? task.uuid.substring(0, 8) : 'N/A'}</div>
                             </div>
                         `;
                         tasksContainer.appendChild(item);
