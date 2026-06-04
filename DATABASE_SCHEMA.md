@@ -75,7 +75,7 @@ erDiagram
 | 열 이름 (Column) | 데이터 타입 (Type) | 제약 조건 (Constraints) | 설명 (Description) | 예시 데이터 |
 | :--- | :--- | :--- | :--- | :--- |
 | **`workstation_id`** | `VARCHAR(50)` | `PRIMARY KEY` | 작업대 고유 문자열 ID | `'WS01'`, `'WS10'` |
-| **`current_location`** | `VARCHAR(50)` | `NOT NULL` | 작업대의 실시간 위치 | `'sg2_in_01_A'`, `'spot_01'`, `'sg2_out_00'` |
+| **`current_location`** | `VARCHAR(50)` | `NOT NULL` | 작업대의 실시간 위치 | `'sg2_in_01_A'`, `'spot_01'`, `'sg2_out_00_A'`, `'sg2_out_00_B'` |
 | **`qr_id`** | `VARCHAR(100)` | `UNIQUE` | 작업대 고유 QR코드 ID | `'WORKSTATION_WS01'`, `'WORKSTATION_WS10'` |
 
 ---
@@ -154,7 +154,7 @@ AMR의 3D 공간 자율주행 및 위치 좌표 해석(Localization)을 위해 �
       "task_type": "PRE_FETCH_WORKSTATION", // 태스크 종류
       "workstation_id": "WS01",
       "from": "sg2_in_01",
-      "to": "sg2_out_00",
+      "to": "sg2_out_00_A",
       "workstation_qr_id": "WORKSTATION_WS01",
       "uuid": "4e7b8f9e-2b1d-4007-9890-e78a06db3d49"
   }

@@ -227,7 +227,7 @@ AMR 이송 속도가 로봇의 적재 및 포장 속도보다 느려 발생하�
 
 ### 9.1 배경 및 필요성
 * 바닥에 배치된 격자형 QR코드(예: 1,813개의 바닥 QR)는 AMR이 이동 및 로컬라이제이션(Localization)을 수행하는 물리적 기준 역할을 합니다.
-* 창고 내 보관 위치(`spot_01` ~ `spot_10`), 인바운드 대기/작업 위치(`sg2_in_01_A`, `sg2_in_01_B`), 아웃바운드 포장 위치(`sg2_out_00`) 등의 논리적 위치가 AMR의 물리적 목적지 좌표와 매핑되어야 합니다.
+* 창고 내 보관 위치(`spot_01` ~ `spot_10`), 인바운드 대기/작업 위치(`sg2_in_01_A`, `sg2_in_01_B`), 아웃바운드 포장 위치(`sg2_out_00_A`, `sg2_out_00_B`) 등의 논리적 위치가 AMR의 물리적 목적지 좌표와 매핑되어야 합니다.
 * 이러한 매핑과 좌표 정보를 소스코드 내부에 하드코딩할 경우, 레이아웃 변경 시 소스코드를 전면 재수정해야 하는 심각한 유지보수 문제가 발생합니다. 따라서 이를 관계형 데이터베이스(PostgreSQL)의 전용 공간 매핑 테이블에서 관리하여 **단일 진실 공급원(Single Source of Truth)**을 구축해야 합니다.
 
 ### 9.2 데이터베이스 테이블 설계 (`floor_qr_map`)
@@ -238,7 +238,7 @@ PostgreSQL에 다음과 같은 공간 격자 맵 정보 관리 테이블을 정�
   * `x_coord` (`DOUBLE PRECISION`): 물리 X 좌표 (m)
   * `y_coord` (`DOUBLE PRECISION`): 물리 Y 좌표 (m)
   * `z_coord` (`DOUBLE PRECISION`): 물리 Z 좌표 (m, 기본값 0.0)
-  * `location_name` (`VARCHAR(50)`): 매핑되는 물리/논리 스팟 이름 (예: `'spot_01'`, `'sg2_in_01_A'`, `'sg2_out_00'`)
+  * `location_name` (`VARCHAR(50)`): 매핑되는 물리/논리 스팟 이름 (예: `'spot_01'`, `'sg2_in_01_A'`, `'sg2_out_00_A'`)
   * `location_type` (`VARCHAR(50)`): 위치 용도 구분 (예: `'PARKING_SPOT'`, `'LOADING_SPOT'`, `'PATHWAY'`)
   * `description` (`TEXT`): 상세 용도 설명
 

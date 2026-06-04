@@ -15,7 +15,7 @@
 graph TD
     Sorter[bg2: 컨베이어 분류 로봇] -->|GetPackageRoute| CT[Control Tower Node]
     Inbound[sg2_in_XX: 적재 로봇] -->|CheckWarehouseStatus / ReportInbound| CT
-    Outbound[sg2_out_00: 포장 로봇] -->|StartPackaging| CT
+    Outbound[sg2_out_00_A: 포장 로봇] -->|StartPackaging| CT
     CT <-->|SQL / Real-time Query| DB[(PostgreSQL)]
     CT <-->|ZADD / ZPOPMAX Priority Tasks| Redis[(Redis Command Queue)]
 ```
@@ -77,13 +77,14 @@ erDiagram
   * 각 적재 로봇 라인은 활성 적재 구역인 **A 구역 (`sg2_in_XX_A`)**과 예비 대기 구역인 **B 구역 (`sg2_in_XX_B`)**의 이중 버퍼 레이아웃을 사용합니다.
   * A 구역 작업대의 **3번째 슬롯**에 상자가 적재되면, 관제탑은 창고 스팟(`spot_XX`)에서 빈 작업대를 찾아 해당 라인의 **B 구역 (`sg2_in_XX_B`)**으로 미리 호출(`PRE_FETCH_EMPTY_WORKSTATION`)합니다.
   * A 구역 작업대가 8개 가득 차 완충되면 포장존 또는 창고로 회수되고, B 구역에 대기 중이던 예비 작업대가 자동으로 A 구역으로 승격(`DEPLOY_EMPTY_WORKSTATION`)되어 공정이 연속적으로 진행됩니다.
-* **아웃바운드 포장 대기**:
-  * 포장 완료 직전(마지막 1칸 남음)에 창고에 대기 중인 꽉 찬 작업대를 포장 로봇 앞으로 즉시 예비 이송시킵니다.
+* **아웃바운드 포장 대기 및 승격 (Promotion)**:
+  * 포장 로봇 구역은 활성 포장 구역인 **A 구역 (`sg2_out_00_A`)**과 예비 대기 구역인 **B 구역 (`sg2_out_00_B`)**의 이중 버퍼 레이아웃을 사용합니다.
+  * A 구역 작업대의 **7번째 슬롯**이 포장 완료되면, 관제탑은 창고 스팟에서 완충된 작업대를 찾아 해당 라인의 **B 구역 (`sg2_out_00_B`)**으로 미리 호출(`PRE_FETCH_PACKAGING_WORKSTATION`)합니다.
+  * A 구역 작업대가 8개 모두 포장 완료(완포)되면 빈 작업대는 창고로 회수(`RETRIEVE_EMPTY_WORKSTATION`)되고, B 구역에 대기 중이던 예비 작업대가 자동으로 A 구역으로 승격(`DEPLOY_PACKAGING_WORKSTATION`)되어 공정이 연속적으로 진행됩니다.
 
 ### ③ 출고 바코드 생성 규칙 (`outbound_id`)
-포장 로봇(`sg2_out_00`)이 포장을 완료하면 다음과 같은 포장 로봇 고유 Prefix가 붙은 바코드가 DB에 기록됩니다.
 * **포맷**: `[포장로봇ID]_[작업대ID]+[칸번호]+[날짜]+[시간]`
-* **예시**: `sg2_out_00_WS01-1-202606021153`
+* **예시**: `sg2_out_00_A_WS01-1-202606021153`
 
 ### ④ 실시간 로봇 통신 및 DB 업데이트 매커니즘 (비동기, 동시성, 트랜잭션)
 다수의 로봇과 관제탑이 동시에 데이터를 주고받을 때 발생할 수 있는 병목과 데이터 충돌을 아래의 아키텍처적 장치를 통해 완벽히 방지합니다.

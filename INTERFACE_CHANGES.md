@@ -99,7 +99,7 @@ AMR에게 작업대를 다른 공정존이나 보관용 창고로 이송하도�
 | :--- | :--- | :--- | :--- |
 | **Goal** | `workstation_id` | `string` | 제어 대상 작업대 ID |
 | | `start_location` | `string` | 출발 물리 위치 (예: `"sg2_in_01"`) |
-| | `target_location` | `string` | 도착 물리 위치 (예: `"sg2_out_00"`) |
+| | `target_location` | `string` | 도착 물리 위치 (예: `"sg2_out_00_A"`) |
 | | `workstation_qr_id` | `string` | 작업대 고유 QR코드 ID (예: `"WORKSTATION_WS01"`) |
 | **Result** | `success` | `bool` | 이송 완료 성공 여부 |
 | **Feedback** | `distance_remaining` | `float32` | 목적지까지 남은 거리 (m) |
@@ -108,7 +108,7 @@ AMR에게 작업대를 다른 공정존이나 보관용 창고로 이송하도�
 ---
 
 ### ③ `StartPackaging.action`
-포장 로봇(`sg2_out_00`)에게 특정 작업대에 도달한 상자 8칸의 포장 공정을 명령합니다.
+포장 로봇(`sg2_out_00_A`)에게 특정 작업대에 도달한 상자 8칸의 포장 공정을 명령합니다.
 
 **파일 경로**: `src/cobot3_interfaces/action/StartPackaging.action`
 
