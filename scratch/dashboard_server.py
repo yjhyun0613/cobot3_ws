@@ -507,19 +507,48 @@ def simulate_inbound():
 
 @app.post("/api/simulate_packaging")
 def simulate_packaging():
-    """포장 시뮬레이션: 포장존(sg2_out_00)에 있는 작업대의 패키지를 하나씩 포장 완료 처리"""
+    """포장 시뮬레이션: 포장존(sg2_out_00_A)에 있는 작업대의 패키지를 하나씩 포장 완료 처리"""
     pg_conn, redis_client = get_db_connections()
     if not pg_conn:
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
         with pg_conn.cursor() as cursor:
-            # 1. 포장존(sg2_out_00)에 위치한 작업대 찾기
-            cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = 'sg2_out_00' LIMIT 1;")
+            # 1. 활성 포장 구역(sg2_out_00_A)에 위치한 작업대 찾기
+            cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = 'sg2_out_00_A' LIMIT 1;")
             ws_row = cursor.fetchone()
             
             if not ws_row:
-                # 포장존에 작업대가 없으면, 창고에서 IN_WAREHOUSE 패키지가 있는 작업대를 가져옴
+                # 1-1. 포장 대기 구역(sg2_out_00_B)에 작업대가 있으면 A구역으로 승격 배치
+                cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = 'sg2_out_00_B' LIMIT 1;")
+                b_ws_row = cursor.fetchone()
+                if b_ws_row:
+                    ws_id, ws_qr = b_ws_row
+                    ws_qr = ws_qr if ws_qr else ""
+                    
+                    cursor.execute("UPDATE workstations SET current_location = 'sg2_out_00_A' WHERE workstation_id = %s;", (ws_id,))
+                    
+                    # 대기 작업대가 활성화되었으므로 패키지들의 상태를 IN_WORKSTATION으로 전환
+                    cursor.execute(
+                        "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
+                        (ws_id,)
+                    )
+                    
+                    if redis_client:
+                        task_deploy = {
+                            "task_type": "DEPLOY_PACKAGING_WORKSTATION",
+                            "workstation_id": ws_id,
+                            "from": "sg2_out_00_B",
+                            "to": "sg2_out_00_A",
+                            "description": f"대기 작업대 {ws_id} 배치 → sg2_out_00_A (승격)",
+                            "workstation_qr_id": ws_qr
+                        }
+                        push_priority_task(redis_client, task_deploy)
+                        
+                    pg_conn.close()
+                    return {"success": True, "message": f"대기 중이던 작업대 {ws_id}를 활성 포장존(sg2_out_00_A)으로 승격 배치했습니다."}
+                
+                # 1-2. 포장 구역(A/B)에 작업대가 아예 없으면, 창고에서 완충된 작업대를 가져옴
                 cursor.execute("""
                     SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
                     FROM workstations w
@@ -542,8 +571,8 @@ def simulate_packaging():
                         (ws_loc,)
                     )
                 
-                # 작업대를 포장존으로 이동
-                cursor.execute("UPDATE workstations SET current_location = 'sg2_out_00' WHERE workstation_id = %s;", (ws_id,))
+                # 작업대를 활성 포장 구역(sg2_out_00_A)으로 즉시 이동
+                cursor.execute("UPDATE workstations SET current_location = 'sg2_out_00_A' WHERE workstation_id = %s;", (ws_id,))
                 
                 # 패키지 상태를 IN_WORKSTATION으로 복원 (포장 대기 상태)
                 cursor.execute(
@@ -556,14 +585,14 @@ def simulate_packaging():
                         "task_type": "FETCH_FOR_PACKAGING",
                         "workstation_id": ws_id,
                         "from": ws_loc,
-                        "to": "sg2_out_00",
-                        "description": f"포장용 작업대 {ws_id} 호출 → sg2_out_00",
+                        "to": "sg2_out_00_A",
+                        "description": f"포장용 작업대 {ws_id} 호출 → sg2_out_00_A",
                         "workstation_qr_id": ws_qr
                     }
                     push_priority_task(redis_client, task_fetch)
                 
                 pg_conn.close()
-                return {"success": True, "message": f"작업대 {ws_id}를 창고({ws_loc})에서 포장존(sg2_out_00)으로 이송했습니다."}
+                return {"success": True, "message": f"작업대 {ws_id}를 창고({ws_loc})에서 활성 포장존(sg2_out_00_A)으로 이송했습니다."}
             
             ws_id, ws_qr = ws_row
             ws_qr = ws_qr if ws_qr else ""
@@ -607,7 +636,7 @@ def simulate_packaging():
             """, (ws_id,))
             remaining_count = cursor.fetchone()[0]
             
-            # 6. 7번째 포장 완료 시 → Look-ahead: 다음 포장 대기 작업대 사전 호출
+            # 6. 7번째 포장 완료 시 → Look-ahead: 다음 포장 대기 작업대 사전 호출 (B구역 대기존으로)
             lookahead_triggered = False
             if completed_count == 7 and redis_client:
                 # 창고에 IN_WAREHOUSE 패키지가 있는 작업대 조회
@@ -625,18 +654,26 @@ def simulate_packaging():
                     next_ws_id, next_ws_loc, next_ws_qr = next_ws_row
                     next_ws_qr = next_ws_qr if next_ws_qr else ""
                     
-                    task_data = {
-                        "task_type": "PRE_FETCH_PACKAGING_WORKSTATION",
-                        "workstation_id": next_ws_id,
-                        "from": next_ws_loc,
-                        "to": "sg2_out_00",
-                        "description": f"Look-ahead: {ws_id} 7번째 포장 완료 → 다음 작업대 {next_ws_id} 사전 호출",
-                        "workstation_qr_id": next_ws_qr
-                    }
-                    push_priority_task(redis_client, task_data)
-                    lookahead_triggered = True
+                    # B구역에 대기중이거나 이동중인 작업대가 없을 때만 호출
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM workstations 
+                        WHERE current_location = 'sg2_out_00_B' OR current_location = 'MOVING_TO_SG2_OUT_00_B';
+                    """)
+                    b_occupy_count = cursor.fetchone()[0]
+                    
+                    if b_occupy_count == 0:
+                        task_data = {
+                            "task_type": "PRE_FETCH_PACKAGING_WORKSTATION",
+                            "workstation_id": next_ws_id,
+                            "from": next_ws_loc,
+                            "to": "sg2_out_00_B",
+                            "description": f"Look-ahead: {ws_id} 7번째 포장 완료 → 대기 작업대 {next_ws_id} 사전 호출",
+                            "workstation_qr_id": next_ws_qr
+                        }
+                        push_priority_task(redis_client, task_data)
+                        lookahead_triggered = True
             
-            # 7. 8번째(마지막) 포장 완료 시 → 작업대 교체: 빈 작업대 회수 + 다음 작업대 배치
+            # 7. 8번째(마지막) 포장 완료 시 → 작업대 교체: 빈 작업대 회수 + 다음 작업대 배치 (승격 또는 직접배치)
             swap_triggered = False
             if remaining_count == 0 and redis_client:
                 # 7-1. 포장 완료된 빈 작업대를 창고로 회수
@@ -663,51 +700,74 @@ def simulate_packaging():
                 task_retrieve = {
                     "task_type": "RETRIEVE_EMPTY_WORKSTATION",
                     "workstation_id": ws_id,
-                    "from": "sg2_out_00",
+                    "from": "sg2_out_00_A",
                     "to": target_spot,
                     "description": f"포장 완료 빈 작업대 {ws_id} 회수 → {target_spot}",
                     "workstation_qr_id": ws_qr
                 }
                 push_priority_task(redis_client, task_retrieve)
                 
-                # 7-2. 다음 작업대를 포장존으로 배치
-                cursor.execute("""
-                    SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
-                    FROM workstations w
-                    JOIN packages p ON w.workstation_id = p.workstation_id
-                    WHERE p.status = 'IN_WAREHOUSE'
-                    AND w.workstation_id != %s
-                    LIMIT 1;
-                """, (ws_id,))
-                next_ws_row = cursor.fetchone()
-                
-                if next_ws_row:
-                    next_ws_id, next_ws_loc, next_ws_qr = next_ws_row
-                    next_ws_qr = next_ws_qr if next_ws_qr else ""
+                # 7-2. B구역에 대기 중인 작업대가 있다면 A구역으로 즉시 승격 및 DEPLOY 태스크 발행
+                cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = 'sg2_out_00_B' LIMIT 1;")
+                b_ws_row = cursor.fetchone()
+                if b_ws_row:
+                    b_ws_id, b_ws_qr = b_ws_row
+                    b_ws_qr = b_ws_qr if b_ws_qr else ""
                     
-                    # 창고 스팟 비우기
-                    if next_ws_loc.startswith('spot_'):
-                        cursor.execute(
-                            "UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;",
-                            (next_ws_loc,)
-                        )
-                    
-                    # 작업대를 포장존으로 이동 + 패키지 상태 복원
-                    cursor.execute("UPDATE workstations SET current_location = 'sg2_out_00' WHERE workstation_id = %s;", (next_ws_id,))
+                    cursor.execute("UPDATE workstations SET current_location = 'sg2_out_00_A' WHERE workstation_id = %s;", (b_ws_id,))
                     cursor.execute(
                         "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
-                        (next_ws_id,)
+                        (b_ws_id,)
                     )
                     
                     task_deploy = {
                         "task_type": "DEPLOY_PACKAGING_WORKSTATION",
-                        "workstation_id": next_ws_id,
-                        "from": next_ws_loc,
-                        "to": "sg2_out_00",
-                        "description": f"다음 포장 작업대 {next_ws_id} 배치 → sg2_out_00 (교체)",
-                        "workstation_qr_id": next_ws_qr
+                        "workstation_id": b_ws_id,
+                        "from": "sg2_out_00_B",
+                        "to": "sg2_out_00_A",
+                        "description": f"대기 작업대 {b_ws_id} 배치 → sg2_out_00_A (승격)",
+                        "workstation_qr_id": b_ws_qr
                     }
                     push_priority_task(redis_client, task_deploy)
+                else:
+                    # B구역에 없다면 창고에서 직접 가져오기
+                    cursor.execute("""
+                        SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
+                        FROM workstations w
+                        JOIN packages p ON w.workstation_id = p.workstation_id
+                        WHERE p.status = 'IN_WAREHOUSE'
+                        AND w.workstation_id != %s
+                        LIMIT 1;
+                    """, (ws_id,))
+                    next_ws_row = cursor.fetchone()
+                    
+                    if next_ws_row:
+                        next_ws_id, next_ws_loc, next_ws_qr = next_ws_row
+                        next_ws_qr = next_ws_qr if next_ws_qr else ""
+                        
+                        # 창고 스팟 비우기
+                        if next_ws_loc.startswith('spot_'):
+                            cursor.execute(
+                                "UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;",
+                                (next_ws_loc,)
+                            )
+                        
+                        # 작업대를 포장존 A로 이동 + 패키지 상태 복원
+                        cursor.execute("UPDATE workstations SET current_location = 'sg2_out_00_A' WHERE workstation_id = %s;", (next_ws_id,))
+                        cursor.execute(
+                            "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
+                            (next_ws_id,)
+                        )
+                        
+                        task_deploy = {
+                            "task_type": "DEPLOY_PACKAGING_WORKSTATION",
+                            "workstation_id": next_ws_id,
+                            "from": next_ws_loc,
+                            "to": "sg2_out_00_A",
+                            "description": f"다음 포장 작업대 {next_ws_id} 배치 → sg2_out_00_A (교체)",
+                            "workstation_qr_id": next_ws_qr
+                        }
+                        push_priority_task(redis_client, task_deploy)
                 
                 swap_triggered = True
         

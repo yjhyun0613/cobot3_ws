@@ -496,10 +496,17 @@ class ControlTowerNode(Node):
                     if ws_qr_id is None:
                         ws_qr_id = ""
                     
-                    # 오늘 날짜 분류 라인(sg2_in_01_A)에서 완성되었을 경우 -> 포장 라인(sg2_out_00)으로
+                    # 오늘 날짜 분류 라인(sg2_in_01_A)에서 완성되었을 경우 -> 포장 라인(sg2_out_00_A 또는 B)으로
                     if curr_loc == 'sg2_in_01_A':
-                        self.get_logger().info(f'[Scheduler] {ws_id}(QR: {ws_qr_id}) 오늘 물량 적재 완료! 포장존(sg2_out_00) 이송 스케줄링 시작.')
-                        self.trigger_workstation_move(ws_id, curr_loc, 'sg2_out_00', ws_qr_id)
+                        cursor.execute(
+                            "SELECT COUNT(*) FROM workstations "
+                            "WHERE current_location = 'sg2_out_00_A' OR current_location = 'MOVING_TO_SG2_OUT_00_A';"
+                        )
+                        out_a_count = cursor.fetchone()[0]
+                        target_out = 'sg2_out_00_A' if out_a_count == 0 else 'sg2_out_00_B'
+
+                        self.get_logger().info(f'[Scheduler] {ws_id}(QR: {ws_qr_id}) 오늘 물량 적재 완료! 포장존({target_out}) 이송 스케줄링 시작.')
+                        self.trigger_workstation_move(ws_id, curr_loc, target_out, ws_qr_id)
                     
                     # 내일/모레 분류 라인(sg2_in_02_A, sg2_in_03_A)에서 완성되었을 경우 -> 창고(warehouse)로
                     elif curr_loc in ['sg2_in_02_A', 'sg2_in_03_A']:
@@ -510,7 +517,7 @@ class ControlTowerNode(Node):
             self.get_logger().error(f'작업대 완충 체크 중 에러: {str(e)}')
 
     def dispatch_workstations_keepalive(self):
-        """인바운드 라인별 작업대 개수를 감시하여 동적 공급 및 A/B 이동 조율 (방안 B)"""
+        """인바운드 라인별 작업대 개수 및 아웃바운드 포장존 상태를 감시하여 동적 공급 및 A/B 이동 조율"""
         if not self.pg_conn:
             return
 
@@ -524,9 +531,12 @@ class ControlTowerNode(Node):
                 
                 # 라인별 작업대 매핑 (A구역, B구역, 이동 중인 작업대)
                 line_status = {line: {'A': [], 'B': [], 'MOVING_A': [], 'MOVING_B': []} for line in inbound_lines}
+                # 포장존 상태 매핑
+                sg2_out_status = {'A': [], 'B': [], 'MOVING_A': [], 'MOVING_B': []}
                 
                 for ws_id, loc, qr_id in workstations:
                     ws_qr = qr_id if qr_id is not None else ""
+                    # 1. 인바운드 라인 상태 분석
                     for line in inbound_lines:
                         if loc == f"{line}_A":
                             line_status[line]['A'].append((ws_id, ws_qr))
@@ -536,7 +546,18 @@ class ControlTowerNode(Node):
                             line_status[line]['MOVING_A'].append((ws_id, ws_qr))
                         elif loc == f"MOVING_TO_{line.upper()}_B":
                             line_status[line]['MOVING_B'].append((ws_id, ws_qr))
+                    
+                    # 2. 아웃바운드 포장존 상태 분석
+                    if loc == 'sg2_out_00_A':
+                        sg2_out_status['A'].append((ws_id, ws_qr))
+                    elif loc == 'sg2_out_00_B':
+                        sg2_out_status['B'].append((ws_id, ws_qr))
+                    elif loc == 'MOVING_TO_SG2_OUT_00_A':
+                        sg2_out_status['MOVING_A'].append((ws_id, ws_qr))
+                    elif loc == 'MOVING_TO_SG2_OUT_00_B':
+                        sg2_out_status['MOVING_B'].append((ws_id, ws_qr))
 
+                # 인바운드 동적 배치 및 승격
                 for line in inbound_lines:
                     # A구역에 작업대가 없고, A구역으로 이동 중인 작업대도 없는 경우
                     if not line_status[line]['A'] and not line_status[line]['MOVING_A']:
@@ -562,6 +583,35 @@ class ControlTowerNode(Node):
                                 self.trigger_workstation_move(ws_id, start_loc, f"{line}_A", ws_qr)
                             else:
                                 self.get_logger().warn(f"[Keep-Alive] {line}에 공급할 창고 내 빈 작업대가 부족합니다.")
+
+                # 아웃바운드 포장존 동적 배치 및 승격
+                if not sg2_out_status['A'] and not sg2_out_status['MOVING_A']:
+                    # B구역에 포장 대기 중인 작업대가 있으면 A구역으로 즉시 이동 (승격)
+                    if sg2_out_status['B']:
+                        ws_id, ws_qr = sg2_out_status['B'][0]
+                        self.get_logger().info(f'[Keep-Alive] 포장존 A구역이 비어 있습니다. B구역의 {ws_id}(QR: {ws_qr})를 A구역으로 이동시킵니다.')
+                        self.trigger_workstation_move(ws_id, 'sg2_out_00_B', 'sg2_out_00_A', ws_qr)
+                    # B구역에도 없는 경우 -> 창고에서 완충된 작업대를 조회해서 A구역으로 바로 공급
+                    else:
+                        cursor.execute(
+                            "SELECT w.workstation_id, w.current_location, w.qr_id "
+                            "FROM workstations w "
+                            "JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WAREHOUSE' "
+                            "WHERE w.current_location LIKE 'spot_%%' "
+                            "GROUP BY w.workstation_id, w.current_location, w.qr_id "
+                            "HAVING COUNT(p.package_id) = 8 "
+                            "LIMIT 1;"
+                        )
+                        row = cursor.fetchone()
+                        if row:
+                            ws_id, start_loc, ws_qr = row[0], row[1], row[2] if row[2] is not None else ""
+                            self.get_logger().info(f'[Keep-Alive] 포장존 A/B가 비어 있어 창고에서 완충 작업대 {ws_id}를 바로 A구역으로 공급합니다.')
+                            # 패키지 상태 복원
+                            cursor.execute(
+                                "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
+                                (ws_id,)
+                            )
+                            self.trigger_workstation_move(ws_id, start_loc, 'sg2_out_00_A', ws_qr)
         except Exception as e:
             self.get_logger().error(f'Keep-Alive Dispatcher 실행 중 에러: {str(e)}')
 
@@ -676,8 +726,8 @@ class ControlTowerNode(Node):
                 except Exception as e:
                     self.get_logger().error(f'도착지 DB 최종 반영 실패: {str(e)}')
 
-            # 만약 포장 구역(sg2_out_00)에 안전하게 도착했다면 포장 공정(Action) 트리거
-            if target == 'sg2_out_00':
+            # 만약 포장 구역 A(sg2_out_00_A)에 안전하게 도착했다면 포장 공정(Action) 트리거
+            if target == 'sg2_out_00_A':
                 self.trigger_packaging_process(workstation_id)
         else:
             self.get_logger().error(f'[실패] 작업대 {workstation_id} 이송 중 에러 발생')
@@ -753,7 +803,7 @@ class ControlTowerNode(Node):
                                 'task_type': 'PRE_FETCH_WORKSTATION',
                                 'workstation_id': next_ws_id,
                                 'from': 'warehouse',
-                                'to': 'sg2_out_00',
+                                'to': 'sg2_out_00_B',
                                 'workstation_qr_id': next_ws_qr_id
                             })
                         else:
@@ -816,7 +866,7 @@ class ControlTowerNode(Node):
                     self.get_logger().error(f'회수용 작업대 QR 조회 실패: {str(e)}')
 
             # 빈 작업대를 창고(warehouse)로 이동하도록 AMR에게 지시
-            self.trigger_workstation_move(workstation_id, 'sg2_out_00', 'warehouse', ws_qr_id)
+            self.trigger_workstation_move(workstation_id, 'sg2_out_00_A', 'warehouse', ws_qr_id)
 
 
 def main(args=None):
