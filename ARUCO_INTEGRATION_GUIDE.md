@@ -1,13 +1,14 @@
-# 🏷️ ArUco 마커 연동 데이터 및 코드 매뉴얼 (Cheat Sheet)
+# 🏷️ ArUco & QR코드 통합 연동 가이드 및 코드 매뉴얼 (Cheat Sheet)
 
 > [!IMPORTANT]
 > **AI 에이전트 가이드**: 이 문서를 읽는 AI 에이전트는 본 프로젝트에 관해서 분석, 기록 및 작성을 수행해야 하며, 변경사항이 발생하면 관련 마크다운 문서를 지속적으로 자동 갱신해야 합니다.
 
-이 문서는 쿠팡 물류창고 관제 시스템(Control Tower)에 적용된 **ArUco 마커 ID 매핑 테이블**과 각 단계별 **DB 쿼리**, **ROS2 파이썬 예제 코드**를 모아둔 통합 매뉴얼입니다. 개발 시 참고하여 필요한 데이터를 입력해 주세요.
+이 문서는 쿠팡 물류창고 관제 시스템(Control Tower)에 적용된 **ArUco 마커 및 QR코드 식별자 매핑 테이블**과 각 단계별 **DB 쿼리**, **ROS2 파이썬 예제 코드**를 모아둔 통합 매뉴얼입니다. 개발 시 참고하여 필요한 데이터를 입력해 주세요.
 
 ---
 
-## 📌 1. ArUco 마커 ID 고유 번호 매핑 테이블
+## 📌 1. ArUco 및 QR코드 식별자 매핑 테이블
+
 
 물리적으로 장착될 마커 번호와 데이터베이스의 ID 매핑 현황입니다. 중복되지 않도록 고유 번호를 유지해야 합니다.
 
@@ -46,7 +47,25 @@
 | `PKG_RAND_007` | 홍길동 | `2026-06-01` | **`107`** |
 | `PKG_RAND_008` | 김철수 | `2026-06-01` | **`108`** |
 
+### ④ 작업대 슬롯별 QR코드 식별자 (Slots)
+* **포맷**: `WORKSTATION_WSxx_SLOT_y`
+* **예시**:
+  * `WORKSTATION_WS01_SLOT_1` ~ `WORKSTATION_WS01_SLOT_4`
+  * ...
+  * `WORKSTATION_WS10_SLOT_1` ~ `WORKSTATION_WS10_SLOT_4`
+
+### ⑤ 바닥 자율주행 격자용 QR코드 식별자 (Floor Grid)
+* **포맷**: `FLOOR_X_{x}_Y_{y}` (실제 월드 좌표 미터 단위 소수점 3자리 매핑)
+* **범위**: 
+  * $X$ 좌표: `-34.775` ~ `37.225` (1.5m 간격, 49개 열)
+  * $Y$ 좌표: `-29.025` ~ `39.975` (1.5m 간격, 47개 행)
+  * 총 개수: **2,303개**
+* **예시**:
+  * `FLOOR_X_-34.775_Y_-29.025` (좌하단 경계점)
+  * `FLOOR_X_37.225_Y_39.975` (우상단 경계점)
+
 ---
+
 
 ## 🗄️ 2. 데이터베이스(DB) 입력 양식 (SQL)
 
@@ -124,3 +143,21 @@ request.package_id = ""            # 옵션
 
 future = client.call_async(request)
 ```
+
+### ④ OpenCV & zxing-cpp 기반 QR코드 디코딩 예시
+카메라 노드에서 수신한 비디오 프레임으로부터 QR코드를 디코딩하여 문자열 정보를 추출합니다.
+```python
+import cv2
+import zxingcpp
+
+def detect_and_decode_qr(frame):
+    # zxingcpp를 사용하여 프레임 내의 모든 QR코드/바코드를 스캔합니다.
+    results = zxingcpp.read_barcodes(frame)
+    for barcode in results:
+        # 해독된 문자열 결과 반환 (예: "PKG_RAND_001", "FLOOR_X_12.500_Y_-15.000")
+        if barcode.text:
+            print(f"[Vision] Detected QR Code: {barcode.text}")
+            return barcode.text
+    return None
+```
+

@@ -50,10 +50,17 @@ NVIDIA Isaac Sim 시뮬레이터 환경에서 다중 로봇(컨베이어 분류 
   * PostgreSQL/Redis 라이브러리 연동 및 멀티스레드 비동기 콜백 적용.
   * 서비스 서버와 액션 클라이언트를 유기적으로 스케줄링하는 `task_scheduler_loop` 탑재 및 ArUco ID 우선 매핑/조회 로직 추가.
 * **웹 대시보드 및 테스트 스크립트 (`scratch/` 디렉토리)**:
+
   * `dashboard_server.py`: FastAPI와 HTML/JS를 이용한 실시간 다크 모드 대시보드로, 10개의 작업대 및 창고 구역 상태, Redis AMR 큐, 패키지 상태를 종합 모니터링하고 모의 적재 시뮬레이션을 원클릭으로 수행할 수 있음.
-  * `run_simulation_test.py`: ROS2 액션 서버와 서비스 클라이언트를 모킹하여 실제 환경 없이도 전체 프로세스의 정상 컴파일 및 통신 루프(ArUco ID 연동 및 Look-ahead 등)를 검증함.
+  * `run_simulation_test.py` & `run_qr_simulation_test.py`: ROS2 액션 서버와 서비스 클라이언트를 모킹하여 실제 환경 없이도 전체 프로세스의 정상 컴파일, QR코드 비전 해독 연동 및 통신 루프를 검증함.
+* **QR코드 생성 및 USD 매핑 모듈 (`scratch/` 디렉토리)**:
+  * `qr_handler.py`: `qrcode` 라이브러리를 사용한 QR 생성 및 C 의존성 없이 안정적인 `zxing-cpp` 기반 비전 디코딩 패키지.
+  * `generate_all_qr_codes.py`: `warehouse.yaml`을 연산하여 안전 구역(2m)을 준수한 2,303개 바닥 격자 및 10개 작업대 * 4슬롯(=40개) QR 이미지 일괄 생성 모듈.
+  * `add_all_qr_to_usd.py`: Pixar USD (`pxr`) API를 사용해 `map.usd` 파일에 2,303개의 평면 메쉬와 PBR 텍스처를 11초 만에 100% 자동 배치하여 맵을 갱신하는 자동화 모듈.
+  * `adjust_usd_lighting.py`: 바닥 반사(글레어)로 인한 QR 인식률 저하를 해결하기 위해 DistantLight 강도를 600.0으로 낮추고, DomeLight(1200.0)를 보강한 조명 자동 최적화 모듈.
 
 ---
+
 
 ## 🚀 4. 시스템 실행 및 백업/복원 매뉴얼
 

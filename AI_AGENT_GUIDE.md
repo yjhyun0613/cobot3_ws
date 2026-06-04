@@ -22,17 +22,25 @@ graph TD
 
 ---
 
-## 🏷️ 2. ArUco 마커 식별자 매핑 규격
+## 🏷️ 2. ArUco 및 QR코드 식별자 매핑 규격
 
-시스템의 모든 물리적 개체는 ArUco 마커 ID를 사용하여 식별됩니다.
+시스템의 물리적 개체 식별 및 자율 격자 주행을 위해 ArUco 마커와 QR코드를 혼합 사용하여 식별합니다.
 
+### ① ArUco 마커 식별자 매핑 (고정 설비용)
 | 대상군 (Entities) | ArUco 마커 ID 범위 | 매핑되는 식별자 형태 (DB) | 비고 |
 | :--- | :--- | :--- | :--- |
 | **로봇 (Robots)** | `1` ~ `5` | `bg2`, `sg2_in_01~03`, `sg2_out_00` | 로봇 타입 및 역할 식별 |
 | **작업대 (Workstations)** | `11` ~ `20` | `WS01` ~ `WS10` | 2x2 적재 플레이트 (총 10대) |
-| **상자 (Packages)** | `100` 이상 | `PKG_RAND_001` 또는 `PKG_ARUCO_XXX` | 입고되는 개별 택배 박스 |
+
+### ② QR코드 식별자 매핑 (유동 박스/위치 격자용)
+| 대상군 (Entities) | QR 인코딩 포맷 | 설명 | 개수/비고 |
+| :--- | :--- | :--- | :--- |
+| **상자 (Packages)** | `PKG_RAND_XXX` | 입고되는 개별 택배 박스 | 유동적 생성 |
+| **작업대 슬롯 (Slots)** | `WORKSTATION_WSxx_SLOT_y` | 각 작업대의 2x2 슬롯 개별 식별용 | 총 40개 (`WS01_SLOT_1` ~ `WS10_SLOT_4`) |
+| **바닥 격자 (Floor Grid)** | `FLOOR_X_{x}_Y_{y}` | AMR 격자 주행용 미터법 절대 좌표 마커 | 총 2,303개 (간격 1.5m, 2m 마진 반영) |
 
 ---
+
 
 ## 🗄️ 3. 데이터베이스 스키마 및 상태 정의
 
@@ -118,11 +126,31 @@ python3 scratch/dashboard_server.py
 
 ### ⑤ 모의 시뮬레이션 시나리오 테스트
 ```bash
+# 기본 ArUco 시뮬레이션 테스트
 python3 scratch/run_simulation_test.py
+
+# 신규 QR코드 비전 해독 시뮬레이션 테스트
+python3 scratch/run_qr_simulation_test.py
 ```
 * ROS2 통신을 모의하여 관제탑 노드가 정상적으로 반응하고 Redis 큐에 태스크를 삽입하는지 검증합니다.
 
+### ⑥ Isaac Sim USD 맵 QR코드 생성 및 배치
+```bash
+# 1. 2,303개 바닥 격자 및 40개 슬롯 QR 이미지 생성
+python3 scratch/generate_all_qr_codes.py
+
+# 2. map.usd 파일에 2,303개 바닥 QR코드 메쉬/텍스처 자동 생성 및 매핑 (Isaac Sim Python 필요)
+/home/rokey/dev_ws/isaac_sim/isaacsim/_build/linux-x86_64/release/python.sh scratch/add_all_qr_to_usd.py
+```
+
+### ⑦ Isaac Sim USD 조명(반사 방지) 최적화
+```bash
+# map.usd 내 DistantLight 강도를 낮추고 DomeLight를 추가하여 비전 감지 개선 (Isaac Sim Python 필요)
+/home/rokey/dev_ws/isaac_sim/isaacsim/_build/linux-x86_64/release/python.sh scratch/adjust_usd_lighting.py
+```
+
 ---
+
 
 ## 📝 6. AI 에이전트 문서 유지보수 규칙 (Standard for AI Agent Documentation Updates)
 
