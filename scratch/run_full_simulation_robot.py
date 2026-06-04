@@ -137,6 +137,50 @@ class MockFullRobotNode(Node):
         self.get_logger().info(f'📦 [포장로봇] 작업대 {goal.workstation_id} 모든 슬롯 포장 완료 및 출고ID 발행 완료!')
         return result
 
+    def call_service_with_fail_safe(self, client, request, service_name, fallback_callback):
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            if client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().info(f'[{service_name}] 관제 서버 연결 성공 (시도 {attempt}/{max_retries})')
+                future = client.call_async(request)
+                
+                start_time = time.time()
+                while rclpy.ok() and not future.done():
+                    time.sleep(0.05)
+                    if time.time() - start_time > 2.0:
+                        self.get_logger().warn(f'[{service_name}] 응답 대기 시간 초과(Timeout)')
+                        break
+                
+                if future.done():
+                    res = future.result()
+                    if res is not None:
+                        return res, False  # 성공 완료 (오프라인 아님)
+                self.get_logger().warn(f'[{service_name}] 호출 실패, 재시도 진행... ({attempt}/{max_retries})')
+            else:
+                self.get_logger().warn(f'[{service_name}] 관제 서버 접속 지연/무응답 (시도 {attempt}/{max_retries})')
+            time.sleep(0.5)
+
+        self.get_logger().error(f'❌ [{service_name}] 관제 서버 접속 실패! 로컬 오프라인 룰베이스(Fail-safe)를 기동합니다.')
+        fallback_res = fallback_callback(request)
+        return fallback_res, True  # 오프라인 폴백 완료
+
+    def fallback_route(self, request):
+        val = sum(ord(c) for c in request.package_id)
+        dates = ['2026-06-01', '2026-06-02', '2026-06-03']
+        res = GetPackageRoute.Response()
+        res.route_destination = dates[val % len(dates)]
+        return res
+
+    def fallback_check_warehouse(self, request):
+        res = CheckWarehouseStatus.Response()
+        res.is_already_in_warehouse = True  # 예외 회차로 이송을 유도하기 위해 True 반환
+        return res
+
+    def fallback_report_inbound(self, request):
+        res = ReportInboundProgress.Response()
+        res.success = True  # 벨트 정체 방지
+        return res
+
 def inbound_sim_loop(node):
     """분류기(bg2) 및 적재로봇(sg2_in_01~03)의 자율 운전 시나리오 루프"""
     time.sleep(5.0) # 관제탑 노드 기동 대기
@@ -167,18 +211,16 @@ def inbound_sim_loop(node):
                 node.get_logger().info(f'[Scenario] 🚀 패키지 {pkg_id} 입고 처리 시작 (QR: {decoded_qr})')
 
                 # Step B: GetPackageRoute 서비스 호출하여 목적지(날짜) 획득
-                node.get_route_client.wait_for_service()
                 req_route = GetPackageRoute.Request()
                 req_route.package_id = pkg_id
                 req_route.customer_name = cust_name
                 req_route.qr_id = decoded_qr
                 
-                future = node.get_route_client.call_async(req_route)
-                while rclpy.ok() and not future.done():
-                    time.sleep(0.05)
-                route_res = future.result()
+                route_res, is_offline = node.call_service_with_fail_safe(
+                    node.get_route_client, req_route, 'get_package_route', node.fallback_route
+                )
                 dest_date = route_res.route_destination
-                node.get_logger().info(f'[Scenario]   - 분류 목적지 획득: {dest_date}')
+                node.get_logger().info(f'[Scenario]   - 분류 목적지 획득: {dest_date} (오프라인 모드: {is_offline})')
 
                 # 목적지 날짜에 따른 적재 로봇 결정
                 if dest_date == '2026-06-01':
@@ -223,24 +265,24 @@ def inbound_sim_loop(node):
                     continue
 
                 # Step C: CheckWarehouseStatus 서비스 호출
-                node.check_warehouse_client.wait_for_service()
                 req_chk = CheckWarehouseStatus.Request()
                 req_chk.package_id = pkg_id
                 req_chk.customer_name = cust_name
                 req_chk.qr_id = decoded_qr
                 
-                future_chk = node.check_warehouse_client.call_async(req_chk)
-                while rclpy.ok() and not future_chk.done():
-                    time.sleep(0.05)
-                chk_res = future_chk.result()
+                chk_res, is_offline_chk = node.call_service_with_fail_safe(
+                    node.check_warehouse_client, req_chk, 'check_warehouse_status', node.fallback_check_warehouse
+                )
                 
                 if chk_res.is_already_in_warehouse:
-                    node.get_logger().warn(f'[Scenario]   - {cust_name} 님의 물품이 이미 창고에 보관 중입니다! AMR 직송 명령 대기.')
+                    if is_offline_chk:
+                        node.get_logger().warn(f'[Scenario] ⚠️ [Fail-safe] 관제탑 오프라인 상태! 패키지 {pkg_id}를 안전 순환 회차로로 이송 조치합니다.')
+                    else:
+                        node.get_logger().warn(f'[Scenario]   - {cust_name} 님의 물품이 이미 창고에 보관 중입니다! AMR 직송 명령 대기.')
                     time.sleep(2.0)
                     continue
 
                 # Step D: ReportInboundProgress 서비스 호출 (적재 완료 보고)
-                node.report_inbound_client.wait_for_service()
                 req_in = ReportInboundProgress.Request()
                 req_in.workstation_id = ws_id
                 req_in.robot_id = target_robot
@@ -249,10 +291,13 @@ def inbound_sim_loop(node):
                 req_in.workstation_qr_id = ws_qr
                 req_in.package_qr_id = decoded_qr
                 
-                future_in = node.report_inbound_client.call_async(req_in)
-                while rclpy.ok() and not future_in.done():
-                    time.sleep(0.05)
-                node.get_logger().info(f'[Scenario]   - 슬롯 적재 보고 완료: WS {ws_id} - Slot {next_slot} (라인: {target_robot}_A)')
+                in_res, is_offline_in = node.call_service_with_fail_safe(
+                    node.report_inbound_client, req_in, 'report_inbound_progress', node.fallback_report_inbound
+                )
+                if is_offline_in:
+                    node.get_logger().info(f'[Scenario] ⚠️ [Fail-safe] 슬롯 적재 보고 오프라인 임시 처리 완료: WS {ws_id} - Slot {next_slot}')
+                else:
+                    node.get_logger().info(f'[Scenario]   - 슬롯 적재 보고 완료: WS {ws_id} - Slot {next_slot} (라인: {target_robot}_A)')
                 
                 time.sleep(1.5) # 적재 주기 조절
 
