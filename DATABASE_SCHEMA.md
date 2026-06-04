@@ -33,7 +33,7 @@ erDiagram
         VARCHAR status "진행 상태 (WAITING, IN_WORKSTATION, IN_WAREHOUSE, COMPLETED 등)"
         VARCHAR outbound_id "출고 고유 ID"
         VARCHAR workstation_id FK "적재된 작업대 ID"
-        INT slot_number "적재된 작업대의 슬롯 번호 (1~4)"
+        INT slot_number "적재된 작업대의 슬롯 번호 (1~8)"
         INT aruco_id UNIQUE "물리 ArUco 마커 ID (100+)"
     }
     
@@ -59,7 +59,7 @@ erDiagram
 ---
 
 ### ② 작업대 정보 테이블 (`workstations`)
-로봇들이 상자를 싣는 2x2 슬롯 기반 작업대의 실시간 물리적 위치와 식별 마커 정보를 관리합니다.
+로봇들이 상자를 싣는 2x4 슬롯 기반 작업대의 실시간 물리적 위치와 식별 마커 정보를 관리합니다.
 
 * **Primary Key**: `workstation_id`
 
@@ -99,7 +99,7 @@ erDiagram
 | **`status`** | `VARCHAR(50)` | `DEFAULT 'WAITING'` | 상태 (`WAITING`/`IN_WORKSTATION`/`IN_WAREHOUSE`/`COMPLETED`) | `'IN_WORKSTATION'` |
 | **`outbound_id`** | `VARCHAR(100)` | `NULL 허용` | 포장 후 출고 고유 바코드 | `'sg2_out_00_WS01-1-202606021153'` |
 | **`workstation_id`** | `VARCHAR(50)` | `FOREIGN KEY` | 적재된 작업대 ID | `'WS01'`, `NULL` |
-| **`slot_number`** | `INT` | `NULL 허용` | 작업대 내 적재 슬롯 번호 (1~4) | `1`, `NULL` |
+| **`slot_number`** | `INT` | `NULL 허용` | 작업대 내 적재 슬롯 번호 (1~8) | `1`, `NULL` |
 | **`aruco_id`** | `INT` | `UNIQUE` | 물리 마커 번호 (101 이상) | `101` |
 
 ---

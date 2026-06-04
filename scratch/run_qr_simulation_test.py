@@ -80,10 +80,7 @@ class MockQRSystemNode(Node):
         result = StartPackaging.Result()
         result.success = True
         result.final_output_ids = [
-            f"sg2_out_00_{goal.workstation_id}-1-{goal.today_date}1200",
-            f"sg2_out_00_{goal.workstation_id}-2-{goal.today_date}1200",
-            f"sg2_out_00_{goal.workstation_id}-3-{goal.today_date}1200",
-            f"sg2_out_00_{goal.workstation_id}-4-{goal.today_date}1200",
+            f"sg2_out_00_{goal.workstation_id}-{slot}-{goal.today_date}1200" for slot in range(1, 9)
         ]
         self.get_logger().info(f'[Mock Packaging Robot] 포장 완료! 생성 바코드: {result.final_output_ids}')
         return result
@@ -93,8 +90,24 @@ def run_client_scenario(node):
     time.sleep(4.0)  # 관제탑 노드가 실행되기를 대기
     node.get_logger().info('=== [Scenario] QR코드 비전 인식 물류 시나리오 시작 ===')
 
+    # DB 초기 설정: WS01의 위치를 sg2_in_01로 가상 배치
+    try:
+        import psycopg2
+        conn = psycopg2.connect('host=localhost port=5432 user=rokey password=rokey_pass dbname=warehouse_db')
+        cur = conn.cursor()
+        cur.execute("UPDATE workstations SET current_location = 'sg2_in_01' WHERE workstation_id = 'WS01';")
+        cur.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = 'spot_01';")
+        conn.commit()
+        conn.close()
+        node.get_logger().info('[Scenario] DB에서 WS01의 위치를 sg2_in_01로 변경하고 spot_01을 해제했습니다.')
+    except Exception as e:
+        node.get_logger().error(f'[Scenario] DB 초기 설정 에러: {e}')
+
     # 테스트용 입고 패키지 ID 리스트 (데이터베이스에 미리 삽입된 데이터 활용)
-    test_packages = ["PKG_RAND_001", "PKG_RAND_004", "PKG_RAND_005"]
+    test_packages = [
+        "PKG_RAND_001", "PKG_RAND_004", "PKG_RAND_005", "PKG_RAND_009",
+        "PKG_RAND_010", "PKG_RAND_011", "PKG_RAND_018", "PKG_RAND_019"
+    ]
     
     # Step 1: 입고 예정 물량에 대한 QR코드 물리 라벨 이미지 동적 생성
     qr_paths = {}
@@ -142,44 +155,22 @@ def run_client_scenario(node):
     node.get_logger().info(f'[Scenario] 창고 보관 조회 응답 수신 완료 -> is_already_in_warehouse: {res2.is_already_in_warehouse}')
 
     # Step 5: 적재 로봇이 작업대 WS01에 패키지를 1번 슬롯부터 채워 나가는 진행 상태 보고
-    # 1번째 슬롯 적재 보고
-    node.get_logger().info(f'[Scenario] ⑤ 1번 슬롯 적재 보고 (WS01, package_id: "{test_packages[0]}")...')
-    req3 = ReportInboundProgress.Request()
-    req3.workstation_id = 'WS01'
-    req3.package_id = test_packages[0]
-    req3.filled_slots_count = 1
-    req3.robot_id = 'sg2_in_01'
-    req3.workstation_qr_id = "QR_WS01"
-    req3.package_qr_id = "QR_PKG_001"
-    future3 = node.report_inbound_client.call_async(req3)
-    while rclpy.ok() and not future3.done():
-        time.sleep(0.1)
-
-    # 2번째 슬롯 적재 보고
-    node.get_logger().info(f'[Scenario] ⑥ 2번 슬롯 적재 보고 (WS01, package_id: "{test_packages[1]}")...')
-    req4 = ReportInboundProgress.Request()
-    req4.workstation_id = 'WS01'
-    req4.package_id = test_packages[1]
-    req4.filled_slots_count = 2
-    req4.robot_id = 'sg2_in_01'
-    req4.workstation_qr_id = "QR_WS01"
-    req4.package_qr_id = "QR_PKG_002"
-    future4 = node.report_inbound_client.call_async(req4)
-    while rclpy.ok() and not future4.done():
-        time.sleep(0.1)
-
-    # 3번째 슬롯 적재 보고 (Look-ahead 프리거 유도 지점!)
-    node.get_logger().info(f'[Scenario] ⑦ 3번 슬롯 적재 보고 -> Look-ahead 빈 작업대 선점 트리거 유도 (WS01, package_id: "{test_packages[2]}")...')
-    req5 = ReportInboundProgress.Request()
-    req5.workstation_id = 'WS01'
-    req5.package_id = test_packages[2]
-    req5.filled_slots_count = 3
-    req5.robot_id = 'sg2_in_01'
-    req5.workstation_qr_id = "QR_WS01"
-    req5.package_qr_id = "QR_PKG_003"
-    future5 = node.report_inbound_client.call_async(req5)
-    while rclpy.ok() and not future5.done():
-        time.sleep(0.1)
+    for idx, pkg_id in enumerate(test_packages, 1):
+        pkg_qr = f"QR_PKG_{idx:03d}"
+        node.get_logger().info(f'[Scenario] ⑤ {idx}번 슬롯 적재 보고 (WS01, package_id: "{pkg_id}")...')
+        if idx == 7:
+            node.get_logger().info(f'[Scenario] -> 7번 슬롯 적재 보고: Look-ahead 빈 작업대 선점 트리거 유도!')
+        req_in = ReportInboundProgress.Request()
+        req_in.workstation_id = 'WS01'
+        req_in.package_id = pkg_id
+        req_in.filled_slots_count = idx
+        req_in.robot_id = 'sg2_in_01'
+        req_in.workstation_qr_id = "QR_WS01"
+        req_in.package_qr_id = pkg_qr
+        future_in = node.report_inbound_client.call_async(req_in)
+        while rclpy.ok() and not future_in.done():
+            time.sleep(0.1)
+        time.sleep(0.2)
 
     node.get_logger().info('=== [Scenario] QR코드 기반 시나리오 요청 종료. 백그라운드 스케줄러 처리 모니터링... ===')
 

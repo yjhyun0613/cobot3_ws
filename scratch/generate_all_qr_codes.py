@@ -97,13 +97,13 @@ def main():
         generate_qr(ws, path)
         print(f"  ├─ 작업대 생성 완료: {path}")
         
-        # 각 작업대별 4개 슬롯 QR코드 생성
-        for slot in range(1, 5):
+        # 각 작업대별 8개 슬롯 QR코드 생성
+        for slot in range(1, 9):
             slot_str = f"WORKSTATION_{ws_id}_SLOT_{slot}"
             slot_path = os.path.join(output_dir, "workstations", "slots", f"{slot_str}.png")
             generate_qr(slot_str, slot_path)
             # 로그 줄이기 위해 요약 출력 또는 매번 출력
-        print(f"  │  └─ 슬롯 1~4 QR코드 생성 완료: {ws_id}")
+        print(f"  │  └─ 슬롯 1~8 QR코드 생성 완료: {ws_id}")
 
 
     # 3. 바닥 격자 QR코드 생성

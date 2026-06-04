@@ -33,7 +33,7 @@ CREATE TABLE packages (
     status VARCHAR(50) DEFAULT 'WAITING', -- WAITING, IN_WORKSTATION, IN_WAREHOUSE, COMPLETED
     outbound_id VARCHAR(100), -- [로봇ID]_[작업대ID]+[칸번호]+[날짜]+[시간]
     workstation_id VARCHAR(50) REFERENCES workstations(workstation_id),
-    slot_number INT,            -- 작업대 내 슬롯 번호 (1~4)
+    slot_number INT,            -- 작업대 내 슬롯 번호 (1~8)
     qr_id VARCHAR(100) UNIQUE
 );
 

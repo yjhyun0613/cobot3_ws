@@ -245,7 +245,7 @@ class ControlTowerNode(Node):
 
         self.get_logger().info(
             f'[ReportInboundProgress] {robot_id} 보고 - 작업대: {workstation_id} (QR: {workstation_qr_id}), '
-            f'적재 수량: {filled_slots_count}/4, 택배 ID: {package_id} (QR: {package_qr_id})'
+            f'적재 수량: {filled_slots_count}/8, 택배 ID: {package_id} (QR: {package_qr_id})'
         )
 
         # DB에 작업대 및 패키지 정보 업데이트
@@ -290,9 +290,9 @@ class ControlTowerNode(Node):
             except Exception as e:
                 self.get_logger().error(f'ReportInboundProgress DB 업데이트 중 오류: {str(e)}')
 
-        # [Look-ahead 최적화] 3번째 칸 적재 완료 시 다음 빈 작업대 대기 명령 적재
-        if filled_slots_count == 3:
-            self.get_logger().info(f'[Look-ahead] {workstation_id}의 3번째 슬롯 적재 감지! 다음 빈 작업대 사전 배치 태스크 추가.')
+        # [Look-ahead 최적화] 7번째 칸 적재 완료 시 다음 빈 작업대 대기 명령 적재
+        if filled_slots_count == 7:
+            self.get_logger().info(f'[Look-ahead] {workstation_id}의 7번째 슬롯 적재 감지! 다음 빈 작업대 사전 배치 태스크 추가.')
             self.push_amr_task({
                 'task_type': 'PRE_FETCH_EMPTY_WORKSTATION',
                 'target_robot': robot_id,
@@ -335,7 +335,7 @@ class ControlTowerNode(Node):
                 self.get_logger().info(f'[Scheduler] Redis 큐에서 태스크 감지 -> {task["task_type"]}')
                 self.execute_amr_task(task)
 
-            # 2. 작업대 4칸이 모두 찼을 때의 이송 스케줄링 체크
+            # 2. 작업대 8칸이 모두 찼을 때의 이송 스케줄링 체크
             self.check_completed_workstations()
 
         except Exception as e:
@@ -402,13 +402,13 @@ class ControlTowerNode(Node):
 
         try:
             with self.pg_conn.cursor() as cursor:
-                # 4칸 모두 FULL인 작업대 조회 (qr_id 추가 선택)
+                # 8칸 모두 FULL인 작업대 조회 (qr_id 추가 선택)
                 cursor.execute(
                     "SELECT w.workstation_id, w.current_location, w.qr_id "
                     "FROM workstations w "
                     "JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WORKSTATION' "
                     "GROUP BY w.workstation_id, w.current_location, w.qr_id "
-                    "HAVING COUNT(p.package_id) = 4;"
+                    "HAVING COUNT(p.package_id) = 8;"
                 )
                 rows = cursor.fetchall()
                 for row in rows:
@@ -574,11 +574,11 @@ class ControlTowerNode(Node):
         completed_slots = feedback.completed_slots
         last_packed_slot = feedback.last_packed_slot
 
-        self.get_logger().info(f'[포장 피드백] 현재 완료 슬롯 수: {completed_slots}/4, 최근 완료: {last_packed_slot}')
+        self.get_logger().info(f'[포장 피드백] 현재 완료 슬롯 수: {completed_slots}/8, 최근 완료: {last_packed_slot}')
 
-        # [Look-ahead 최적화] 3번째 칸 포장 완료 시 다음 작업대 사전 호출
-        if completed_slots == 3:
-            self.get_logger().info('[Look-ahead] 3번째 칸 포장 완료 감지! 다음 작업대 사전 호출을 예약합니다.')
+        # [Look-ahead 최적화] 7번째 칸 포장 완료 시 다음 작업대 사전 호출
+        if completed_slots == 7:
+            self.get_logger().info('[Look-ahead] 7번째 칸 포장 완료 감지! 다음 작업대 사전 호출을 예약합니다.')
             
             # 다음 포장 대기 중인 작업대를 창고에서 포장존으로 가져오도록 큐에 태스크 추가
             next_ws_id = 'WS02'

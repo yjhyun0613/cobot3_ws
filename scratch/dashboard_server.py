@@ -60,7 +60,7 @@ def get_status():
             for row in ws_rows:
                 ws_id = row[0]
                 slots = []
-                for s in range(1, 5):
+                for s in range(1, 9):
                     customer = ws_pkg_map.get(ws_id, {}).get(s, None)
                     status = "FULL" if customer else "EMPTY"
                     slots.append({"slot_number": s, "customer": customer, "status": status})
@@ -201,7 +201,7 @@ def simulate_inbound():
             filled_slots = {r[0] for r in cursor.fetchall()}
             
             slot_num = None
-            for s in range(1, 5):
+            for s in range(1, 9):
                 if s not in filled_slots:
                     slot_num = s
                     break
@@ -219,7 +219,7 @@ def simulate_inbound():
             
             # 5. 만약 3번째 슬롯에 상자가 올라갔다면 Redis 큐에 Look-ahead 작업 추가
             lookahead_triggered = False
-            if slot_num == 3 and redis_client:
+            if slot_num == 7 and redis_client:
                 # QR ID 구하기
                 cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
                 ws_qr = cursor.fetchone()[0]
@@ -227,7 +227,7 @@ def simulate_inbound():
                 task_data = {
                     "task_type": "PRE_FETCH_EMPTY_WORKSTATION",
                     "target_robot": "sg2_in_01",
-                    "description": f"Look-ahead: {ws_id} 3번째 슬롯 적재 감지로 예비 작업대 호출",
+                    "description": f"Look-ahead: {ws_id} 7번째 슬롯 적재 감지로 예비 작업대 호출",
                     "workstation_qr_id": ws_qr
                 }
                 redis_client.lpush('queue:amr_tasks', json.dumps(task_data))
@@ -537,7 +537,7 @@ def index():
         /* WS Slot visual */
         .ws-slots-grid {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: repeat(4, 1fr); /* 2x4 Layout */
             gap: 6px;
         }
 
@@ -732,7 +732,7 @@ def index():
 
             <!-- Right: Workstations Active slots -->
             <div class="panel-card">
-                <h2>Workstations Active Status (10 Plates) <span style="font-size: 0.8rem; color: var(--text-muted);">2x2 Slots Layout</span></h2>
+                <h2>Workstations Active Status (10 Plates) <span style="font-size: 0.8rem; color: var(--text-muted);">2x4 Slots Layout</span></h2>
                 <div class="workstations-container" id="ws-list">
                     <!-- Dynamic workstations go here -->
                 </div>
