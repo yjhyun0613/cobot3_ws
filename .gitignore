@@ -21,3 +21,7 @@ __pycache__/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Generated QR code images
+scratch/qr_codes/
+

@@ -82,3 +82,18 @@
   * `workstations` 테이블에서 중복 저장되던 1~4번 슬롯 정보(`slot_X_customer`, `slot_X_status`)를 완전히 삭제하여 DB 스키마 정규화 완료 (`docker/init.sql`).
   * `control_tower_node.py` 및 `dashboard_server.py`의 쿼리와 슬롯 계산 로직을 `packages` 테이블의 외래키(`workstation_id`, `slot_number`)와 상태(`IN_WORKSTATION`)를 결합해 동적으로 계산하도록 전면 재설계.
   * DB 설계 문서(`DATABASE_SCHEMA.md`)를 변경된 정규화 구조에 맞춰 ERD 및 예시 데이터 시나리오 설명까지 전면 동기화 업데이트 완료.
+
+---
+
+## 📅 2026년 6월 4일 (목요일)
+
+* **09:30** - **QR코드 동적 생성 및 비전 디코딩 모듈 구현**
+  * 파이썬의 `qrcode` 및 `zxing-cpp` 라이브러리를 활용하여 택배 ID 기반 QR코드 생성 및 이미지 디코딩 기능을 제공하는 `scratch/qr_handler.py` 모듈 구축.
+  * 시스템 C 라이브러리 의존성이 강한 `pyzbar`나 내부 컴파일 이슈가 있는 OpenCV `QRCodeDetector`의 대안으로, statically linked pre-compiled 바이너리를 제공하는 `zxing-cpp`를 채택하여 배포 및 구동의 이식성을 극대화.
+  * 해당 핸들러의 생성 및 해독 성능을 검증하는 단독 테스트 벤치인 `scratch/test_qr_handler.py` 구현 및 검증 성공.
+
+* **09:45** - **QR코드 비전 인식 기반 ROS2 종단간 시뮬레이션 및 검증**
+  * 실제 카메라 비전 및 DB, ROS2 서비스의 통합 동작을 가상화하여 보여주는 `scratch/run_qr_simulation_test.py` 시나리오 시뮬레이터 신규 구축.
+  * 택배 고유 ID를 바코드가 아닌 비전 인식 결과로 역추적하여 데이터베이스를 검색하고, Look-ahead 작업대 예비 호출 등의 AMR 태스크가 막힘없이 예약 및 작동하도록 연동 테스트 완료.
+  * `SYSTEM_IMPROVEMENT_PLAN.md` 문서를 개정하여 QR코드 도입 섹션을 [완료]로 업데이트.
+

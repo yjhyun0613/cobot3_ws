@@ -31,7 +31,10 @@ ORDER BY slot_number;
 
 ---
 
-## 🏷️ 2. QR코드 시스템 도입 및 인식 설계
+## 🏷️ 2. QR코드 시스템 도입 및 인식 설계 - [완료]
+
+> [!NOTE]
+> **적용 완료**: 2026년 6월 4일 구현 완료. `qrcode` 라이브러리를 통해 택배 ID를 갖는 QR 코드를 생성하고, 시스템 C 라이브러리 의존성 없이 안정적으로 동작하는 `zxing-cpp` 라이브러리를 사용하여 디코딩하는 패키지(`scratch/qr_handler.py`)와 시나리오 테스트(`scratch/run_qr_simulation_test.py`)가 구현 완료되었습니다.
 
 일회용 택배 박스에 영구 마커인 ArUco ID를 직접 인쇄하여 매칭하는 방식의 비현실성을 극복하기 위해 바코드/QR코드 매핑 방식을 도입합니다.
 
@@ -40,18 +43,18 @@ ORDER BY slot_number;
 * **Isaac Sim 시뮬레이션**: 생성된 이미지를 가상 택배 박스 3D 모델의 재질(Material/Texture)로 바인딩하여 렌더링합니다.
 
 ### 2.2 비전 기반 QR코드 디코딩
-* 로봇/카메라 노드에서 카메라 토픽을 구독하여 OpenCV 또는 `pyzbar` 라이브러리로 이미지를 처리합니다.
+* 로봇/카메라 노드에서 카메라 토픽을 구독하여 OpenCV 및 `zxing-cpp` 라이브러리로 이미지를 처리합니다.
 * 해독된 문자열(`PKG_RAND_001`)로 PostgreSQL DB를 조회하여 목적지와 수령인 등 제어에 필요한 데이터를 획득합니다.
 
 ```python
 import cv2
-from pyzbar.pyzbar import decode
+import zxingcpp
 
 def decode_qr_from_frame(frame):
-    decoded_objects = decode(frame)
-    for obj in decoded_objects:
-        package_id = obj.data.decode('utf-8')
-        return package_id # 예: "PKG_RAND_001"
+    results = zxingcpp.read_barcodes(frame)
+    for barcode in results:
+        if barcode.text:
+            return barcode.text # 예: "PKG_RAND_001"
     return None
 ```
 
