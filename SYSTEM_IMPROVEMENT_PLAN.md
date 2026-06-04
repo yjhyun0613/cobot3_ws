@@ -36,8 +36,8 @@ ORDER BY slot_number;
 > [!NOTE]
 > **적용 완료**: 2026년 6월 4일 구현 완료. 
 > - 패키지 및 설비용 QR코드 자동 생성 패키지(`scratch/qr_handler.py`)와 종단간 테스트(`scratch/run_qr_simulation_test.py`) 완료.
-> - `warehouse.yaml` 기반 월드 좌표계 파싱 및 2,303개 바닥 격자/40개 작업대 슬롯 QR코드 일괄 생성 완료 (`scratch/generate_all_qr_codes.py`).
-> - Isaac Sim `map.usd` 내 2,303개 바닥 QR코드 메쉬/재질 자동 배치 완료 (`scratch/add_all_qr_to_usd.py`).
+> - `warehouse.yaml` 기반 월드 좌표계 파싱 및 1,813개 바닥 격자/40개 작업대 슬롯 QR코드 일괄 생성 완료 (`scratch/generate_all_qr_codes.py`).
+> - Isaac Sim `map.usd` 내 1,813개 바닥 QR코드 메쉬/재질 자동 배치 완료 (`scratch/add_all_qr_to_usd.py`).
 > - 바닥 글레어 현상 방지용 환경광(DomeLight) 보강 및 조명 최적화 완료 (`scratch/adjust_usd_lighting.py`).
 
 일회용 택배 박스에 영구 마커인 ArUco ID를 직접 인쇄하여 매칭하는 방식의 비현실성을 극복하고, 자율주행 AMR의 격자 주행(Grid-based Navigation)을 지원하기 위해 바코드/QR코드 매핑 방식을 전면 도입합니다.
@@ -45,12 +45,12 @@ ORDER BY slot_number;
 ### 2.1 QR코드 생성 및 적용
 * **택배 박스 및 로봇/설비**: 파이썬 `qrcode` 라이브러리를 활용해 고유 ID 정보를 담은 PNG 코드를 동적 생성하고, 가상 3D 모델의 텍스처로 바인딩합니다.
 * **바닥 격자 마커 (Floor Grid)**: 
-  * 맵 설정(`warehouse.yaml`)을 분석하여 외곽 2.0m 보행자 안전 마진을 제외한 가동 영역에 1.5m 간격으로 2,303개의 격자점 좌표를 산출.
+  * 맵 설정(`warehouse.yaml`) 및 사용자 지정 창고 영역 경계 제한(X: [-38.0, 38.0], Y: [-36.08472, 25.0])을 적용하여 1.5m 간격으로 1,813개의 격자점 좌표를 산출.
   * 각 격자의 실제 미터법 좌표 값(예: `FLOOR_X_-34.775_Y_-29.025`)을 인코딩한 QR코드를 일괄 생성.
 * **작업대 슬롯 마커 (Slots)**: 10개 작업대의 슬롯별 식별자(예: `WORKSTATION_WS01_SLOT_1` ~ `WORKSTATION_WS10_SLOT_4`, 총 40개) 생성 완료.
 
 ### 2.2 USD 3D 맵 매핑 및 시각화
-* Isaac Sim의 `SimulationApp` 및 Pixar USD (`pxr`) API를 이용해 `src/cobot3/resource/map.usd` 맵 상에 2,303개의 30cm 크기의 격자 메쉬(Plane)와 개별 QR 텍스처를 바인딩한 재질(Material)을 11초 만에 100% 자동 배치하여 맵을 갱신하였습니다.
+* Isaac Sim의 `SimulationApp` 및 Pixar USD (`pxr`) API를 이용해 `src/cobot3/resource/map.usd` 맵 상에 1,813개의 30cm 크기의 격자 메쉬(Plane)와 개별 QR 텍스처를 바인딩한 재질(Material)을 자동 배치하여 맵을 갱신하였습니다.
 
 ### 2.3 비전 인식용 조명 최적화
 * **문제점**: 강한 스포트라이트 성격의 직사광선이 바닥에 맺혀 빛 반사(Specular Glare)로 인해 QR코드 시인성이 떨어지고 인식이 실패함.

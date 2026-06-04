@@ -100,30 +100,30 @@ class ControlTowerNode(Node):
         """bg2 로봇이 바코드를 찍어 목적지 날짜를 조회할 때 호출"""
         package_id = request.package_id
         customer_name = request.customer_name
-        aruco_id = request.aruco_id
-        self.get_logger().info(f'[GetPackageRoute] 입고 택배 바코드/ArUco 스캔 - ID: {package_id}, 수령인: {customer_name}, ArUco ID: {aruco_id}')
+        qr_id = request.qr_id
+        self.get_logger().info(f'[GetPackageRoute] 입고 택배 바코드/QR 스캔 - ID: {package_id}, 수령인: {customer_name}, QR ID: {qr_id}')
 
         route_date = None
         if self.pg_conn:
             try:
                 with self.pg_conn.cursor() as cursor:
-                    # 1. ArUco ID가 주어지면 ArUco ID로 먼저 조회
-                    if aruco_id > 0:
+                    # 1. QR ID가 주어지면 QR ID로 먼저 조회
+                    if qr_id != "":
                         cursor.execute(
-                            "SELECT route_zone, package_id, customer_name FROM packages WHERE aruco_id = %s;",
-                            (aruco_id,)
+                            "SELECT route_zone, package_id, customer_name FROM packages WHERE qr_id = %s;",
+                            (qr_id,)
                         )
                         row = cursor.fetchone()
                         if row:
                             route_date = row[0]
                             package_id = row[1]
                             customer_name = row[2]
-                            self.get_logger().info(f'[GetPackageRoute] ArUco ID {aruco_id}로 조회 성공 - 패키지 ID: {package_id}')
+                            self.get_logger().info(f'[GetPackageRoute] QR ID {qr_id}로 조회 성공 - 패키지 ID: {package_id}')
 
-                    # 2. ArUco ID로 조회에 실패했거나 제공되지 않은 경우 기존 package_id로 조회
+                    # 2. QR ID로 조회에 실패했거나 제공되지 않은 경우 기존 package_id로 조회
                     if not route_date and package_id:
                         cursor.execute(
-                            "SELECT route_zone, customer_name, aruco_id FROM packages WHERE package_id = %s;",
+                            "SELECT route_zone, customer_name, qr_id FROM packages WHERE package_id = %s;",
                             (package_id,)
                         )
                         row = cursor.fetchone()
@@ -131,22 +131,22 @@ class ControlTowerNode(Node):
                             route_date = row[0]
                             customer_name = row[1]
                             if row[2] is not None:
-                                aruco_id = row[2]
-                            self.get_logger().info(f'[GetPackageRoute] Package ID {package_id}로 조회 성공 - ArUco ID: {aruco_id}')
+                                qr_id = row[2]
+                            self.get_logger().info(f'[GetPackageRoute] Package ID {package_id}로 조회 성공 - QR ID: {qr_id}')
 
                     # 3. 데이터베이스에 없는 새로운 패키지인 경우 자동 등록
                     if not route_date:
                         route_date = datetime.now().strftime('%Y-%m-%d')
                         if not package_id:
-                            package_id = f"PKG_ARUCO_{aruco_id}"
+                            package_id = f"PKG_QR_{qr_id}" if qr_id else f"PKG_RAND_{int(time.time())}"
                         if not customer_name:
-                            customer_name = f"Customer_{aruco_id}"
+                            customer_name = f"Customer_{qr_id}" if qr_id else "Unknown"
 
-                        if aruco_id > 0:
+                        if qr_id != "":
                             cursor.execute(
-                                "INSERT INTO packages (package_id, customer_name, route_zone, status, aruco_id) "
-                                "VALUES (%s, %s, %s, 'WAITING', %s);",
-                                (package_id, customer_name, route_date, aruco_id)
+                                "INSERT INTO packages (package_id, customer_name, route_zone, status, qr_id) "
+                                "VALUES (%s, %s, %s, 'WAITING', %s);"  ,
+                                (package_id, customer_name, route_date, qr_id)
                             )
                         else:
                             cursor.execute(
@@ -154,7 +154,7 @@ class ControlTowerNode(Node):
                                 "VALUES (%s, %s, %s, 'WAITING');",
                                 (package_id, customer_name, route_date)
                             )
-                        self.get_logger().info(f'[GetPackageRoute] 신규 패키지 등록 완료 - ID: {package_id}, ArUco: {aruco_id}')
+                        self.get_logger().info(f'[GetPackageRoute] 신규 패키지 등록 완료 - ID: {package_id}, QR: {qr_id}')
             except Exception as e:
                 self.get_logger().error(f'GetPackageRoute DB 조회 중 오류: {str(e)}')
 
@@ -170,35 +170,35 @@ class ControlTowerNode(Node):
         """sg2_in_XX 로봇이 적재 전 해당 수령인의 물품이 창고에 있는지 조회"""
         customer_name = request.customer_name
         package_id = request.package_id
-        aruco_id = request.aruco_id
-        self.get_logger().info(f'[CheckWarehouseStatus] 적재 검사 - 수령인: {customer_name}, 택배ID: {package_id}, ArUco: {aruco_id}')
+        qr_id = request.qr_id
+        self.get_logger().info(f'[CheckWarehouseStatus] 적재 검사 - 수령인: {customer_name}, 택배ID: {package_id}, QR ID: {qr_id}')
 
         if self.pg_conn:
             try:
                 with self.pg_conn.cursor() as cursor:
-                    # 1. ArUco ID가 들어왔고 다른 정보가 부족하면 DB에서 정보를 채운다
-                    if aruco_id > 0 and (not customer_name or not package_id):
+                    # 1. QR ID가 들어왔고 다른 정보가 부족하면 DB에서 정보를 채운다
+                    if qr_id != "" and (not customer_name or not package_id):
                         cursor.execute(
-                            "SELECT customer_name, package_id FROM packages WHERE aruco_id = %s;",
-                            (aruco_id,)
+                            "SELECT customer_name, package_id FROM packages WHERE qr_id = %s;",
+                            (qr_id,)
                         )
                         row = cursor.fetchone()
                         if row:
                             customer_name = row[0]
                             package_id = row[1]
-                            self.get_logger().info(f'[CheckWarehouseStatus] ArUco {aruco_id} 매핑 완료 -> ID: {package_id}, 수령인: {customer_name}')
+                            self.get_logger().info(f'[CheckWarehouseStatus] QR ID {qr_id} 매핑 완료 -> ID: {package_id}, 수령인: {customer_name}')
 
                     # 2. 만약 package_id만 들어오고 customer_name이 없으면 DB에서 조회
                     if package_id and not customer_name:
                         cursor.execute(
-                            "SELECT customer_name, aruco_id FROM packages WHERE package_id = %s;",
+                            "SELECT customer_name, qr_id FROM packages WHERE package_id = %s;",
                             (package_id,)
                         )
                         row = cursor.fetchone()
                         if row:
                             customer_name = row[0]
                             if row[1] is not None:
-                                aruco_id = row[1]
+                                qr_id = row[1]
             except Exception as e:
                 self.get_logger().error(f'CheckWarehouseStatus 매핑 및 DB 조회 중 오류: {str(e)}')
 
@@ -221,13 +221,13 @@ class ControlTowerNode(Node):
         
         if is_already_in_warehouse:
             self.get_logger().info(f'[CheckWarehouseStatus] {customer_name}님의 기존 물품이 창고에 감지되었습니다. 창고 직송을 결정합니다.')
-            # [AMR 직송 태스크 추가] 관제탑이 즉시 Redis 큐에 AMR 직송 명령을 적재 (ArUco ID 포함)
+            # [AMR 직송 태스크 추가] 관제탑이 즉시 Redis 큐에 AMR 직송 명령을 적재 (QR ID 포함)
             self.push_amr_task({
                 'task_type': 'DIRECT_WAREHOUSE',
                 'package_id': package_id,
                 'customer_name': customer_name,
                 'destination_zone': 'ZONE_A', # 기본 보관 구역 A
-                'package_aruco_id': aruco_id
+                'package_qr_id': qr_id
             })
         else:
             self.get_logger().info(f'[CheckWarehouseStatus] 기존 물품이 창고에 없습니다. 작업대 적재 진행.')
@@ -240,38 +240,38 @@ class ControlTowerNode(Node):
         robot_id = request.robot_id
         filled_slots_count = request.filled_slots_count
         package_id = request.package_id
-        workstation_aruco_id = request.workstation_aruco_id
-        package_aruco_id = request.package_aruco_id
+        workstation_qr_id = request.workstation_qr_id
+        package_qr_id = request.package_qr_id
 
         self.get_logger().info(
-            f'[ReportInboundProgress] {robot_id} 보고 - 작업대: {workstation_id} (ArUco: {workstation_aruco_id}), '
-            f'적재 수량: {filled_slots_count}/4, 택배 ID: {package_id} (ArUco: {package_aruco_id})'
+            f'[ReportInboundProgress] {robot_id} 보고 - 작업대: {workstation_id} (QR: {workstation_qr_id}), '
+            f'적재 수량: {filled_slots_count}/4, 택배 ID: {package_id} (QR: {package_qr_id})'
         )
 
         # DB에 작업대 및 패키지 정보 업데이트
         if self.pg_conn:
             try:
                 with self.pg_conn.cursor() as cursor:
-                    # 1. ArUco ID가 제공된 경우, ID 조회하여 매핑
-                    if workstation_aruco_id > 0:
+                    # 1. QR ID가 제공된 경우, ID 조회하여 매핑
+                    if workstation_qr_id != "":
                         cursor.execute(
-                            "SELECT workstation_id FROM workstations WHERE aruco_id = %s;",
-                            (workstation_aruco_id,)
+                            "SELECT workstation_id FROM workstations WHERE qr_id = %s;",
+                            (workstation_qr_id,)
                         )
                         row = cursor.fetchone()
                         if row:
                             workstation_id = row[0]
-                            self.get_logger().info(f'[ReportInboundProgress] workstation_aruco_id {workstation_aruco_id} ➡️ workstation_id {workstation_id}')
+                            self.get_logger().info(f'[ReportInboundProgress] workstation_qr_id {workstation_qr_id} ➡️ workstation_id {workstation_id}')
 
-                    if package_aruco_id > 0:
+                    if package_qr_id != "":
                         cursor.execute(
-                            "SELECT package_id FROM packages WHERE aruco_id = %s;",
-                            (package_aruco_id,)
+                            "SELECT package_id FROM packages WHERE qr_id = %s;",
+                            (package_qr_id,)
                         )
                         row = cursor.fetchone()
                         if row:
                             package_id = row[0]
-                            self.get_logger().info(f'[ReportInboundProgress] package_aruco_id {package_aruco_id} ➡️ package_id {package_id}')
+                            self.get_logger().info(f'[ReportInboundProgress] package_qr_id {package_qr_id} ➡️ package_id {package_id}')
 
                     # 2. 패키지 소유 수령인 조회
                     cursor.execute(
@@ -297,7 +297,7 @@ class ControlTowerNode(Node):
                 'task_type': 'PRE_FETCH_EMPTY_WORKSTATION',
                 'target_robot': robot_id,
                 'description': f'{robot_id} 앞 다음 작업대 대기',
-                'workstation_aruco_id': 0
+                'workstation_qr_id': ""
             })
 
         response.success = True
@@ -351,9 +351,9 @@ class ControlTowerNode(Node):
             goal_msg.package_id = task.get('package_id', '')
             goal_msg.customer_name = task.get('customer_name', '')
             goal_msg.destination_zone = task.get('destination_zone', '')
-            goal_msg.package_aruco_id = task.get('package_aruco_id', 0)
+            goal_msg.package_qr_id = task.get('package_qr_id', '')
 
-            self.get_logger().info(f'AMR에게 단일 택배({goal_msg.package_id}, ArUco: {goal_msg.package_aruco_id}) 창고 직송 액션 전송 중...')
+            self.get_logger().info(f'AMR에게 단일 택배({goal_msg.package_id}, QR: {goal_msg.package_qr_id}) 창고 직송 액션 전송 중...')
             self.move_package_action_client.wait_for_server()
             self.move_package_action_client.send_goal_async(goal_msg)
 
@@ -362,14 +362,14 @@ class ControlTowerNode(Node):
             target_robot = task['target_robot']
             workstation_id = 'WS_TEMP_EMPTY'
             start_location = 'buffer'
-            workstation_aruco_id = 0
+            workstation_qr_id = ""
 
             # DB에서 창고에 보관된 빈 작업대 중 하나를 조회
             if self.pg_conn:
                 try:
                     with self.pg_conn.cursor() as cursor:
                         cursor.execute(
-                            "SELECT workstation_id, current_location, aruco_id FROM workstations "
+                            "SELECT workstation_id, current_location, qr_id FROM workstations "
                             "WHERE current_location LIKE 'spot_%%' "
                             "AND workstation_id NOT IN ("
                             "    SELECT DISTINCT workstation_id FROM packages "
@@ -380,20 +380,20 @@ class ControlTowerNode(Node):
                         if row:
                             workstation_id = row[0]
                             start_location = row[1]
-                            workstation_aruco_id = row[2] if row[2] is not None else 0
-                            self.get_logger().info(f'[Scheduler] 창고 빈 작업대 선점 성공: {workstation_id}(ArUco: {workstation_aruco_id})')
+                            workstation_qr_id = row[2] if row[2] is not None else ""
+                            self.get_logger().info(f'[Scheduler] 창고 빈 작업대 선점 성공: {workstation_id}(QR: {workstation_qr_id})')
                 except Exception as e:
                     self.get_logger().error(f'창고 빈 작업대 조회 중 에러: {str(e)}')
 
             if workstation_id != 'WS_TEMP_EMPTY':
-                self.trigger_workstation_move(workstation_id, start_location, target_robot, workstation_aruco_id)
+                self.trigger_workstation_move(workstation_id, start_location, target_robot, workstation_qr_id)
             else:
                 self.get_logger().warn("경고: 대기 중인 빈 작업대가 없어 이송을 대기합니다.")
 
         elif task_type == 'PRE_FETCH_WORKSTATION':
             # 포장 라인을 위해 창고의 작업대를 포장 로봇 앞으로 가져오는 액션
             workstation_id = task['workstation_id']
-            self.trigger_workstation_move(workstation_id, task['from'], task['to'], task.get('workstation_aruco_id', 0))
+            self.trigger_workstation_move(workstation_id, task['from'], task['to'], task.get('workstation_qr_id', ""))
 
     def check_completed_workstations(self):
         """4개 칸이 모두 채워진 완성된 작업대를 파악해 이동 명령(AMR) 스케줄링"""
@@ -402,34 +402,34 @@ class ControlTowerNode(Node):
 
         try:
             with self.pg_conn.cursor() as cursor:
-                # 4칸 모두 FULL인 작업대 조회 (aruco_id 추가 선택)
+                # 4칸 모두 FULL인 작업대 조회 (qr_id 추가 선택)
                 cursor.execute(
-                    "SELECT w.workstation_id, w.current_location, w.aruco_id "
+                    "SELECT w.workstation_id, w.current_location, w.qr_id "
                     "FROM workstations w "
                     "JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WORKSTATION' "
-                    "GROUP BY w.workstation_id, w.current_location, w.aruco_id "
+                    "GROUP BY w.workstation_id, w.current_location, w.qr_id "
                     "HAVING COUNT(p.package_id) = 4;"
                 )
                 rows = cursor.fetchall()
                 for row in rows:
-                    ws_id, curr_loc, ws_aruco_id = row[0], row[1], row[2]
-                    if ws_aruco_id is None:
-                        ws_aruco_id = 0
+                    ws_id, curr_loc, ws_qr_id = row[0], row[1], row[2]
+                    if ws_qr_id is None:
+                        ws_qr_id = ""
                     
                     # 오늘 날짜 분류 라인(sg2_in_01)에서 완성되었을 경우 -> 포장 라인(sg2_out_00)으로
                     if curr_loc == 'sg2_in_01':
-                        self.get_logger().info(f'[Scheduler] {ws_id}(ArUco: {ws_aruco_id}) 오늘 물량 적재 완료! 포장존(sg2_out_00) 이송 스케줄링 시작.')
-                        self.trigger_workstation_move(ws_id, curr_loc, 'sg2_out_00', ws_aruco_id)
+                        self.get_logger().info(f'[Scheduler] {ws_id}(QR: {ws_qr_id}) 오늘 물량 적재 완료! 포장존(sg2_out_00) 이송 스케줄링 시작.')
+                        self.trigger_workstation_move(ws_id, curr_loc, 'sg2_out_00', ws_qr_id)
                     
                     # 내일/모레 분류 라인(sg2_in_02, sg2_in_03)에서 완성되었을 경우 -> 창고(warehouse)로
                     elif curr_loc in ['sg2_in_02', 'sg2_in_03']:
-                        self.get_logger().info(f'[Scheduler] {ws_id}(ArUco: {ws_aruco_id}) 내일/모레 물량 적재 완료! 창고(warehouse) 보관 스케줄링 시작.')
-                        self.trigger_workstation_move(ws_id, curr_loc, 'warehouse', ws_aruco_id)
+                        self.get_logger().info(f'[Scheduler] {ws_id}(QR: {ws_qr_id}) 내일/모레 물량 적재 완료! 창고(warehouse) 보관 스케줄링 시작.')
+                        self.trigger_workstation_move(ws_id, curr_loc, 'warehouse', ws_qr_id)
 
         except Exception as e:
             self.get_logger().error(f'작업대 완충 체크 중 에러: {str(e)}')
 
-    def trigger_workstation_move(self, workstation_id, start, target, workstation_aruco_id=0):
+    def trigger_workstation_move(self, workstation_id, start, target, workstation_qr_id=""):
         """AMR에게 작업대 통째로 이송하도록 액션 골 전송 및 DB 위치 선점 업데이트"""
         actual_target = target
 
@@ -487,9 +487,9 @@ class ControlTowerNode(Node):
         goal_msg.workstation_id = workstation_id
         goal_msg.start_location = start
         goal_msg.target_location = actual_target
-        goal_msg.workstation_aruco_id = workstation_aruco_id
+        goal_msg.workstation_qr_id = workstation_qr_id
 
-        self.get_logger().info(f'AMR에게 작업대 {workstation_id}(ArUco: {workstation_aruco_id}) 이송 액션 전송: {start} -> {actual_target}')
+        self.get_logger().info(f'AMR에게 작업대 {workstation_id}(QR: {workstation_qr_id}) 이송 액션 전송: {start} -> {actual_target}')
         self.manage_workstation_action_client.wait_for_server()
         
         # 액션 완료 시 결과를 받아 실제 DB 최종 위치를 수정하도록 콜백 설정
@@ -538,26 +538,26 @@ class ControlTowerNode(Node):
 
     def trigger_packaging_process(self, workstation_id):
         """포장 로봇 sg2_out_00에게 포장 개시 명령 송신"""
-        workstation_aruco_id = 0
+        workstation_qr_id = ""
         if self.pg_conn:
             try:
                 with self.pg_conn.cursor() as cursor:
                     cursor.execute(
-                        "SELECT aruco_id FROM workstations WHERE workstation_id = %s;",
+                        "SELECT qr_id FROM workstations WHERE workstation_id = %s;",
                         (workstation_id,)
                     )
                     row = cursor.fetchone()
                     if row and row[0] is not None:
-                        workstation_aruco_id = row[0]
+                        workstation_qr_id = row[0]
             except Exception as e:
-                self.get_logger().error(f'포장 전 작업대 ArUco 조회 실패: {str(e)}')
+                self.get_logger().error(f'포장 전 작업대 QR 조회 실패: {str(e)}')
 
         goal_msg = StartPackaging.Goal()
         goal_msg.workstation_id = workstation_id
         goal_msg.today_date = datetime.now().strftime('%Y%m%d')
-        goal_msg.workstation_aruco_id = workstation_aruco_id
+        goal_msg.workstation_qr_id = workstation_qr_id
 
-        self.get_logger().info(f'포장 로봇 sg2_out_00에게 {workstation_id}(ArUco: {workstation_aruco_id}) 포장 시작 명령 전송...')
+        self.get_logger().info(f'포장 로봇 sg2_out_00에게 {workstation_id}(QR: {workstation_qr_id}) 포장 시작 명령 전송...')
         self.start_packaging_action_client.wait_for_server()
         
         send_goal_future = self.start_packaging_action_client.send_goal_async(
@@ -582,20 +582,20 @@ class ControlTowerNode(Node):
             
             # 다음 포장 대기 중인 작업대를 창고에서 포장존으로 가져오도록 큐에 태스크 추가
             next_ws_id = 'WS02'
-            next_ws_aruco_id = 12
+            next_ws_qr_id = "WORKSTATION_WS02"
             if self.pg_conn:
                 try:
                     with self.pg_conn.cursor() as cursor:
                         # 완충되어 창고에 보관된 작업대를 우선순위로 조회
                         cursor.execute(
-                            "SELECT workstation_id, aruco_id FROM workstations "
+                            "SELECT workstation_id, qr_id FROM workstations "
                             "WHERE current_location = 'warehouse' LIMIT 1;"
                         )
                         row = cursor.fetchone()
                         if row:
                             next_ws_id = row[0]
-                            next_ws_aruco_id = row[1] if row[1] is not None else 0
-                            self.get_logger().info(f'[Look-ahead] 다음 포장 대상 작업대 조회 성공: {next_ws_id}(ArUco: {next_ws_aruco_id})')
+                            next_ws_qr_id = row[1] if row[1] is not None else ""
+                            self.get_logger().info(f'[Look-ahead] 다음 포장 대상 작업대 조회 성공: {next_ws_id}(QR: {next_ws_qr_id})')
                 except Exception as e:
                     self.get_logger().error(f'[Look-ahead] 다음 작업대 조회 중 오류: {str(e)}')
 
@@ -604,7 +604,7 @@ class ControlTowerNode(Node):
                 'workstation_id': next_ws_id,
                 'from': 'warehouse',
                 'to': 'sg2_out_00',
-                'workstation_aruco_id': next_ws_aruco_id
+                'workstation_qr_id': next_ws_qr_id
             })
 
     def packaging_response_callback(self, future, workstation_id):
@@ -647,22 +647,22 @@ class ControlTowerNode(Node):
                     self.get_logger().error(f'포장 완료 정보 DB 반영 실패: {str(e)}')
 
             # 3. 빈 작업대를 다시 인바운드 대기존으로 회수하는 AMR 태스크 발행
-            ws_aruco_id = 0
+            ws_qr_id = ""
             if self.pg_conn:
                 try:
                     with self.pg_conn.cursor() as cursor:
                         cursor.execute(
-                            "SELECT aruco_id FROM workstations WHERE workstation_id = %s;",
+                            "SELECT qr_id FROM workstations WHERE workstation_id = %s;",
                             (workstation_id,)
                         )
                         row = cursor.fetchone()
                         if row and row[0] is not None:
-                            ws_aruco_id = row[0]
+                            ws_qr_id = row[0]
                 except Exception as e:
-                    self.get_logger().error(f'회수용 작업대 ArUco 조회 실패: {str(e)}')
+                    self.get_logger().error(f'회수용 작업대 QR 조회 실패: {str(e)}')
 
             # 빈 작업대를 창고(warehouse)로 이동하도록 AMR에게 지시
-            self.trigger_workstation_move(workstation_id, 'sg2_out_00', 'warehouse', ws_aruco_id)
+            self.trigger_workstation_move(workstation_id, 'sg2_out_00', 'warehouse', ws_qr_id)
 
 
 def main(args=None):

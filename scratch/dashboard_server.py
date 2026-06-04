@@ -40,7 +40,7 @@ def get_status():
     try:
         with pg_conn.cursor() as cursor:
             # 1. Fetch workstations
-            cursor.execute("SELECT workstation_id, current_location, aruco_id FROM workstations ORDER BY workstation_id;")
+            cursor.execute("SELECT workstation_id, current_location, qr_id FROM workstations ORDER BY workstation_id;")
             ws_rows = cursor.fetchall()
             
             # 2. Fetch packages in workstations
@@ -68,7 +68,7 @@ def get_status():
                 workstations.append({
                     "workstation_id": ws_id,
                     "current_location": row[1],
-                    "aruco_id": row[2],
+                    "qr_id": row[2],
                     "slots": slots
                 })
             
@@ -86,7 +86,7 @@ def get_status():
                 
             # 3. Packages
             cursor.execute("""
-                SELECT package_id, customer_name, route_zone, status, outbound_id, workstation_id, slot_number, aruco_id
+                SELECT package_id, customer_name, route_zone, status, outbound_id, workstation_id, slot_number, qr_id
                 FROM packages ORDER BY package_id;
             """)
             packages = []
@@ -99,7 +99,7 @@ def get_status():
                     "outbound_id": row[4],
                     "workstation_id": row[5],
                     "slot_number": row[6],
-                    "aruco_id": row[7]
+                    "qr_id": row[7]
                 })
                 
         # 4. Redis Active Queue Tasks
@@ -166,13 +166,13 @@ def simulate_inbound():
     try:
         with pg_conn.cursor() as cursor:
             # 1. 아직 적재되지 않은 대기 중인 상자 하나 선택
-            cursor.execute("SELECT package_id, customer_name, route_zone, aruco_id FROM packages WHERE status = 'WAITING' LIMIT 1;")
+            cursor.execute("SELECT package_id, customer_name, route_zone, qr_id FROM packages WHERE status = 'WAITING' LIMIT 1;")
             pkg_row = cursor.fetchone()
             if not pkg_row:
                 pg_conn.close()
                 return {"success": False, "message": "더 이상 적재할 대기 패키지가 없습니다."}
             
-            pkg_id, cust_name, zone, pkg_aruco = pkg_row
+            pkg_id, cust_name, zone, pkg_qr = pkg_row
             
             # 2. 현재 적재 대기 중인(예: sg2_in_01에 있는) 작업대 찾기
             # 만약 없으면 WS01을 강제로 임바운드에 매핑하고, 원래 있던 창고 주차 스팟을 비워줍니다.
@@ -220,15 +220,15 @@ def simulate_inbound():
             # 5. 만약 3번째 슬롯에 상자가 올라갔다면 Redis 큐에 Look-ahead 작업 추가
             lookahead_triggered = False
             if slot_num == 3 and redis_client:
-                # ArUco ID 구하기
-                cursor.execute("SELECT aruco_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
-                ws_aruco = cursor.fetchone()[0]
+                # QR ID 구하기
+                cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
+                ws_qr = cursor.fetchone()[0]
                 
                 task_data = {
                     "task_type": "PRE_FETCH_EMPTY_WORKSTATION",
                     "target_robot": "sg2_in_01",
                     "description": f"Look-ahead: {ws_id} 3번째 슬롯 적재 감지로 예비 작업대 호출",
-                    "workstation_aruco_id": ws_aruco
+                    "workstation_qr_id": ws_qr
                 }
                 redis_client.lpush('queue:amr_tasks', json.dumps(task_data))
                 lookahead_triggered = True
@@ -755,7 +755,7 @@ def index():
                     <thead>
                         <tr>
                             <th>Package ID</th>
-                            <th>ArUco</th>
+                            <th>QR ID</th>
                             <th>수령인</th>
                             <th>배송 예정구역</th>
                             <th>진행 상태</th>
@@ -861,7 +861,7 @@ def index():
 
                     card.innerHTML = `
                         <div class="ws-header">
-                            <span class="ws-id">${ws.workstation_id} (ArUco: ${ws.aruco_id})</span>
+                            <span class="ws-id">${ws.workstation_id} (QR: ${ws.qr_id})</span>
                             <span class="ws-loc ${isMoving ? 'moving' : ''}">${ws.current_location}</span>
                         </div>
                         <div class="ws-slots-grid">
@@ -895,7 +895,7 @@ def index():
                                 <div class="task-desc">${task.description || ''}</div>
                             </div>
                             <div style="font-size: 0.75rem; color: var(--text-muted);">
-                                ArUco: ${task.workstation_aruco_id || '0'}
+                                QR: ${task.workstation_qr_id || 'N/A'}
                             </div>
                         `;
                         tasksContainer.appendChild(item);
@@ -911,7 +911,7 @@ def index():
                     let statusClass = pkg.status.toLowerCase();
                     row.innerHTML = `
                         <td style="font-weight: 600; color:#fff;">${pkg.package_id}</td>
-                        <td>${pkg.aruco_id}</td>
+                        <td>${pkg.qr_id || '—'}</td>
                         <td>${pkg.customer_name}</td>
                         <td>${pkg.route_zone}</td>
                         <td><span class="status-pill ${statusClass}">${pkg.status}</span></td>

@@ -53,7 +53,7 @@ class MockQRSystemNode(Node):
     def execute_manage_ws(self, goal_handle):
         goal = goal_handle.request
         self.get_logger().info(
-            f'[Mock AMR] 작업대 이송 명령 접수! {goal.workstation_id}(ArUco: {goal.workstation_aruco_id}) '
+            f'[Mock AMR] 작업대 이송 명령 접수! {goal.workstation_id}(QR: {goal.workstation_qr_id}) '
             f'이동 시작: {goal.start_location} -> {goal.target_location}'
         )
         time.sleep(1.5)
@@ -74,7 +74,7 @@ class MockQRSystemNode(Node):
 
     def execute_start_pkg(self, goal_handle):
         goal = goal_handle.request
-        self.get_logger().info(f'[Mock Packaging Robot] 작업대 {goal.workstation_id} 포장 시작!')
+        self.get_logger().info(f'[Mock Packaging Robot] 작업대 {goal.workstation_id}(QR: {goal.workstation_qr_id}) 포장 시작!')
         time.sleep(2.0)
         goal_handle.succeed()
         result = StartPackaging.Result()
@@ -121,6 +121,8 @@ def run_client_scenario(node):
     node.get_logger().info(f'[Scenario] ③ 관제탑에 목적지 경로 조회 요청 (package_id: "{decoded_pkg_id}")...')
     req = GetPackageRoute.Request()
     req.package_id = decoded_pkg_id
+    req.customer_name = ""
+    req.qr_id = "QR_PKG_001"
     future = node.get_route_client.call_async(req)
     while rclpy.ok() and not future.done():
         time.sleep(0.1)
@@ -131,6 +133,8 @@ def run_client_scenario(node):
     node.get_logger().info(f'[Scenario] ④ 적재 로봇(sg2_in_01)이 적재 전 창고 보관 여부 조회 (package_id: "{decoded_pkg_id}")...')
     req2 = CheckWarehouseStatus.Request()
     req2.package_id = decoded_pkg_id
+    req2.customer_name = ""
+    req2.qr_id = "QR_PKG_001"
     future2 = node.check_warehouse_client.call_async(req2)
     while rclpy.ok() and not future2.done():
         time.sleep(0.1)
@@ -145,6 +149,8 @@ def run_client_scenario(node):
     req3.package_id = test_packages[0]
     req3.filled_slots_count = 1
     req3.robot_id = 'sg2_in_01'
+    req3.workstation_qr_id = "QR_WS01"
+    req3.package_qr_id = "QR_PKG_001"
     future3 = node.report_inbound_client.call_async(req3)
     while rclpy.ok() and not future3.done():
         time.sleep(0.1)
@@ -156,6 +162,8 @@ def run_client_scenario(node):
     req4.package_id = test_packages[1]
     req4.filled_slots_count = 2
     req4.robot_id = 'sg2_in_01'
+    req4.workstation_qr_id = "QR_WS01"
+    req4.package_qr_id = "QR_PKG_002"
     future4 = node.report_inbound_client.call_async(req4)
     while rclpy.ok() and not future4.done():
         time.sleep(0.1)
@@ -167,6 +175,8 @@ def run_client_scenario(node):
     req5.package_id = test_packages[2]
     req5.filled_slots_count = 3
     req5.robot_id = 'sg2_in_01'
+    req5.workstation_qr_id = "QR_WS01"
+    req5.package_qr_id = "QR_PKG_003"
     future5 = node.report_inbound_client.call_async(req5)
     while rclpy.ok() and not future5.done():
         time.sleep(0.1)

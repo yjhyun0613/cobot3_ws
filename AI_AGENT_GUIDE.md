@@ -37,7 +37,7 @@ graph TD
 | :--- | :--- | :--- | :--- |
 | **상자 (Packages)** | `PKG_RAND_XXX` | 입고되는 개별 택배 박스 | 유동적 생성 |
 | **작업대 슬롯 (Slots)** | `WORKSTATION_WSxx_SLOT_y` | 각 작업대의 2x2 슬롯 개별 식별용 | 총 40개 (`WS01_SLOT_1` ~ `WS10_SLOT_4`) |
-| **바닥 격자 (Floor Grid)** | `FLOOR_X_{x}_Y_{y}` | AMR 격자 주행용 미터법 절대 좌표 마커 | 총 2,303개 (간격 1.5m, 2m 마진 반영) |
+| **바닥 격자 (Floor Grid)** | `FLOOR_X_{x}_Y_{y}` | AMR 격자 주행용 미터법 절대 좌표 마커 | 총 1,813개 (간격 1.5m, 창고 영역 내 제한) |
 
 ---
 
@@ -136,10 +136,10 @@ python3 scratch/run_qr_simulation_test.py
 
 ### ⑥ Isaac Sim USD 맵 QR코드 생성 및 배치
 ```bash
-# 1. 2,303개 바닥 격자 및 40개 슬롯 QR 이미지 생성
+# 1. 1,813개 바닥 격자 및 40개 슬롯 QR 이미지 생성
 python3 scratch/generate_all_qr_codes.py
 
-# 2. map.usd 파일에 2,303개 바닥 QR코드 메쉬/텍스처 자동 생성 및 매핑 (Isaac Sim Python 필요)
+# 2. map.usd 파일에 1,813개 바닥 QR코드 메쉬/텍스처 자동 생성 및 매핑 (Isaac Sim Python 필요)
 /home/rokey/dev_ws/isaac_sim/isaacsim/_build/linux-x86_64/release/python.sh scratch/add_all_qr_to_usd.py
 ```
 

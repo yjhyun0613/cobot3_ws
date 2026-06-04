@@ -1,7 +1,8 @@
 # Goal: 포장 공정 개시 명령
 string workstation_id      # 포장할 작업대 ID
 string today_date          # 출고 ID 생성용 오늘 날짜 (YYYYMMDD)
-int32 workstation_aruco_id # 작업대 ArUco 마커 ID
+string workstation_qr_id   # 작업대 QR코드 ID
+
 ---
 # Result: 작업대 내 모든 포장 완료 결과
 bool success               # 4개 칸 포장 완수 여부

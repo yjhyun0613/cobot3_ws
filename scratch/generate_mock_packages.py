@@ -16,8 +16,8 @@ for i in range(1, 101):
     pkg_id = f"PKG_RAND_{i:03d}"
     customer = random.choice(names)
     route_zone = random.choice(date_pool)
-    aruco_id = 100 + i
-    lines.append(f"('{pkg_id}', '{customer}', '{route_zone}', 'WAITING', {aruco_id})")
+    qr_id = f"QR_PKG_{i:03d}"
+    lines.append(f"('{pkg_id}', '{customer}', '{route_zone}', 'WAITING', '{qr_id}')")
 
-sql_insert = "INSERT INTO packages (package_id, customer_name, route_zone, status, aruco_id) VALUES\n" + ",\n".join(lines) + ";"
+sql_insert = "INSERT INTO packages (package_id, customer_name, route_zone, status, qr_id) VALUES\n" + ",\n".join(lines) + ";"
 print(sql_insert)

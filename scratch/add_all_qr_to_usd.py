@@ -137,7 +137,7 @@ def main():
     # 새로운 FloorQRs root xform 정의
     UsdGeom.Xform.Define(stage, Sdf.Path(floor_qrs_root))
 
-    # 3. 격자 좌표 연산
+    # 3. 격자 좌표 연산 (사용자 요청에 따른 창고 영역 크기 필터 적용)
     margin = 2.0
     spacing = 1.5
     
@@ -146,16 +146,23 @@ def main():
     x_end = map_info['origin_x'] + map_info['width_m'] - margin
     y_end = map_info['origin_y'] + map_info['height_m'] - margin
 
+    x_min, x_max = -38.0, 38.0
+    y_min, y_max = -36.08472, 25.0
+
     x_coords = []
     x = x_start
     while x <= x_end:
-        x_coords.append(round(x, 3))
+        rx = round(x, 3)
+        if x_min <= rx <= x_max:
+            x_coords.append(rx)
         x += spacing
 
     y_coords = []
     y = y_start
     while y <= y_end:
-        y_coords.append(round(y, 3))
+        ry = round(y, 3)
+        if y_min <= ry <= y_max:
+            y_coords.append(ry)
         y += spacing
 
     print(f"바닥 격자 구성 정보:")

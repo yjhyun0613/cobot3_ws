@@ -47,7 +47,7 @@ def load_map_info(yaml_path):
 
 def main():
     parser = argparse.ArgumentParser(description="물류창고 자산용 통합 QR코드 생성기")
-    parser.add_argument("--all-floor", action="store_true", help="2,303개의 모든 바닥 격자 QR코드를 생성합니다 (시간이 다소 걸립니다)")
+    parser.add_argument("--all-floor", action="store_true", help="1,813개의 모든 바닥 격자 QR코드를 생성합니다 (시간이 다소 걸립니다)")
     args = parser.parse_args()
 
     print("=== 물류창고 통합 QR코드 자산 빌더 구동 ===")
@@ -116,17 +116,24 @@ def main():
     x_end = map_info['origin_x'] + map_info['width_m'] - margin
     y_end = map_info['origin_y'] + map_info['height_m'] - margin
 
-    # 좌표 리스트 계산
+    # 좌표 리스트 계산 (사용자 요청에 따른 창고 영역 크기 필터 적용)
+    x_min, x_max = -38.0, 38.0
+    y_min, y_max = -36.08472, 25.0
+
     x_coords = []
     x = x_start
     while x <= x_end:
-        x_coords.append(round(x, 3))
+        rx = round(x, 3)
+        if x_min <= rx <= x_max:
+            x_coords.append(rx)
         x += spacing
 
     y_coords = []
     y = y_start
     while y <= y_end:
-        y_coords.append(round(y, 3))
+        ry = round(y, 3)
+        if y_min <= ry <= y_max:
+            y_coords.append(ry)
         y += spacing
 
     total_points = len(x_coords) * len(y_coords)

@@ -99,15 +99,20 @@
 
 * **10:10** - **고정 설비 및 바닥 격자 맵 기반 QR코드 통합 생성 모듈 구현**
   * `warehouse.yaml` 파일의 origin 및 resolution 정보를 파싱하여 실제 ROS 월드 좌표계를 계산하는 `scratch/generate_all_qr_codes.py` 구축.
-  * 외곽 2.0m 보행자 안전 통로를 제외한 내측 주행 영역에 1.5m 간격으로 2,303개의 격자점(Node) 좌표(`FLOOR_X_..._Y_...`)를 연산하고 샘플 및 로봇/작업대용 고정 QR코드 파일 생성 완료.
+  * 외곽 2.0m 보행자 안전 통로를 제외한 내측 주행 영역에 1.5m 간격으로 1,813개의 격자점(Node) 좌표(`FLOOR_X_..._Y_...`)를 연산하고 샘플 및 로봇/작업대용 고정 QR코드 파일 생성 완료.
 
-* **10:35** - **USD 맵 파일(map.usd) 내 바닥 QR코드 2,303개 자동 일괄 매핑 완료**
+* **10:35** - **USD 맵 파일(map.usd) 내 바닥 QR코드 1,813개 자동 일괄 매핑 완료**
   * Isaac Sim 내장 `pxr` (Universal Scene Description) API와 `SimulationApp`을 연동한 `scratch/add_all_qr_to_usd.py` 자동화 스크립트 작성.
-  * 기존 비어있던 `src/cobot3/resource/map.usd` 맵 파일에 2,303개의 격자 평면(Quad Mesh)과 PBR 텍스처 재질(Material)을 10초 만에 완벽히 추가 및 바인딩하여 맵 최종 갱신 완료 (용량 473KB로 최적화).
+  * 기존 비어있던 `src/cobot3/resource/map.usd` 맵 파일에 1,813개의 격자 평면(Quad Mesh)과 PBR 텍스처 재질(Material)을 10초 만에 완벽히 추가 및 바인딩하여 맵 최종 갱신 완료 (용량 372KB로 최적화).
 
 * **10:46** - **바닥 반사 방지 및 QR 시인성 향상을 위한 USD 조명 최적화 완료**
   * 강한 직사광으로 발생하던 바닥의 하얗게 타는 현상(Specular Glare)을 해결하기 위해 기존 `defaultLight` (DistantLight) 세기를 3000.0에서 600.0으로 대폭 낮춤.
   * 사방에서 균일하고 부드러운 환경 빛을 제공하는 `domeLight` (DomeLight, 세기 1200.0)를 새로 추가하여 그림자를 제거하고 전체 밝기를 균일하게 맞추어 카메라 센서의 QR코드 비전 인식률을 최적화함.
+
+* **11:30** - **창고 영역 외곽 QR코드 생성 억제를 위한 경계 제한(Bounding Box) 설정 및 맵 재생성 완료**
+  * 창고 외부 벽면 바깥에 바닥 격자 QR코드가 불필요하게 대량으로 생성되는 현상을 억제하기 위해, QR 생성 범위를 사용자가 지정한 창고 바닥 영역 크기(X: [-38.0, 38.0], Y: [-36.08472, 25.0]) 내로 제한하는 Bounding Box 필터 적용.
+  * `generate_all_qr_codes.py` 및 `add_all_qr_to_usd.py` 내부의 좌표 생성 루프를 수정하여 필터 로직 삽입 완료.
+  * 범위 제한 결과 총 격자 마커의 개수가 기존 2,303개에서 **1,813개**로 최적화되었으며, `generate_all_qr_codes.py`를 실행하여 제한된 영역의 QR코드 이미지 자산을 재생성하고, `add_all_qr_to_usd.py`를 사용해 `map.usd` 파일에 격자 평면을 성공적으로 다시 갱신함.
 
 
 
