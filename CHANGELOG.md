@@ -101,4 +101,9 @@
   * `warehouse.yaml` 파일의 origin 및 resolution 정보를 파싱하여 실제 ROS 월드 좌표계를 계산하는 `scratch/generate_all_qr_codes.py` 구축.
   * 외곽 2.0m 보행자 안전 통로를 제외한 내측 주행 영역에 1.5m 간격으로 2,303개의 격자점(Node) 좌표(`FLOOR_X_..._Y_...`)를 연산하고 샘플 및 로봇/작업대용 고정 QR코드 파일 생성 완료.
 
+* **10:35** - **USD 맵 파일(map.usd) 내 바닥 QR코드 2,303개 자동 일괄 매핑 완료**
+  * Isaac Sim 내장 `pxr` (Universal Scene Description) API와 `SimulationApp`을 연동한 `scratch/add_all_qr_to_usd.py` 자동화 스크립트 작성.
+  * 기존 비어있던 `src/cobot3/resource/map.usd` 맵 파일에 2,303개의 격자 평면(Quad Mesh)과 PBR 텍스처 재질(Material)을 10초 만에 완벽히 추가 및 바인딩하여 맵 최종 갱신 완료 (용량 473KB로 최적화).
+
+
 
