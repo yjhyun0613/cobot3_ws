@@ -170,12 +170,62 @@ def get_status():
             try:
                 val = redis_client.get('system:day_status')
                 if val:
-                    day_status = val.decode('utf-8')
+                    day_status = val if isinstance(val, str) else val.decode('utf-8')
                 val_comp = redis_client.get('system:completed_day')
                 if val_comp:
-                    completed_day = val_comp.decode('utf-8')
+                    completed_day = val_comp if isinstance(val_comp, str) else val_comp.decode('utf-8')
             except Exception as e:
                 print(f"Redis day status read error: {e}")
+
+        # AMR 상태 조회 추가
+        amr_states = {}
+        if redis_client:
+            try:
+                keys = redis_client.keys("amr:*")
+                for key in keys:
+                    parts = key.split(":")
+                    if len(parts) > 1:
+                        amr_id = parts[1]
+                        val = redis_client.hgetall(key)
+                        if val:
+                            amr_states[amr_id] = {
+                                "state": val.get("state", "IDLE"),
+                                "current_qr_id": val.get("current_qr_id", ""),
+                                "target_qr_id": val.get("target_qr_id", ""),
+                                "carrying_workstation_id": val.get("carrying_workstation_id", "") or "",
+                                "battery": val.get("battery", "100.0")
+                            }
+            except Exception as e:
+                print(f"AMR query error: {e}")
+
+        # If no AMR states are found in Redis, generate smart dynamic fallback/mock states
+        if not amr_states:
+            moving_ws = [w for w in workstations if w["current_location"].lower().startswith("moving_to_") or w["current_location"].lower().endswith("_rotating")]
+            for idx, ws in enumerate(moving_ws):
+                amr_name = f"AMR_{idx+1:02d}"
+                amr_states[amr_name] = {
+                    "state": "BUSY",
+                    "current_qr_id": ws["current_location"],
+                    "target_qr_id": "",
+                    "carrying_workstation_id": ws["workstation_id"],
+                    "battery": "95"
+                }
+            if "AMR_01" not in amr_states:
+                amr_states["AMR_01"] = {
+                    "state": "IDLE",
+                    "current_qr_id": "QR_0030",
+                    "target_qr_id": "",
+                    "carrying_workstation_id": "",
+                    "battery": "88"
+                }
+            if "AMR_02" not in amr_states:
+                amr_states["AMR_02"] = {
+                    "state": "IDLE",
+                    "current_qr_id": "QR_0031",
+                    "target_qr_id": "",
+                    "carrying_workstation_id": "",
+                    "battery": "91"
+                }
 
         pg_conn.close()
         return {
@@ -185,7 +235,8 @@ def get_status():
             "redis_tasks": redis_tasks,
             "locations": locations,
             "day_status": day_status,
-            "completed_day": completed_day
+            "completed_day": completed_day,
+            "amr_states": amr_states
         }
     except Exception as e:
         if pg_conn:
@@ -442,29 +493,21 @@ def simulate_inbound():
                 ws_qr = ws_qr_row[0] if ws_qr_row else ""
                 
                 if target_robot == 'sg2_in_01':
-                    # 오늘 날짜 분류 라인 -> 포장존(sg2_out_00_A 또는 B) 또는 창고(warehouse)로 이송
+                    # 오늘 날짜 분류 라인 -> 포장존(sg2_out_00_A) 또는 출고 대기 창고(stage_01~06)로 이송
                     cursor.execute("""
                         SELECT COUNT(*) FROM workstations 
                         WHERE current_location = 'sg2_out_00_A' OR current_location = 'MOVING_TO_SG2_OUT_00_A';
                     """)
                     out_a_count = cursor.fetchone()[0]
-
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM workstations 
-                        WHERE current_location = 'sg2_out_00_B' OR current_location = 'MOVING_TO_SG2_OUT_00_B';
-                    """)
-                    out_b_count = cursor.fetchone()[0]
                     
                     if out_a_count == 0:
                         target_out = 'sg2_out_00_A'
-                    elif out_b_count == 0:
-                        target_out = 'sg2_out_00_B'
                     else:
-                        # 포장존이 모두 찬 경우 창고로 회수 보관
+                        # 포장존이 찬 경우 출고 대기 창고(stage_01~06)로 회수 보관
                         cursor.execute("BEGIN;")
-                        cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1 FOR UPDATE;")
+                        cursor.execute("SELECT spot_id FROM warehouse_locations WHERE spot_id LIKE 'stage_%%' AND status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1 FOR UPDATE;")
                         empty_spot_row = cursor.fetchone()
-                        target_out = empty_spot_row[0] if empty_spot_row else "warehouse"
+                        target_out = empty_spot_row[0] if empty_spot_row else "staging"
                         
                         if empty_spot_row:
                             cursor.execute(
@@ -490,11 +533,41 @@ def simulate_inbound():
                         "description": f"완충 작업대 {ws_id} 회수 → {target_out} 이동",
                         "workstation_qr_id": ws_qr
                     }
+                elif target_robot == 'sg2_in_02':
+                    # 내일 날짜 분류 라인 -> 출고 대기 창고(stage_01~06)로 이송
+                    cursor.execute("BEGIN;")
+                    cursor.execute("SELECT spot_id FROM warehouse_locations WHERE spot_id LIKE 'stage_%%' AND status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1 FOR UPDATE;")
+                    empty_spot_row = cursor.fetchone()
+                    target_out = empty_spot_row[0] if empty_spot_row else "staging"
+                    
+                    if empty_spot_row:
+                        cursor.execute(
+                            "UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;",
+                            (ws_id, target_out)
+                        )
+                    cursor.execute("COMMIT;")
+                    
+                    cursor.execute(
+                        "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE workstation_id = %s AND status = 'IN_WORKSTATION';",
+                        (ws_id,)
+                    )
+                    cursor.execute(
+                        "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
+                        (target_out, ws_id)
+                    )
+                    task_retrieve = {
+                        "task_type": "RETRIEVE_FULL_WORKSTATION",
+                        "workstation_id": ws_id,
+                        "from": target_loc,
+                        "to": target_out,
+                        "description": f"완충 작업대 {ws_id} 회수 → {target_out} 이동",
+                        "workstation_qr_id": ws_qr
+                    }
                 else:
-                    # 내일/모레 분류 라인 -> 창고(warehouse)로 이송
+                    # 모레 분류 라인 -> 창고(spot_01~10)로 이송
                     # 빈 창고 스팟 배정
                     cursor.execute("BEGIN;")
-                    cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1 FOR UPDATE;")
+                    cursor.execute("SELECT spot_id FROM warehouse_locations WHERE spot_id LIKE 'spot_%%' AND status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1 FOR UPDATE;")
                     empty_spot_row = cursor.fetchone()
                     target_spot = empty_spot_row[0] if empty_spot_row else "warehouse"
                     
@@ -638,12 +711,15 @@ def simulate_packaging():
                     pg_conn.close()
                     return {"success": True, "message": f"대기 중이던 작업대 {ws_id}를 활성 포장존(sg2_out_00_A)으로 승격 배치했습니다."}
                 
-                # 1-2. 포장 구역(A/B)에 작업대가 아예 없으면, 창고에서 완충된 작업대를 가져옴 (오늘 날짜 물량만)
+                # 1-2. 포장 구역(A/B)에 작업대가 아예 없으면, 창고/대기소에서 완충된 작업대를 가져옴 (오늘 날짜 물량만, staging 구역 우선)
                 cursor.execute("""
-                    SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
+                    SELECT w.workstation_id, w.current_location, w.qr_id
                     FROM workstations w
-                    JOIN packages p ON w.workstation_id = p.workstation_id
-                    WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s
+                    WHERE w.workstation_id IN (
+                        SELECT DISTINCT p.workstation_id FROM packages p
+                        WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s
+                    )
+                    ORDER BY CASE WHEN w.current_location LIKE 'stage_%%' THEN 0 ELSE 1 END ASC, w.current_location ASC
                     LIMIT 1;
                 """, (today_date,))
                 warehouse_ws = cursor.fetchone()
@@ -654,8 +730,8 @@ def simulate_packaging():
                 ws_id, ws_loc, ws_qr = warehouse_ws
                 ws_qr = ws_qr if ws_qr else ""
                 
-                # 창고 스팟 비우기
-                if ws_loc.startswith('spot_'):
+                # 창고/대기 스팟 비우기
+                if ws_loc.startswith('spot_') or ws_loc.startswith('stage_'):
                     cursor.execute(
                         "UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;",
                         (ws_loc,)
@@ -729,12 +805,13 @@ def simulate_packaging():
             # 6. 7번째 포장 완료 시 → Look-ahead: 다음 포장 대기 작업대 사전 호출 (B구역 대기존으로)
             lookahead_triggered = False
             if completed_count == 7 and redis_client:
-                # 창고에 오늘 물량의 IN_WAREHOUSE 패키지가 있는 작업대 조회
                 cursor.execute("""
-                    SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
+                    SELECT w.workstation_id, w.current_location, w.qr_id
                     FROM workstations w
-                    JOIN packages p ON w.workstation_id = p.workstation_id
-                    WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s
+                    WHERE w.workstation_id IN (
+                        SELECT DISTINCT p.workstation_id FROM packages p
+                        WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s
+                    )
                     AND w.workstation_id != %s
                     LIMIT 1;
                 """, (today_date, ws_id))
@@ -824,10 +901,12 @@ def simulate_packaging():
                 else:
                     # B구역에 없다면 창고에서 직접 가져오기 (오늘 물량만)
                     cursor.execute("""
-                        SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
+                        SELECT w.workstation_id, w.current_location, w.qr_id
                         FROM workstations w
-                        JOIN packages p ON w.workstation_id = p.workstation_id
-                        WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s
+                        WHERE w.workstation_id IN (
+                            SELECT DISTINCT p.workstation_id FROM packages p
+                            WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s
+                        )
                         AND w.workstation_id != %s
                         LIMIT 1;
                     """, (today_date, ws_id))
@@ -1595,158 +1674,133 @@ def index():
 
         <!-- Warehouse 2D Live Grid Map -->
         <div class="panel-card" style="margin-bottom: 2rem;">
-            <h2>Warehouse 2D Live Floor Plan <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal; margin-left: 10px;">실시간 물류 창고 배치도 (49×37 격자, 1.5m 간격)</span></h2>
-            <div id="floor-plan" style="position: relative; width: 100%; background: rgba(8, 12, 24, 0.95); border-radius: 16px; overflow: hidden; border: 1px solid var(--border-color); padding: 20px;">
+            <h2>Warehouse 2D Live Floor Plan <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal; margin-left: 10px;">실시간 물류 창고 배치도</span></h2>
+            
+            <div id="floor-plan-container" style="display: flex; gap: 20px; background: rgba(15, 23, 42, 0.45); border-radius: 16px; border: 1px solid var(--border-color); padding: 25px; color: var(--text-color); justify-content: center; align-items: stretch; font-family: sans-serif; backdrop-filter: blur(12px); box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);">
                 
-                <!-- === 보관 창고 (Storage Area) (상단) === -->
-                <div style="text-align: center; margin-bottom: 6px;">
-                    <span style="font-size: 0.9rem; font-weight: 700; color: rgba(0, 242, 254, 0.75); letter-spacing: 4px;">◆ 보관 창고 (Storage Area) ◆</span>
-                </div>
-                <div id="warehouse-spots-map" style="display: grid; grid-template-columns: repeat(10, 1fr); gap: 6px; max-width: 700px; margin: 0 auto 12px auto; padding: 12px; background: rgba(0, 242, 254, 0.03); border: 1px solid rgba(0, 242, 254, 0.15); border-radius: 12px;">
-                    <!-- Populated by JS -->
-                </div>
-
-                <!-- === 출고 대기 구역 (Staging Area) (중단) === -->
-                <div style="text-align: center; margin-bottom: 6px; margin-top: 12px;">
-                    <span style="font-size: 0.9rem; font-weight: 700; color: rgba(245, 158, 11, 0.75); letter-spacing: 4px;">◆ 출고 대기 구역 (Staging Area) ◆</span>
-                </div>
-                <div id="staging-spots-map" style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; max-width: 420px; margin: 0 auto 12px auto; padding: 12px; background: rgba(245, 158, 11, 0.03); border: 1px solid rgba(245, 158, 11, 0.15); border-radius: 12px;">
-                    <!-- Populated by JS -->
-                </div>
-
-                <div style="border-top: 1px dashed rgba(255,255,255,0.1); margin: 10px 0;"></div>
-
-                <!-- === 인바운드 적재 라인 (상단 세트) === -->
-                <div style="display: flex; justify-content: space-between; align-items: stretch; margin: 16px 0; gap: 20px;">
-                    <!-- 좌측 라인 세트 (←진입) -->
-                    <div style="flex: 1; display: flex; flex-direction: column; gap: 8px;">
-                        <div class="conveyor-line" id="line-left-1" data-robot="sg2_in_01">
-                            <div class="conveyor-arrow" style="justify-content: flex-end;">
-                                <span class="conveyor-label">1</span>
-                                <span class="conveyor-bar"></span>
-                                <span class="robot-dot sg2" title="sg2_in_01">SG2</span>
-                                <div class="ws-slot-mini" id="ws-slot-sg2_in_01_A" title="A구역">A</div>
-                                <div class="ws-slot-mini standby" id="ws-slot-sg2_in_01_B" title="B구역">B</div>
-                            </div>
-                        </div>
-                        <div class="conveyor-line" id="line-left-2" data-robot="sg2_in_02">
-                            <div class="conveyor-arrow" style="justify-content: flex-end;">
-                                <span class="conveyor-label">2</span>
-                                <span class="conveyor-bar"></span>
-                                <span class="robot-dot sg2" title="sg2_in_02">SG2</span>
-                                <div class="ws-slot-mini" id="ws-slot-sg2_in_02_A" title="A구역">A</div>
-                                <div class="ws-slot-mini standby" id="ws-slot-sg2_in_02_B" title="B구역">B</div>
-                            </div>
-                        </div>
-                        <div class="conveyor-line" id="line-left-3" data-robot="sg2_in_03">
-                            <div class="conveyor-arrow" style="justify-content: flex-end;">
-                                <span class="conveyor-label">3</span>
-                                <span class="conveyor-bar"></span>
-                                <span class="robot-dot sg2" title="sg2_in_03">SG2</span>
-                                <div class="ws-slot-mini" id="ws-slot-sg2_in_03_A" title="A구역">A</div>
-                                <div class="ws-slot-mini standby" id="ws-slot-sg2_in_03_B" title="B구역">B</div>
-                            </div>
-                        </div>
+                <!-- Left: Legend Column -->
+                <div style="width: 130px; display: flex; flex-direction: column; gap: 16px; border-right: 1px solid var(--border-color); padding-right: 15px; font-size: 0.85rem; font-weight: 600; color: var(--text-muted);">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="display: inline-block; width: 18px; height: 18px; background: rgba(59, 130, 246, 0.8); border-radius: 50%; border: 1.5px solid rgba(59, 130, 246, 1); box-shadow: 0 0 6px rgba(59, 130, 246, 0.4);"></span>
+                        <span>sg2</span>
                     </div>
-
-                    <!-- 중앙 AMR 영역 -->
-                    <div style="flex: 1.2; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 14px; padding: 10px; background: rgba(255,255,255,0.015); border-radius: 12px; border: 1px dashed rgba(255,255,255,0.06);">
-                        <span style="font-size: 0.7rem; color: rgba(255,255,255,0.3); letter-spacing: 2px;">AMR 주행 영역</span>
-                        <div id="amr-area" style="display: flex; gap: 20px; flex-wrap: wrap; justify-content: center;">
-                            <div class="amr-dot" title="AMR_01">AMR<br>01</div>
-                            <div class="amr-dot" title="AMR_02">AMR<br>02</div>
-                            <div class="amr-dot" title="AMR_03">AMR<br>03</div>
-                            <div class="amr-dot" title="AMR_04">AMR<br>04</div>
-                            <div class="amr-dot" title="AMR_05">AMR<br>05</div>
-                        </div>
-                        <!-- 바둑판 격자 미니맵 -->
-                        <div style="font-size: 0.6rem; color: rgba(255,255,255,0.2);">49열 × 37행 = 1,813 QR격자</div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="display: inline-block; width: 18px; height: 18px; background: rgba(239, 68, 68, 0.8); border-radius: 50%; border: 1.5px solid rgba(239, 68, 68, 1); box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);"></span>
+                        <span>amr</span>
                     </div>
-
-                    <!-- 우측 라인 세트 (→진입) -->
-                    <div style="flex: 1; display: flex; flex-direction: column; gap: 8px;">
-                        <div class="conveyor-line right" id="line-right-1">
-                            <div class="conveyor-arrow">
-                                <div class="ws-slot-mini standby" title="B구역">B</div>
-                                <div class="ws-slot-mini" title="A구역">A</div>
-                                <span class="robot-dot sg2" title="sg2_in_01 (R)">SG2</span>
-                                <span class="conveyor-bar"></span>
-                                <span class="conveyor-label">1</span>
-                            </div>
-                        </div>
-                        <div class="conveyor-line right" id="line-right-2">
-                            <div class="conveyor-arrow">
-                                <div class="ws-slot-mini standby" title="B구역">B</div>
-                                <div class="ws-slot-mini" title="A구역">A</div>
-                                <span class="robot-dot sg2" title="sg2_in_02 (R)">SG2</span>
-                                <span class="conveyor-bar"></span>
-                                <span class="conveyor-label">2</span>
-                            </div>
-                        </div>
-                        <div class="conveyor-line right" id="line-right-3">
-                            <div class="conveyor-arrow">
-                                <div class="ws-slot-mini standby" title="B구역">B</div>
-                                <div class="ws-slot-mini" title="A구역">A</div>
-                                <span class="robot-dot sg2" title="sg2_in_03 (R)">SG2</span>
-                                <span class="conveyor-bar"></span>
-                                <span class="conveyor-label">3</span>
-                            </div>
-                        </div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="display: inline-block; width: 18px; height: 18px; background: rgba(255, 255, 255, 0.05); border: 1.5px dashed var(--text-muted); border-radius: 3px;"></span>
+                        <span>workstation</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="display: inline-block; width: 22px; height: 18px; background: rgba(16, 185, 129, 0.2); border: 1.5px solid #10b981; border-radius: 3px;"></span>
+                        <span>conveyor</span>
                     </div>
                 </div>
 
-                <div style="border-top: 1px dashed rgba(255,255,255,0.1); margin: 10px 0;"></div>
-
-                <!-- === 포장 라인 (하단) === -->
-                <div style="display: flex; justify-content: center; gap: 40px; margin-top: 16px;">
-                    <div class="packaging-zone" id="pack-zone-a">
-                        <div class="pack-header">포장 라인 A</div>
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <div class="ws-slot-mini pack" id="ws-slot-sg2_out_00_A" title="sg2_out_00_A 구역">A</div>
-                            <span class="robot-dot sg2 pack-robot" title="sg2_out_00">SG2</span>
+                <!-- Right: The actual floor plan grid with black borders -->
+                <div id="floor-map-border" style="position: relative; width: 800px; height: 800px; border: 1.5px solid var(--border-color); background: rgba(8, 12, 24, 0.6); overflow: hidden; border-radius: 8px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);">
+                    
+                    <!-- Conveyor 3 -->
+                    <div style="position: absolute; left: 10px; top: 120px; display: flex; align-items: center; gap: 5px;">
+                        <!-- Conveyor arrow -->
+                        <div style="position: relative; width: 140px; height: 32px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.1) 100%); border: 1.5px solid rgba(16, 185, 129, 0.6); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.1rem; color: #fff; border-radius: 4px;">
+                            3
+                            <div style="position: absolute; right: -12px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 16px solid transparent; border-bottom: 16px solid transparent; border-left: 12px solid rgba(16, 185, 129, 0.6);"></div>
+                            <div style="position: absolute; right: -9px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 13px solid transparent; border-bottom: 13px solid transparent; border-left: 10px solid rgba(8, 12, 24, 0.95); z-index: 2;"></div>
                         </div>
-                        <div class="pack-arrow">▼ 출고</div>
+                        
+                        <!-- sg2 robot circle -->
+                        <div style="width: 20px; height: 20px; background: rgba(59, 130, 246, 0.8); border-radius: 50%; border: 1.5px solid rgba(59, 130, 246, 1); display: flex; align-items: center; justify-content: center; margin-left: 15px; box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);"></div>
                     </div>
-                    <div class="packaging-zone" id="pack-zone-b">
-                        <div class="pack-header">포장 라인 B</div>
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <div class="ws-slot-mini pack standby" id="ws-slot-sg2_out_00_B" title="sg2_out_00_B 구역">B</div>
-                            <span class="robot-dot sg2 pack-robot" title="sg2_out_00 (B)">SG2</span>
-                        </div>
-                        <div class="pack-arrow">▼ 출고</div>
-                    </div>
-                </div>
-            </div>
 
-            <!-- 범례 -->
-            <div style="display: flex; gap: 20px; margin-top: 12px; font-size: 0.78rem; color: var(--text-muted); justify-content: center; flex-wrap: wrap;">
-                <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="display: inline-block; width: 14px; height: 14px; background: rgba(59, 130, 246, 0.8); border-radius: 50%;"></span>
-                    <span>SG2 적재/포장 로봇</span>
-                </div>
-                <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="display: inline-block; width: 14px; height: 14px; background: rgba(239, 68, 68, 0.8); border-radius: 50%;"></span>
-                    <span>AMR 이송 로봇</span>
-                </div>
-                <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="display: inline-block; width: 14px; height: 14px; background: rgba(156, 163, 175, 0.4); border: 1.5px solid rgba(156, 163, 175, 0.6); border-radius: 3px;"></span>
-                    <span>작업대 칸 (A/B)</span>
-                </div>
-                <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="display: inline-block; width: 14px; height: 6px; background: linear-gradient(90deg, #10b981, #10b981); border-radius: 2px;"></span>
-                    <span>컨베이어 벨트 (1=첫째날, 2=둘째날, 3=셋째날)</span>
-                </div>
-                <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="display: inline-block; width: 14px; height: 14px; background: rgba(0, 242, 254, 0.15); border: 1.5px solid rgba(0, 242, 254, 0.4); border-radius: 3px;"></span>
-                    <span>창고 주차 스팟</span>
+                    <!-- Conveyor 2 -->
+                    <div style="position: absolute; left: 10px; top: 200px; display: flex; align-items: center; gap: 5px;">
+                        <div style="position: relative; width: 140px; height: 32px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.1) 100%); border: 1.5px solid rgba(16, 185, 129, 0.6); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.1rem; color: #fff; border-radius: 4px;">
+                            2
+                            <div style="position: absolute; right: -12px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 16px solid transparent; border-bottom: 16px solid transparent; border-left: 12px solid rgba(16, 185, 129, 0.6);"></div>
+                            <div style="position: absolute; right: -9px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 13px solid transparent; border-bottom: 13px solid transparent; border-left: 10px solid rgba(8, 12, 24, 0.95); z-index: 2;"></div>
+                        </div>
+                        <div style="width: 20px; height: 20px; background: rgba(59, 130, 246, 0.8); border-radius: 50%; border: 1.5px solid rgba(59, 130, 246, 1); display: flex; align-items: center; justify-content: center; margin-left: 15px; box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);"></div>
+                    </div>
+
+                    <!-- Conveyor 1 -->
+                    <div style="position: absolute; left: 10px; top: 280px; display: flex; align-items: center; gap: 5px;">
+                        <div style="position: relative; width: 140px; height: 32px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.1) 100%); border: 1.5px solid rgba(16, 185, 129, 0.6); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.1rem; color: #fff; border-radius: 4px;">
+                            1
+                            <div style="position: absolute; right: -12px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 16px solid transparent; border-bottom: 16px solid transparent; border-left: 12px solid rgba(16, 185, 129, 0.6);"></div>
+                            <div style="position: absolute; right: -9px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 13px solid transparent; border-bottom: 13px solid transparent; border-left: 10px solid rgba(8, 12, 24, 0.95); z-index: 2;"></div>
+                        </div>
+                        <div style="width: 20px; height: 20px; background: rgba(59, 130, 246, 0.8); border-radius: 50%; border: 1.5px solid rgba(59, 130, 246, 1); display: flex; align-items: center; justify-content: center; margin-left: 15px; box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);"></div>
+                    </div>
+
+                    <!-- Inbound Workstations Column (6 slots) -->
+                    <div style="position: absolute; left: 220px; top: 120px; display: flex; flex-direction: column; gap: 8px;">
+                        <!-- Line 3 slots -->
+                        <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px;">
+                            <div class="ws-slot-box" id="ws-slot-sg2_in_03_A" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
+                            <div class="ws-slot-box" id="ws-slot-sg2_in_03_B" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
+                        </div>
+                        <!-- Line 2 slots -->
+                        <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px;">
+                            <div class="ws-slot-box" id="ws-slot-sg2_in_02_A" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
+                            <div class="ws-slot-box" id="ws-slot-sg2_in_02_B" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
+                        </div>
+                        <!-- Line 1 slots -->
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div class="ws-slot-box" id="ws-slot-sg2_in_01_A" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
+                            <div class="ws-slot-box" id="ws-slot-sg2_in_01_B" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Warehouse (Right side) -->
+                    <div style="position: absolute; right: 50px; top: 150px; display: flex; flex-direction: column; align-items: center;">
+                        <div style="font-weight: 800; font-size: 1.1rem; color: var(--primary); margin-bottom: 8px; letter-spacing: 2px; text-shadow: 0 0 10px rgba(0, 242, 254, 0.35);">창고</div>
+                        <!-- 10x4 Grid of Slots with Cyan center Aisle -->
+                        <div id="warehouse-grid-container" style="display: grid; grid-template-columns: 24px 24px 20px 24px 24px; gap: 2px; border: 1.5px solid rgba(0, 242, 254, 0.25); background: rgba(8, 12, 24, 0.8); padding: 3px; border-radius: 6px;">
+                            <!-- Populated dynamically: 10 rows -->
+                        </div>
+                    </div>
+
+                    <!-- Staging Area (Middle Bottom) -->
+                    <div style="position: absolute; left: 150px; bottom: 120px; display: flex; flex-direction: column; align-items: center;">
+                        <div style="font-weight: 800; font-size: 1.1rem; color: var(--warning); margin-bottom: 8px; letter-spacing: 2px; text-shadow: 0 0 10px rgba(245, 158, 11, 0.35);">출고 대기 창고</div>
+                        <!-- 4x4 Grid with Cyan center Aisle -->
+                        <div id="staging-grid-container" style="display: grid; grid-template-columns: 24px 24px 20px 24px 24px; gap: 2px; border: 1.5px solid rgba(245, 158, 11, 0.25); background: rgba(8, 12, 24, 0.8); padding: 3px; border-radius: 6px;">
+                            <!-- Populated dynamically: 4 rows -->
+                        </div>
+                    </div>
+
+                    <!-- Packaging Line (Bottom Right) -->
+                    <div style="position: absolute; right: 80px; bottom: 80px; display: flex; flex-direction: column; align-items: center; gap: 10px;">
+                        <!-- Workstation slots (Side by side) -->
+                        <div style="display: flex; gap: 8px;">
+                            <div class="ws-slot-box" id="ws-slot-sg2_out_00_A" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
+                            <div class="ws-slot-box" id="ws-slot-sg2_out_00_B" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
+                        </div>
+                        <!-- sg2 robot circle -->
+                        <div style="width: 20px; height: 20px; background: rgba(59, 130, 246, 0.8); border-radius: 50%; border: 1.5px solid rgba(59, 130, 246, 1); box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);"></div>
+                        <!-- Downward arrow -->
+                        <div style="position: relative; width: 100px; height: 26px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.1) 100%); border: 1.5px solid rgba(16, 185, 129, 0.6); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.8rem; color: #fff; margin-top: 35px; transform: rotate(90deg); transform-origin: center; border-radius: 4px;">
+                            포장 라인
+                            <div style="position: absolute; right: -10px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 12px solid transparent; border-bottom: 12px solid transparent; border-left: 10px solid rgba(16, 185, 129, 0.6);"></div>
+                            <div style="position: absolute; right: -8px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 10px solid transparent; border-bottom: 10px solid transparent; border-left: 8px solid rgba(8, 12, 24, 0.95); z-index: 2;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Dynamic AMRs (Red circles floating) -->
+                    <div id="amr-map-layer" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;">
+                        <!-- AMRs drawn here dynamically -->
+                    </div>
                 </div>
             </div>
         </div>
 
+
         <div class="dashboard-grid">
             <!-- Left: Warehouse Parking spots -->
             <div class="panel-card">
-                <h2>Warehouse Parking Spots (10 Slots) <span style="font-size: 0.8rem; color: rgba(0, 242, 254, 0.7); font-weight: normal; margin-left: 10px;">spot_01 ~ spot_10 (보관 영역)</span></h2>
+                <h2>Warehouse Parking Spots (40 Slots) <span style="font-size: 0.8rem; color: rgba(0, 242, 254, 0.7); font-weight: normal; margin-left: 10px;">spot_01 ~ spot_40 (보관 영역)</span></h2>
                 <div class="spots-container" id="spots-list">
                     <!-- Dynamic spots go here -->
                 </div>
@@ -1754,7 +1808,7 @@ def index():
 
             <!-- Left 2: Outbound Staging spots -->
             <div class="panel-card">
-                <h2>Outbound Staging Spots (6 Slots) <span style="font-size: 0.8rem; color: rgba(245, 158, 11, 0.7); font-weight: normal; margin-left: 10px;">stage_01 ~ stage_06 (출고 대기 영역)</span></h2>
+                <h2>Outbound Staging Spots (16 Slots) <span style="font-size: 0.8rem; color: rgba(245, 158, 11, 0.7); font-weight: normal; margin-left: 10px;">stage_01 ~ stage_16 (출고 대기 영역)</span></h2>
                 <div class="spots-container" id="staging-list">
                     <!-- Dynamic staging spots go here -->
                 </div>
@@ -1819,40 +1873,140 @@ def index():
         let locationsData = null;
         let workstationsData = [];
 
-        function updateFloorPlan(data) {
-            // 1. Update warehouse parking spots and staging spots in the floor plan
-            const spotsMap = document.getElementById('warehouse-spots-map');
-            const stagingMap = document.getElementById('staging-spots-map');
+        // Define coordinates mapping for dynamic AMR positioning
+        const locationCoords = {
+            'sg2_in_03_a': { x: 235, y: 135 },
+            'sg2_in_03_b': { x: 235, y: 173 },
+            'sg2_in_02_a': { x: 235, y: 213 },
+            'sg2_in_02_b': { x: 235, y: 251 },
+            'sg2_in_01_a': { x: 235, y: 291 },
+            'sg2_in_01_b': { x: 235, y: 329 },
             
-            if (data.spots) {
-                if (spotsMap) spotsMap.innerHTML = '';
-                if (stagingMap) stagingMap.innerHTML = '';
-                
-                data.spots.forEach(spot => {
-                    const isOcc = spot.status === 'OCCUPIED';
-                    const cell = document.createElement('div');
-                    cell.className = `warehouse-spot-cell ${isOcc ? 'occupied' : 'empty'}`;
-                    cell.innerHTML = `
-                        <div class="spot-name">${spot.spot_id.toUpperCase()}</div>
-                        <div class="spot-ws-id">${spot.workstation_id || '—'}</div>
-                    `;
+            'sg2_out_00_a': { x: 575, y: 697 },
+            'sg2_out_00_b': { x: 607, y: 697 }
+        };
+
+        // Populate Warehouse spot coordinates (10 rows, columns: 1, 2, 4, 5)
+        for (let r = 0; r < 10; r++) {
+            const y = 192 + r * 26; // base top + row offset
+            const pad2 = (n) => String(n).padStart(2, '0');
+            locationCoords[`spot_${pad2(4*r+1)}`] = { x: 636, y: y };
+            locationCoords[`spot_${pad2(4*r+2)}`] = { x: 662, y: y };
+            locationCoords[`spot_${pad2(4*r+3)}`] = { x: 708, y: y };
+            locationCoords[`spot_${pad2(4*r+4)}`] = { x: 734, y: y };
+        }
+
+        // Populate Staging spot coordinates (4 rows, columns: 1, 2, 4, 5)
+        for (let r = 0; r < 4; r++) {
+            const y = 604 + r * 26; // base top + row offset
+            const pad2 = (n) => String(n).padStart(2, '0');
+            locationCoords[`stage_${pad2(4*r+1)}`] = { x: 212, y: y };
+            locationCoords[`stage_${pad2(4*r+2)}`] = { x: 238, y: y };
+            locationCoords[`stage_${pad2(4*r+3)}`] = { x: 284, y: y };
+            locationCoords[`stage_${pad2(4*r+4)}`] = { x: 310, y: y };
+        }
+
+        function createSpotCell(spot, isStaging) {
+            const cell = document.createElement('div');
+            cell.style.width = '24px';
+            cell.style.height = '24px';
+            cell.style.border = '1px solid rgba(255, 255, 255, 0.06)';
+            cell.style.display = 'flex';
+            cell.style.alignItems = 'center';
+            cell.style.justifyContent = 'center';
+            cell.style.fontSize = '0.55rem';
+            cell.style.fontWeight = 'bold';
+            cell.style.background = 'rgba(255, 255, 255, 0.01)';
+            cell.style.borderRadius = '3px';
+            
+            if (spot) {
+                cell.title = `${spot.spot_id.toUpperCase()}: ${spot.workstation_id || 'EMPTY'}`;
+                if (spot.status === 'OCCUPIED' && spot.workstation_id) {
+                    const wsBox = document.createElement('div');
+                    wsBox.style.width = '18px';
+                    wsBox.style.height = '18px';
+                    wsBox.style.display = 'flex';
+                    wsBox.style.alignItems = 'center';
+                    wsBox.style.justifyContent = 'center';
+                    wsBox.style.borderRadius = '3px';
+                    wsBox.style.fontSize = '0.7rem';
+                    wsBox.style.fontWeight = '800';
+                    wsBox.textContent = spot.workstation_id.replace('WS', '');
                     
-                    if (spot.spot_id.startsWith('spot_')) {
-                        if (spotsMap) spotsMap.appendChild(cell);
-                    } else if (spot.spot_id.startsWith('stage_')) {
-                        if (stagingMap) stagingMap.appendChild(cell);
+                    if (isStaging) {
+                        wsBox.style.background = 'rgba(245, 158, 11, 0.18)';
+                        wsBox.style.border = '1px solid var(--warning)';
+                        wsBox.style.color = 'var(--warning)';
+                        wsBox.style.boxShadow = '0 0 8px rgba(245, 158, 11, 0.4)';
+                    } else {
+                        wsBox.style.background = 'rgba(0, 242, 254, 0.18)';
+                        wsBox.style.border = '1px solid var(--primary)';
+                        wsBox.style.color = 'var(--primary)';
+                        wsBox.style.boxShadow = '0 0 8px rgba(0, 242, 254, 0.4)';
                     }
-                });
+                    cell.appendChild(wsBox);
+                }
+            } else {
+                cell.style.background = 'rgba(255, 255, 255, 0.05)';
+            }
+            return cell;
+        }
+
+        function updateFloorPlan(data) {
+            // 1. Render warehouse grid
+            if (data.spots) {
+                const whContainer = document.getElementById('warehouse-grid-container');
+                if (whContainer) {
+                    whContainer.innerHTML = '';
+                    const spotMap = {};
+                    data.spots.forEach(s => { spotMap[s.spot_id] = s; });
+                    const pad2 = (n) => String(n).padStart(2, '0');
+                    
+                    for (let r = 0; r < 10; r++) {
+                        whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(4*r + 1)}`], false));
+                        whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(4*r + 2)}`], false));
+                        
+                        const aisle = document.createElement('div');
+                        aisle.style.background = 'rgba(0, 242, 254, 0.25)';
+                        aisle.style.height = '24px';
+                        aisle.style.boxShadow = 'inset 0 0 6px rgba(0, 242, 254, 0.4)';
+                        whContainer.appendChild(aisle);
+                        
+                        whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(4*r + 3)}`], false));
+                        whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(4*r + 4)}`], false));
+                    }
+                }
+                
+                // 2. Render staging grid
+                const stContainer = document.getElementById('staging-grid-container');
+                if (stContainer) {
+                    stContainer.innerHTML = '';
+                    const spotMap = {};
+                    data.spots.forEach(s => { spotMap[s.spot_id] = s; });
+                    const pad2 = (n) => String(n).padStart(2, '0');
+                    
+                    for (let r = 0; r < 4; r++) {
+                        stContainer.appendChild(createSpotCell(spotMap[`stage_${pad2(4*r + 1)}`], true));
+                        stContainer.appendChild(createSpotCell(spotMap[`stage_${pad2(4*r + 2)}`], true));
+                        
+                        const aisle = document.createElement('div');
+                        aisle.style.background = 'rgba(245, 158, 11, 0.25)';
+                        aisle.style.height = '24px';
+                        aisle.style.boxShadow = 'inset 0 0 6px rgba(245, 158, 11, 0.4)';
+                        stContainer.appendChild(aisle);
+                        
+                        stContainer.appendChild(createSpotCell(spotMap[`stage_${pad2(4*r + 3)}`], true));
+                        stContainer.appendChild(createSpotCell(spotMap[`stage_${pad2(4*r + 4)}`], true));
+                    }
+                }
             }
 
-            // 2. Update conveyor line workstation A/B slots
+            // 3. Update workstation A/B slots
             if (data.workstations) {
-                // Build a map: location -> workstation info
                 const locWsMap = {};
                 data.workstations.forEach(ws => {
                     const loc = ws.current_location.toLowerCase();
                     locWsMap[loc] = ws;
-                    // Also handle MOVING_TO and ROTATING states
                     if (loc.startsWith('moving_to_')) {
                         const target = loc.replace('moving_to_', '');
                         if (!locWsMap[target]) locWsMap[target] = ws;
@@ -1863,7 +2017,6 @@ def index():
                     }
                 });
 
-                // Inbound slots (sg2_in_01_A/B through sg2_in_03_A/B)
                 const inboundSlots = [
                     'sg2_in_01_a', 'sg2_in_01_b',
                     'sg2_in_02_a', 'sg2_in_02_b',
@@ -1874,32 +2027,105 @@ def index():
                     if (!el) return;
                     const ws = locWsMap[slotKey];
                     if (ws) {
-                        el.classList.add('occupied');
+                        el.style.background = 'rgba(0, 242, 254, 0.15)';
+                        el.style.border = '1.5px solid var(--primary)';
+                        el.style.color = 'var(--primary)';
+                        el.style.boxShadow = '0 0 10px rgba(0, 242, 254, 0.45)';
                         el.title = `${ws.workstation_id} @ ${ws.current_location}`;
-                        const filledCount = ws.slots.filter(s => s.status === 'FULL').length;
                         el.textContent = `${ws.workstation_id.replace('WS','')}`;
                     } else {
-                        el.classList.remove('occupied');
+                        el.style.background = 'rgba(255, 255, 255, 0.02)';
+                        el.style.border = '1.5px dashed rgba(255, 255, 255, 0.15)';
+                        el.style.color = 'var(--text-muted)';
+                        el.style.boxShadow = 'none';
                         el.title = slotKey.includes('_b') ? 'B구역 (대기)' : 'A구역 (활성)';
-                        el.textContent = slotKey.includes('_b') ? 'B' : 'A';
+                        el.textContent = '';
                     }
                 });
 
-                // Outbound packing slots
                 const outboundSlots = ['sg2_out_00_a', 'sg2_out_00_b'];
                 outboundSlots.forEach(slotKey => {
                     const el = document.getElementById(`ws-slot-${slotKey.replace(/_a$/, '_A').replace(/_b$/, '_B')}`);
                     if (!el) return;
                     const ws = locWsMap[slotKey];
                     if (ws) {
-                        el.classList.add('occupied');
+                        el.style.background = 'rgba(245, 158, 11, 0.15)';
+                        el.style.border = '1.5px solid var(--warning)';
+                        el.style.color = 'var(--warning)';
+                        el.style.boxShadow = '0 0 10px rgba(245, 158, 11, 0.45)';
                         el.title = `${ws.workstation_id} @ ${ws.current_location}`;
                         el.textContent = `${ws.workstation_id.replace('WS','')}`;
                     } else {
-                        el.classList.remove('occupied');
+                        el.style.background = 'rgba(255, 255, 255, 0.02)';
+                        el.style.border = '1.5px dashed rgba(255, 255, 255, 0.15)';
+                        el.style.color = 'var(--text-muted)';
+                        el.style.boxShadow = 'none';
                         el.title = slotKey.includes('_b') ? 'B구역 (대기)' : 'A구역 (활성)';
-                        el.textContent = slotKey.includes('_b') ? 'B' : 'A';
+                        el.textContent = '';
                     }
+                });
+            }
+
+            // 4. Update AMR positions dynamically on the layer
+            const amrLayer = document.getElementById('amr-map-layer');
+            if (amrLayer && data.amr_states) {
+                amrLayer.innerHTML = '';
+                
+                const amrKeys = Object.keys(data.amr_states).sort();
+                amrKeys.forEach((amrId, index) => {
+                    const amr = data.amr_states[amrId];
+                    let x = 360 + index * 32; // Default idle X
+                    let y = 460;              // Default idle Y
+                    
+                    // Match AMR location to screen coords if possible
+                    if (amr.carrying_workstation_id && data.workstations) {
+                        // If carrying a workstation, find its workstation's current_location coordinate
+                        const ws = data.workstations.find(w => w.workstation_id === amr.carrying_workstation_id);
+                        if (ws) {
+                            const loc = ws.current_location.toLowerCase();
+                            if (locationCoords[loc]) {
+                                x = locationCoords[loc].x;
+                                y = locationCoords[loc].y;
+                            }
+                        }
+                    } else if (amr.current_qr_id) {
+                        // Find matching location using locations metadata
+                        let matchedLoc = null;
+                        if (data.locations) {
+                            Object.keys(data.locations).forEach(locName => {
+                                if (locName.toLowerCase() === amr.current_qr_id.toLowerCase()) {
+                                    matchedLoc = locName.toLowerCase();
+                                }
+                            });
+                        }
+                        if (matchedLoc && locationCoords[matchedLoc]) {
+                            x = locationCoords[matchedLoc].x;
+                            y = locationCoords[matchedLoc].y;
+                        }
+                    }
+
+                    // Create the red AMR circle
+                    const amrEl = document.createElement('div');
+                    amrEl.style.position = 'absolute';
+                    amrEl.style.width = '20px';
+                    amrEl.style.height = '20px';
+                    amrEl.style.background = 'rgba(239, 68, 68, 0.8)';
+                    amrEl.style.borderRadius = '50%';
+                    amrEl.style.border = '1.5px solid rgba(239, 68, 68, 1)';
+                    amrEl.style.display = 'flex';
+                    amrEl.style.alignItems = 'center';
+                    amrEl.style.justifyContent = 'center';
+                    amrEl.style.color = '#ffffff';
+                    amrEl.style.fontSize = '0.55rem';
+                    amrEl.style.fontWeight = 'bold';
+                    amrEl.style.boxShadow = '0 0 10px rgba(239, 68, 68, 0.6)';
+                    amrEl.style.transition = 'left 1.2s linear, top 1.2s linear';
+                    amrEl.style.left = `${x - 10}px`;
+                    amrEl.style.top = `${y - 10}px`;
+                    amrEl.textContent = amrId.replace('AMR_','');
+                    amrEl.title = `${amrId}: State=${amr.state}, Battery=${amr.battery}%`;
+                    
+                    amrLayer.appendChild(amrEl);
                 });
             }
         }

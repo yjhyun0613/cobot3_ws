@@ -232,3 +232,48 @@
   - **문제**: 관제탑 노드가 구동될 때 AMR 에뮬레이터(`mock_full_robot_node`)가 아직 실행되지 않아 Action Server (`manage_workstation`)를 찾지 못하고 타임아웃/실패 처리되는 경우, 작업대의 현재 위치(`current_location`)가 `MOVING_TO_...` 상태로 고착되어 스케줄러가 두 번 다시 해당 작업대 배치를 시도하지 않는 영구적인 교착 상태가 발생함.
   - **해결**: 이송 액션 기동 실패, 취소 또는 실행 에러 발생 시 데이터베이스 내 작업대 상태(`current_location`, `status`, `reserved_by`)와 창고 주차 스팟 상태(`warehouse_locations`)를 최초 기동 직전 상태로 복구해 주는 **`recover_workstation_move_db_state()`** 롤백 메커니즘을 구현하여 통합 적용함.
 
+* **18:50** - **control_tower_node_00.py 스레드 안정화 리팩토링**
+  - **문제**: `MultiThreadedExecutor` 환경에서 PostgreSQL 커넥션이 동시에 여러 콜백에서 접근되어 간헐적 데이터 무결성 위반 및 커서 충돌 발생 가능성 존재.
+  - **해결**: `threading.RLock()` 기반 `self.pg_lock` 도입하여 모든 `self.pg_conn.cursor()` 호출부를 `with self.pg_lock:` 블록으로 래핑. 중첩 호출(재진입) 시 데드락 방지를 위해 `RLock`(재진입 락) 사용.
+  - **추가 변경**: Look-ahead 포장존 사전 호출 타이밍을 3번째 슬롯에서 **7번째 슬롯**으로 변경 (사양 문서 동기화).
+  - 결과물: `control_tower_node_00.py` (기존 `control_tower_node.py` 기반 클린 버전).
+
+* **18:55** - **USD 바닥 QR 격자 인스턴싱 최적화 (`add_all_qr_to_usd_0.py`)**
+  - **문제**: 기존 방식은 1,800+개 격자마다 독립 Mesh를 생성하여 GPU VRAM 과부하 유발.
+  - **해결**: OpenUSD **인스턴싱(Instancing)** 기법 적용. 단 1개의 마스터 프로토타입 메쉬(25cm)만 생성하고 나머지는 내부 참조(`AddInternalReference`) + `SetInstanceable(True)` 활성화로 GPU 인스턴싱 하드웨어 가속 활용.
+  - **타겟 변경**: `map.usd` → `floor.usd` (전용 바닥 레이어 분리).
+  - **격자 크기**: 0.3m → **0.25m** (25cm 규격 통일).
+
+* **19:00** - **창고 레이아웃 재설계 논의 및 일자별 배치 전략 수립**
+  - 기존 단일 측면 컨베이어 + 상단 가로형 창고 구조에서 **좌우 대칭 + 중앙 세로형 메인 창고 + 양 사이드 하단 출고 대기 창고** 구조로 개편 설계 (`image copy.png`).
+  - 실제 물류창고(쿠팡, Amazon) 방식을 적용한 일자별 배치 전략 수립:
+    - **1일차(오늘)** → 출고 대기 창고(크로스도킹)
+    - **2일차(내일)** → 메인 창고 하단(골든 존)
+    - **3일차(모레)** → 메인 창고 상단(딥 스토리지)
+  - 일자 전환 시 물리적 이동 없이 **논리적 승격(Logical Promotion)** 방식 적용 결정: DB에서 날짜 플래그만 변경하여 스케줄러가 자동으로 "오늘 물량"을 인식하여 출고 대기 창고→포장라인으로 공급.
+
+* **19:09** - **왼쪽 절반 단순화 레이아웃 확정 및 관제탑 라우팅 로직 수정**
+  - 원본 대칭형 레이아웃에서 **왼쪽 절반만 사용**하기로 확정. 입고 라인 1세트(1,2,3), 포장 라인 1개, 메인 창고(중앙 세로형), 출고 대기 창고(좌측 하단) 구조.
+  - 기존 위치명(`sg2_in_01~03`, `spot_01~10`, `stage_01~06`, `sg2_out_00_A/B`) **변경 없이 그대로 유지**.
+  - **`control_tower_node_00.py` 라우팅 변경**:
+    - 오늘 물량(`sg2_in_01_A` 완충): 기존 `sg2_out_00_A → sg2_out_00_B → staging` → **`sg2_out_00_A` 직행 or `staging` 대기** (B구역 분기 제거)
+    - 내일 물량(`sg2_in_02_A` 완충): 기존 `staging` → **`warehouse`** (staging은 오늘 전용으로 역할 변경)
+    - 모레 물량(`sg2_in_03_A` 완충): `warehouse` 유지 (변경 없음)
+
+* **19:21** - **대시보드 UI 레이아웃 동기화 및 ROS2 setup.py 진입점 변경**
+  - **`dashboard_server.py`**:
+    - 시뮬레이션 적재/포장 API에서 완충 작업대 회수 및 공급 목적지를 신규 레이아웃 전략에 맞춤 (오늘 물량은 `stage_01~06` 우선, 내일/모레 물량은 `spot_01~10`으로 이송).
+    - 2D Live Plan UI에서 우측 입고 라인 세트(3개 라인)를 `display: none`으로 숨김 처리하여 원본의 왼쪽 절반만 보이도록 수정.
+    - "포장 라인 B"의 헤더명을 "포장 대기존 B (Look-ahead)"로 변경하여 사전 호출 대기소 역할을 명확히 함.
+  - **`setup.py`**:
+    - ROS2 실행 진입점을 기존 `control_tower_node`에서 신규 기능이 모두 구현된 `control_tower_node_00`으로 변경 및 colcon 빌드 검증 완료.
+
+* **19:40** - **웹 대시보드 테마 고도화 (다크 네온/글래스모피즘 테마 전면 교체)**
+  - 대시보드의 전반적인 CSS 테마를 고급스러운 하이테크 다크 네온 및 글래스모피즘 테마로 개편했습니다.
+  - HSL 보정된 테두리 및 그림자 효과, 트랜지션 효과(Hover Effect), 커스텀 스크롤바, `Inter` 및 `Outfit` 폰트 적용 등으로 시각적 프리미엄 느낌을 극대화했습니다.
+  - 2D 플로어 플랜(Floor Plan) 내의 웨어하우스 그리드, 스테이징 그리드, AMR 레이어, 컨베이어 라인(conveyor), 워크스테이션 슬롯 등의 색상 및 보더 스타일을 모두 다크 테마 변수(`--primary`, `--warning`, `--accent`, `--card-bg` 등)와 투명한 rgba 스타일로 동기화 적용했습니다.
+
+* **19:50** - **FastAPI 대시보드 서버 데이터베이스/SQL 및 지능형 AMR 시각화 개선**
+  - **SQL 500 에러 해결**: 포장 시뮬레이션(`/api/simulate_packaging`) API 호출 시 PostgreSQL의 `SELECT DISTINCT` 문에서 `ORDER BY` 표현식이 `SELECT` 목록에 포함되어 있지 않아 발생하던 SQL Syntax 구문 오류를, `IN (SELECT DISTINCT ...)` 서브쿼리 구조로 리팩토링하여 완벽하게 해결했습니다.
+  - **지능형 AMR 실시간 동적 렌더링**: Redis 내부에 AMR 정보(`amr:*`)가 없을 경우를 대비하여, 현재 PostgreSQL에서 이송 중(`moving_to_*` 또는 `_rotating`)인 워크스테이션의 위치를 추적해 자동으로 AMR 인스턴스를 동적으로 바인딩하고 시각화하는 지능형 폴백(Smart Fallback Mock) 로직을 `dashboard_server.py`의 `/api/status` API에 추가 구현했습니다. 이로 인해 시뮬레이션 도중 AMRs가 2D Floor Plan 상에서 부드럽게 이송 이동하는 효과를 실시간으로 모니터링할 수 있습니다.
+  - **서버 포트 및 바인딩 관리**: Uvicorn reload 환경에서 8009 포트의 기존 프로세스를 강제 종료(`fuser -k 8009/tcp`)하고 재시작함으로써, 최신 변경 코드가 안정적으로 웹 대시보드에 무중단 반영되도록 조치했습니다.

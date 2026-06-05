@@ -8,7 +8,7 @@ last_names = ["김", "이", "박", "최", "정", "강", "조", "윤", "장", "�
 # Target dates (representing Today, Tomorrow, Day After Tomorrow)
 dates = ["2026-06-01", "2026-06-02", "2026-06-03"]
 
-output_file = "/home/rokey/cobot3_ws/scratch/large_test_packages.csv"
+output_file = "/home/rokey/cobot3_ws/scratch/large_test_packages2.csv"
 num_records = 150  # Generate 150 packages
 
 with open(output_file, "w", newline="", encoding="utf-8") as f:
