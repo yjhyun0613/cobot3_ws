@@ -7,6 +7,32 @@
 
 ---
 
+## 📂 프로젝트 문서 지도 (Documentation Map)
+
+프로젝트 루트에 생성된 다양한 마크다운(`.md`) 문서들의 성격에 따라 다음과 같이 5가지 카테고리로 정리하였습니다. 필요한 내용을 찾을 때 참고하시기 바랍니다.
+
+### 1. 📖 시스템 가이드 및 종합 보고서
+* **[README.md](file:///home/rokey/cobot3_ws/README.md)**: 전체 시스템의 사전 요구사항, 데이터베이스 및 관제 노드 구동, 시뮬레이터 연동 및 백업 방법 가이드.
+* **[PROJECT_REPORT.md](file:///home/rokey/cobot3_ws/PROJECT_REPORT.md)**: NVIDIA Isaac Sim 시뮬레이터 연동 결과 및 핵심 비즈니스 시나리오, 설계 결정 사항을 총망라한 최종 요약 보고서.
+
+### 2. 📐 시스템 설계 및 명세서
+* **[DATABASE_SCHEMA.md](file:///home/rokey/cobot3_ws/DATABASE_SCHEMA.md)**: PostgreSQL 및 Redis의 테이블 스키마 정의, ERD 관계도 및 캐싱 매핑 상세 설명서.
+* **[INTERFACE_CHANGES.md](file:///home/rokey/cobot3_ws/INTERFACE_CHANGES.md)**: ROS2 Custom Service/Action 인터페이스 및 Fleet 실시간 모니터링을 위한 JSON 토픽 사양서.
+* **[SYSTEM_IMPROVEMENT_PLAN.md](file:///home/rokey/cobot3_ws/SYSTEM_IMPROVEMENT_PLAN.md)**: 데이터베이스 정규화, QR코드 도입, 이중 버퍼, 우선순위 큐, Fail-safe 등 개선 계획 및 진행 상황 보고서.
+
+### 3. 🔩 개별 기능 연동 계획서
+* **[WAREHOUSE_DB_INTEGRATION_PLAN.md](file:///home/rokey/cobot3_ws/WAREHOUSE_DB_INTEGRATION_PLAN.md)**: 창고 주차 스팟(`spot_01` ~ `spot_10`)의 실시간 자원 관리 및 데이터베이스 연동 시나리오 계획서.
+* **[ARUCO_INTEGRATION_GUIDE.md](file:///home/rokey/cobot3_ws/ARUCO_INTEGRATION_GUIDE.md)**: (레거시) ArUco 마커 기반 식별 기능 설계 및 비전 센서 연동 매뉴얼.
+
+### 4. 📈 개발 이력 및 수정 내역
+* **[CHANGELOG.md](file:///home/rokey/cobot3_ws/CHANGELOG.md)**: 프로젝트 시작(2026-06-01)부터 현재까지 날짜 및 시간별 상세 개발 이력.
+* **[RECENT_UPDATES.md](file:///home/rokey/cobot3_ws/RECENT_UPDATES.md)**: 최근 배포된 일자 전환 워크플로우, 2D 맵 격자 UI, 중복 입고 검사 및 180도 회전 중복 트리거 버그 수정 내역 요약.
+
+### 5. 🤖 AI 에이전트 인수인계
+* **[AI_AGENT_GUIDE.md](file:///home/rokey/cobot3_ws/AI_AGENT_GUIDE.md)**: 후속 개발을 담당할 AI 에이전트를 위한 시스템 아키텍처, 핵심 DB 쿼리, 시나리오 분석 및 실행 커맨드 가이드.
+
+---
+
 ## 🛠️ 1. 사전 요구사항 (Prerequisites)
 
 구동하기 전에 다음 패키지들이 로컬 PC에 설치되어 있어야 합니다.
@@ -42,7 +68,7 @@ sudo docker compose up -d
 도커가 성공적으로 켜지면 웹 브라우저를 열고 다음 주소에 접속하여 마우스 클릭만으로 실시간 데이터를 보거나 파일로 다운로드할 수 있습니다.
 
 #### ① PostgreSQL 데이터 조회 및 다운로드 (Adminer)
-* **주소**: [http://localhost:8080](http://localhost:8080)
+* **주소**: [http://localhost:8082](http://localhost:8082)
 * **로그인 정보**:
   * **System**: `PostgreSQL` 선택
   * **Server**: `postgres` 입력
@@ -91,7 +117,7 @@ DB 데이터(PostgreSQL & Redis)를 한눈에 모니터링할 수 있는 멋진 
   # 2. 대시보드 서버 실행 (워크스페이스 루트에서 실행)
   python3 scratch/dashboard_server.py
   ```
-* **접속 주소**: 웹 브라우저를 열고 `http://localhost:8000`에 접속합니다.
+* **접속 주소**: 웹 브라우저를 열고 `http://localhost:8009`에 접속합니다.
 * **주요 기능**:
   * 창고 주차 스팟 10개(`spot_01` ~ `spot_10`) 및 작업대 10개(`WS01` ~ `WS10`)의 실시간 상태 시각화
   * Redis AMR 명령 대기열(`queue:amr_tasks`) 실시간 우선순위 목록 표시

@@ -163,6 +163,30 @@ class MockFullRobotNode(Node):
 
         feedback_msg = StartPackaging.Feedback()
         for slot in range(1, 9):
+            # 만약 4번째 포장이 완료된 시점(5번째 포장을 시작하려는 시점)이라면, AMR 회전 작업을 감지하여 대기
+            if slot == 5:
+                self.get_logger().info(f'📦 [포장로봇] 4개 슬롯 포장 완료. AMR 회전 작업을 대기합니다...')
+                time.sleep(1.0) # 제어 타워에서 상태를 업데이트할 시간 확보
+                if self.pg_conn:
+                    rotated = False
+                    for _ in range(60): # 최대 30초 대기 (0.5s * 60)
+                        try:
+                            with self.pg_conn.cursor() as cursor:
+                                cursor.execute(
+                                    "SELECT current_location FROM workstations WHERE workstation_id = %s;",
+                                    (goal.workstation_id,)
+                                )
+                                row = cursor.fetchone()
+                                if row and row[0] == 'sg2_out_00_A':
+                                    rotated = True
+                                    self.get_logger().info(f'📦 [포장로봇] 작업대 {goal.workstation_id} 회전 완료 감지! 포장 작업을 재개합니다.')
+                                    break
+                        except Exception as e:
+                            self.get_logger().error(f'회전 상태 감지 중 오류: {e}')
+                        time.sleep(0.5)
+                    if not rotated:
+                        self.get_logger().warn(f'📦 [포장로봇] 회전 감지 타임아웃! 강제로 작업을 재개합니다.')
+
             time.sleep(0.4) # 슬롯당 포장 시간
             feedback_msg.completed_slots = slot
             feedback_msg.last_packed_slot = f"slot_{slot}"
@@ -263,12 +287,22 @@ def inbound_sim_loop(node):
                 dest_date = route_res.route_destination
                 node.get_logger().info(f'[Scenario]   - 분류 목적지 획득: {dest_date} (오프라인 모드: {is_offline})')
 
+                # 목적지 분류 날짜들을 동적으로 조회하여 인바운드 라인 매핑
+                cursor.execute("SELECT DISTINCT route_zone FROM packages WHERE status != 'COMPLETED' ORDER BY route_zone;")
+                active_dates = [r[0] for r in cursor.fetchall()]
+                while len(active_dates) < 3:
+                    active_dates.append("9999-12-31")
+                
+                today_date = active_dates[0]
+                tomorrow_date = active_dates[1]
+                day_after_date = active_dates[2]
+
                 # 목적지 날짜에 따른 적재 로봇 결정
-                if dest_date == '2026-06-01':
+                if dest_date == today_date:
                     target_robot = 'sg2_in_01'
-                elif dest_date == '2026-06-02':
+                elif dest_date == tomorrow_date:
                     target_robot = 'sg2_in_02'
-                elif dest_date == '2026-06-03':
+                elif dest_date == day_after_date:
                     target_robot = 'sg2_in_03'
                 else:
                     target_robot = 'sg2_in_01'
@@ -319,7 +353,20 @@ def inbound_sim_loop(node):
                     if is_offline_chk:
                         node.get_logger().warn(f'[Scenario] ⚠️ [Fail-safe] 관제탑 오프라인 상태! 패키지 {pkg_id}를 안전 순환 회차로로 이송 조치합니다.')
                     else:
-                        node.get_logger().warn(f'[Scenario]   - {cust_name} 님의 물품이 이미 창고에 보관 중입니다! AMR 직송 명령 대기.')
+                        node.get_logger().warn(f'[Scenario]   - 패키지 {pkg_id}({cust_name})는 이미 작업대/창고에 있습니다. AMR 직송 명령 대기.')
+                    
+                    # 패키지 상태를 DIRECT_WAREHOUSE로 갱신하여 무한 루프 방지
+                    # (관제탑이 이미 AMR 직송 태스크를 발행했으므로, 중복 처리 방지)
+                    try:
+                        with node.pg_conn.cursor() as cursor:
+                            cursor.execute(
+                                "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE package_id = %s AND status = 'WAITING';",
+                                (pkg_id,)
+                            )
+                            node.get_logger().info(f'[Scenario]   - 패키지 {pkg_id} 상태를 IN_WAREHOUSE로 갱신 (직송 처리 대기 중)')
+                    except Exception as db_err:
+                        node.get_logger().error(f'[Scenario] DB 상태 갱신 실패: {db_err}')
+                    
                     time.sleep(2.0)
                     continue
 

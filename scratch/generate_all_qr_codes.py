@@ -212,6 +212,22 @@ def main():
                     "desc": "Outbound packing zone B (Standby)"
                 }
 
+                # 4) 출고 대기 구역 (stage_01 ~ stage_06)
+                # 위치는 나중에 맵을 만들고 수정할 수 있도록 여기에 기입해 둡니다.
+                # 임시로 왼쪽 하단 영역(Y = -24.525) 근처의 좌표를 배정합니다.
+                staging_coords = [
+                    (-25.775, -24.525), (-24.275, -24.525), (-22.775, -24.525),
+                    (-21.275, -24.525), (-19.775, -24.525), (-18.275, -24.525)
+                ]
+                for idx, (sx, sy) in enumerate(staging_coords, 1):
+                    spot_name = f"stage_{idx:02d}"
+                    logical_spots[(sx, sy)] = {
+                        "name": spot_name,
+                        "type": "STAGING_SPOT",
+                        "desc": f"Outbound staging slot {idx:02d}"
+                    }
+
+
                 # 대량 삽입용 쿼리 리스트
                 insert_data = []
                 for xc in x_coords:

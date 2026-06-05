@@ -206,3 +206,29 @@
     - 오늘 물량이 모두 출고 완료되면 별도의 수동 조작 없이 다음 출고 예정 날짜가 "오늘 날짜"로 자동 승격되어 연속 처리가 보장됨.
   - 관련 변경 내용을 프로젝트 종합 보고서(`PROJECT_REPORT.md`) 및 인터페이스 명세서(`INTERFACE_CHANGES.md`)에 상세 기술하고 전체 동기화 완료.
 
+* **14:10** - **웹 대시보드 2D 맵 UI 고도화 및 실시간 플로어 플랜 격자 시각화 반영**
+  - 기존 캔버스(Canvas) 기반의 단순 2D 좌표 맵을 물류창고의 실제 구조(상단 주차 구역, 좌우 대칭형 컨베이어 라인 1~3, 중앙 AMR 운행 영역, 하단 포장 라인 A/B)를 정확히 나타내는 반응형 격자형 HTML/CSS 레이아웃으로 대체했습니다.
+  - `floor_qr_map` 및 데이터베이스 내 각 작업대 위치, 상태, 주차 스팟의 점유 상태(`OCCUPIED`/`EMPTY`)를 실시간(1Hz)으로 조회하여 UI 요소(시안색 점유 표시, 대기/활성 버퍼 구분)에 즉각 렌더링되도록 `dashboard_server.py` 내 프론트엔드 HTML/CSS/JS 로직을 전면 갱신했습니다.
+
+* **14:20** - **중복 입고 검사 오류 수정 및 시뮬레이터 무한 루프 버그 해결**
+  - **관제탑 노드 (`control_tower_node.py`)**: `CheckWarehouseStatus` 호출 시 기존의 `customer_name` 기반 조회 방식을 `package_id` 기반의 정확한 조회 방식으로 변경하였습니다. 이를 통해 동일 수령인의 완료된 과거 택배 이력으로 인해 신규 입고 패키지가 중복 보관 중인 것으로 오인하여 직송을 유발하던 문제를 해결했습니다.
+  - **시뮬레이터 (`run_full_simulation_robot.py`)**: 관제탑으로부터 직송 지시(`is_already_in_warehouse=True`)를 받았을 때, 데이터베이스 내 해당 패키지의 상태를 `IN_WAREHOUSE`로 갱신하여 다음 루프의 분류 대상(WAITING)에서 제외되도록 수정함으로써, 동일 패키지에 대해 적재 요청을 무한히 반복하는 교착 현상을 방지했습니다.
+  - 변경 패키지 빌드(`colcon build --packages-select cobot3`) 및 정상 시나리오 운행 테스트를 통해 흐름 검증을 마쳤습니다.
+
+* **15:40** - **포장 완료 후 180도 회전 완료 시의 포장 프로세스 중복 트리거(Double-trigger) 버그 수정**
+  - **현상**: 포장 로봇이 4번째 슬롯 포장 완료 후 작업대 180도 제자리 회전(`ROTATE_WORKSTATION`)을 수행하고 복귀(`sg2_out_00_A`)할 때, 이송 완료 콜백(`workstation_move_completed_callback`)에서 목적지가 `sg2_out_00_A`라는 이유로 포장 액션(`trigger_packaging_process`)을 중복 호출하는 버그가 있었음. 이로 인해 동일 작업대에 대해 두 개의 포장 시퀀스가 동시에 실행되어 DB 스팟 중복 점유(`spot_01`, `spot_03` 동시 점유 등) 및 상태 꼬임 유발.
+  - **해결**: 이송 요청 및 완료 콜백 인터페이스(`workstation_move_response_callback`, `workstation_move_completed_callback`)에 출발지(`start`) 인자를 추가로 전달하도록 구조 변경. 최종 도착 완료 시 출발지가 `sg2_out_00_A_ROTATING`이거나 `ROTATING` 키워드를 포함하는 제자리 회전 동작인 경우 포장 공정이 다시 트리거되지 않도록 방어 로직 적용.
+  - **검증**: `colcon build` 후 150개 대용량 패키지 기반 시나리오 테스트를 다시 기동하여, 포장 로봇 및 AMR이 이중 트리거 없이 깔끔하게 1회씩만 작동하고 주차 스팟(`warehouse_locations`)에 작업대들이 중복 할당 없이 1:1로 정확하게 EMPTY/OCCUPIED 매핑이 갱신되는 것을 완벽히 검증 및 확인 완료.
+
+* **16:35** - **Docker Adminer 컨테이너 포트 충돌(8080) 해결**
+  - **문제**: 호스트 PC의 8080 포트가 이미 점유되어 있어 `warehouse_adminer` 컨테이너가 바인딩에 실패하여 실행되지 않는 문제 발생.
+  - **해결**: `docker-compose.yml` 내 Adminer 포트 매핑을 기존 `"8080:8080"`에서 **`"8082:8080"`**으로 변경하고 `README.md` 가이드 문서도 해당 포트에 맞춰 동기화 완료.
+
+* **16:37** - **FastAPI 대시보드 서버 포트 충돌(8000) 해결**
+  - **문제**: 호스트 PC에 떠 있는 NVIDIA Omniverse Nucleus Auth 서비스가 8000 포트를 점유하고 있어 `dashboard_server.py`가 구동되지 않는 문제 발생.
+  - **해결**: `dashboard_server.py` 실행 포트를 기존 `8000`에서 **`8009`**로 변경하고, `README.md` 및 `PROJECT_REPORT.md` 내 가이드를 신규 포트에 맞춰 동기화 완료.
+
+* **16:40** - **AMR 액션 서버 오프라인에 따른 관제탑 교착 상태(Deadlock) 방지 및 DB 롤백 처리 완료**
+  - **문제**: 관제탑 노드가 구동될 때 AMR 에뮬레이터(`mock_full_robot_node`)가 아직 실행되지 않아 Action Server (`manage_workstation`)를 찾지 못하고 타임아웃/실패 처리되는 경우, 작업대의 현재 위치(`current_location`)가 `MOVING_TO_...` 상태로 고착되어 스케줄러가 두 번 다시 해당 작업대 배치를 시도하지 않는 영구적인 교착 상태가 발생함.
+  - **해결**: 이송 액션 기동 실패, 취소 또는 실행 에러 발생 시 데이터베이스 내 작업대 상태(`current_location`, `status`, `reserved_by`)와 창고 주차 스팟 상태(`warehouse_locations`)를 최초 기동 직전 상태로 복구해 주는 **`recover_workstation_move_db_state()`** 롤백 메커니즘을 구현하여 통합 적용함.
+

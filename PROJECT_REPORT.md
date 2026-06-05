@@ -45,7 +45,7 @@ NVIDIA Isaac Sim 시뮬레이터 환경에서 다중 로봇(컨베이어 분류 
 
 * **`docker-compose.yml` & `init.sql`**:
   * PostgreSQL 15, Redis 7 컨테이너 설정 및 DB 초기화 스크립트 작성.
-  * 개발 편의를 위해 웹 브라우저에서 DB 내용을 보고 파일로 다운로드할 수 있는 **Adminer(포트 8080)** 및 **Redis Commander(포트 8081)** 모니터링 서비스 탑재.
+  * 개발 편의를 위해 웹 브라우저에서 DB 내용을 보고 파일로 다운로드할 수 있는 **Adminer(포트 8082)** 및 **Redis Commander(포트 8081)** 모니터링 서비스 탑재.
 * **ROS2 커스텀 인터페이스 (`cobot3_interfaces` 패키지)**:
   * 서비스: `GetPackageRoute.srv`, `CheckWarehouseStatus.srv`, `ReportInboundProgress.srv` (카메라 인식 연동을 위한 QR ID 관련 필드 포함)
   * 액션: `MovePackage.action`, `ManageWorkstation.action` (AMR 이송용 물리 좌표 `target_x/y/yaw` 및 `target_qr_id` 추가), `StartPackaging.action` (이송/제어 명령 고유 식별용 QR ID 필드 포함)
@@ -54,15 +54,21 @@ NVIDIA Isaac Sim 시뮬레이터 환경에서 다중 로봇(컨베이어 분류 
   * 서비스 서버와 액션 클라이언트를 유기적으로 스케줄링하는 `task_scheduler_loop` 탑재, QR ID 우선 매핑/조회 및 Redis Sorted Set(ZSET) 기반 우선순위 큐 스케줄러 반영.
   * **하이브리드 통신**: `/fleet/amr_states`, `/fleet/workstation_states`, `/fleet/package_states`, `/fleet/task_events` 토픽에 JSON 직렬화 데이터를 1Hz 및 이벤트 기반으로 브로드캐스트하는 퍼블리셔 탑재.
   * **교착 방지 규격**: 무한 블로킹을 차단하기 위해 `wait_for_server` 호출 시 `timeout_sec=1.0` 타임아웃 예외 처리 전면 반영.
-  * **출고 예정일 필터링**: 창고에서 포장존 A/B구역으로 완충 작업대를 공급하는 Keep-Alive 스케줄러 쿼리에 `route_zone = '2026-06-01'` 조건을 추가하여, 오늘 날짜 배송 물량만 안전하게 출고되도록 보완.
+  * **동적 출고 예정일 필터링**: 창고에서 포장존 A/B구역으로 완충 작업대를 공급하는 Keep-Alive 스케줄러에 미완료 패키지의 `route_zone` 중 가장 빠른 날짜를 동적으로 감지하여 공급하도록 고도화.
+  * **중복 입고 검증 수정**: `CheckWarehouseStatus` 호출 시 수령인 이름이 아닌 패키지 고유 ID(`package_id`) 기준으로 정확히 중복 보관 여부를 검증하여 오작동 차단.
+  * **일자 전환(Day Transition) 워크플로우**: 오늘 출고 날짜(`route_zone`)의 모든 패키지 포장이 완료되면 `daily_report_YYYY-MM-DD.md` 보고서를 자동 생성하고, Redis `system:day_status`를 `PENDING_TRANSITION`으로 설정해 시스템을 다음 영업일 대기 모드로 전환.
+  * **AMR 액션 서버 오프라인 및 실패 예외 복구**: 관제탑 노드가 구동 시점에 AMR 액션 서버를 찾지 못하거나 거절/실패가 발생할 때, 이미 이송 예약 및 `MOVING_TO_...`로 갱신되었던 작업대와 스팟 상태가 원복되지 않아 교착 상태(Deadlock)를 초래하는 문제를 방지하기 위해 `recover_workstation_move_db_state()` 복구 헬퍼 함수를 구현 및 통합했습니다.
+  * **제자리 회전(180도) 포장 이중 트리거(Double-trigger) 버그 수정**: 작업대 이송 완료 시 출발지(`start`) 정보를 연동하고 출발지가 회전 동작(`_ROTATING` 계열)인 경우 포장 로봇이 중복 실행되지 않도록 예외 처리 적용.
+  * **기타 안정화**: Redis `decode_responses=True` 사용 시 문자열 디코딩 예외 안전 분기 처리 및 빈 작업대 조회 시 `IN_WORKSTATION`과 `IN_WAREHOUSE` 상태 통합 점검으로 자원 누수 방지.
 * **웹 대시보드 및 테스트 스크립트 (`scratch/` 디렉토리)**:
-  * `dashboard_server.py`: FastAPI와 HTML/JS를 이용한 실시간 다크 모드 대시보드로, 10개의 작업대 및 창고 구역 상태, Redis AMR 우선순위 큐, 패키지 상태를 종합 모니터링하고 모의 적재 시뮬레이션을 원클릭으로 수행할 수 있음. 2D Live Grid Map(바둑판식 실시간 맵)과 함께 포장 시뮬레이션 시 오늘 출고일(`2026-06-01`)에 해당하는 작업대만 창고에서 이송하여 포장하도록 제한 조건을 구현함.
-  * `run_simulation_test.py` & `run_qr_simulation_test.py`: ROS2 액션 서버와 서비스 클라이언트를 모킹하여 실제 환경 없이도 전체 프로세스의 정상 컴파일, QR코드 비전 해독 연동 및 통신 루프를 검증함.
+  * `dashboard_server.py`: FastAPI와 HTML/JS를 이용한 실시간 다크 모드 대시보드. 기존 캔버스 2D 맵 대신 창고의 실제 레이아웃(주차장 스팟, 좌우 대칭 컨베이어 A/B 구역, 중앙 AMR, 포장 라인)을 직관적으로 시각화하는 격자형 HTML/CSS 레이아웃으로 개편하여 데이터 반영 효율성과 실시간 관제 정확성을 대폭 향상했습니다. 일자 전환 대기 배너 및 `/api/start_next_day` 개시 API를 연동했습니다.
+  * `run_full_simulation_robot.py`: 통합 로봇 에뮬레이션 시뮬레이터로, 중복 적재 감지 시 패키지 상태를 `IN_WAREHOUSE`로 즉시 업데이트하여 중복 요청에 따른 무한 루프 교착 상태를 방지하는 Fail-safe 로직을 적용했습니다.
 * **QR코드 생성 및 USD 매핑 모듈 (`scratch/` 디렉토리)**:
   * `qr_handler.py`: `qrcode` 라이브러리를 사용한 QR 생성 및 C 의존성 없이 안정적인 `zxing-cpp` 기반 비전 디코딩 패키지.
   * `generate_all_qr_codes.py`: `warehouse.yaml` 및 창고 경계 제한을 연산하여 안전 구역(2m)을 준수한 1,813개 바닥 격자 및 10개 작업대 * 8슬롯(=80개) QR 이미지 일괄 생성 모듈.
   * `add_all_qr_to_usd.py`: Pixar USD (`pxr`) API를 사용해 `map.usd` 파일에 1,813개의 평면 메쉬와 PBR 텍스처를 100% 자동 배치하여 맵을 갱신하는 자동화 모듈.
   * `adjust_usd_lighting.py`: 바닥 반사(글레어)로 인한 QR 인식률 저하를 해결하기 위해 DistantLight 강도를 600.0으로 낮추고, DomeLight(1200.0)를 보강한 조명 자동 최적화 모듈.
+
 
 ---
 
@@ -85,7 +91,7 @@ ros2 run cobot3 control_tower
 * **현재 상태**: 관제탑 노드가 백그라운드 터미널 `control_tower_terminal`에서 성공적으로 실행되어 외부 로봇들의 통신을 대기하고 있습니다.
 
 ### ③ 실시간 모니터링 및 파일 다운로드
-* **PostgreSQL 조회/내보내기**: 브라우저에서 `http://localhost:8080` 접속 (서버명: `postgres`, 계정: `rokey`, 암호: `rokey_pass`, DB: `warehouse_db`)
+* **PostgreSQL 조회/내보내기**: 브라우저에서 `http://localhost:8082` 접속 (서버명: `postgres`, 계정: `rokey`, 암호: `rokey_pass`, DB: `warehouse_db`)
 * **Redis 큐 시각화**: `http://localhost:8081` 접속하여 작업 명령 리스트 실시간 확인.
 
 ### ④ DB 백업 및 복원 (스냅샷 저장)

@@ -87,6 +87,16 @@ INSERT INTO warehouse_locations (spot_id, workstation_id, status) VALUES
 ('spot_09', 'WS09', 'OCCUPIED'),
 ('spot_10', 'WS10', 'OCCUPIED');
 
+-- 출고 대기 구역 등록 (stage_01 ~ stage_06)
+INSERT INTO warehouse_locations (spot_id, workstation_id, status) VALUES
+('stage_01', NULL, 'EMPTY'),
+('stage_02', NULL, 'EMPTY'),
+('stage_03', NULL, 'EMPTY'),
+('stage_04', NULL, 'EMPTY'),
+('stage_05', NULL, 'EMPTY'),
+('stage_06', NULL, 'EMPTY');
+
+
 -- 초기 입고 예정 택배 데이터 (2026-06-01 기준)
 INSERT INTO packages (package_id, customer_name, route_zone, status, qr_id) VALUES
 ('PKG_RAND_001', '김태희', '2026-06-01', 'WAITING', 'PKG_RAND_001'),

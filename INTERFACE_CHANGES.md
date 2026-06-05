@@ -44,9 +44,10 @@
 ---
 
 ### ② `CheckWarehouseStatus.srv`
-적재 매니퓰레이터(`sg2_in_XX`)가 적재를 수행하기 전 동일 수령인의 물품이 창고에 보관 중인지 중복 검사합니다.
+적재 매니퓰레이터(`sg2_in_XX`)가 적재를 수행하기 전, 해당 패키지가 이미 작업대 또는 창고에 적재되어 보관 중인지 `package_id`를 기준으로 중복 검사합니다. (기존의 단순 수령인 이름(`customer_name`) 기반 매핑에서 발생하던 완료된 과거 이력 오인 현상을 수정하여 패키지 ID 단위로 정밀하게 검증합니다.)
 
 **파일 경로**: `src/cobot3_interfaces/srv/CheckWarehouseStatus.srv`
+
 
 | 구분 | 필드명 (Field) | 데이터 타입 (Type) | 역할 (Role) |
 | :--- | :--- | :--- | :--- |

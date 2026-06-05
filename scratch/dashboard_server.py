@@ -163,13 +163,29 @@ def get_status():
                     redis_client.delete('queue:amr_tasks')
                 print(f"Redis Queue Query Error: {re}")
 
+        # Day transition 상태 조회
+        day_status = 'RUNNING'
+        completed_day = ''
+        if redis_client:
+            try:
+                val = redis_client.get('system:day_status')
+                if val:
+                    day_status = val.decode('utf-8')
+                val_comp = redis_client.get('system:completed_day')
+                if val_comp:
+                    completed_day = val_comp.decode('utf-8')
+            except Exception as e:
+                print(f"Redis day status read error: {e}")
+
         pg_conn.close()
         return {
             "workstations": workstations,
             "spots": spots,
             "packages": packages,
             "redis_tasks": redis_tasks,
-            "locations": locations
+            "locations": locations,
+            "day_status": day_status,
+            "completed_day": completed_day
         }
     except Exception as e:
         if pg_conn:
@@ -255,6 +271,22 @@ def reset_db():
             pg_conn.close()
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/start_next_day")
+def start_next_day():
+    pg_conn, redis_client = get_db_connections()
+    if not redis_client:
+        raise HTTPException(status_code=500, detail="Redis connection failed")
+    try:
+        redis_client.set('system:day_status', 'RUNNING')
+        redis_client.delete('system:completed_day')
+        if pg_conn:
+            pg_conn.close()
+        return {"success": True, "message": "성공적으로 다음 영업일로 전환되었습니다."}
+    except Exception as e:
+        if pg_conn:
+            pg_conn.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/simulate")
 def simulate_inbound():
     pg_conn, redis_client = get_db_connections()
@@ -326,7 +358,7 @@ def simulate_inbound():
                     WHERE current_location LIKE 'spot_%%'
                     AND workstation_id NOT IN (
                         SELECT DISTINCT workstation_id FROM packages 
-                        WHERE status = 'IN_WORKSTATION' AND workstation_id IS NOT NULL
+                        WHERE status IN ('IN_WORKSTATION', 'IN_WAREHOUSE') AND workstation_id IS NOT NULL
                     ) LIMIT 1;
                 """)
                 empty_ws_row = cursor.fetchone()
@@ -410,13 +442,41 @@ def simulate_inbound():
                 ws_qr = ws_qr_row[0] if ws_qr_row else ""
                 
                 if target_robot == 'sg2_in_01':
-                    # 오늘 날짜 분류 라인 -> 포장존(sg2_out_00_A 또는 B)으로 이송
+                    # 오늘 날짜 분류 라인 -> 포장존(sg2_out_00_A 또는 B) 또는 창고(warehouse)로 이송
                     cursor.execute("""
                         SELECT COUNT(*) FROM workstations 
                         WHERE current_location = 'sg2_out_00_A' OR current_location = 'MOVING_TO_SG2_OUT_00_A';
                     """)
                     out_a_count = cursor.fetchone()[0]
-                    target_out = 'sg2_out_00_A' if out_a_count == 0 else 'sg2_out_00_B'
+
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM workstations 
+                        WHERE current_location = 'sg2_out_00_B' OR current_location = 'MOVING_TO_SG2_OUT_00_B';
+                    """)
+                    out_b_count = cursor.fetchone()[0]
+                    
+                    if out_a_count == 0:
+                        target_out = 'sg2_out_00_A'
+                    elif out_b_count == 0:
+                        target_out = 'sg2_out_00_B'
+                    else:
+                        # 포장존이 모두 찬 경우 창고로 회수 보관
+                        cursor.execute("BEGIN;")
+                        cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1 FOR UPDATE;")
+                        empty_spot_row = cursor.fetchone()
+                        target_out = empty_spot_row[0] if empty_spot_row else "warehouse"
+                        
+                        if empty_spot_row:
+                            cursor.execute(
+                                "UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;",
+                                (ws_id, target_out)
+                            )
+                        cursor.execute("COMMIT;")
+                        
+                        cursor.execute(
+                            "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE workstation_id = %s AND status = 'IN_WORKSTATION';",
+                            (ws_id,)
+                        )
 
                     cursor.execute(
                         "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
@@ -427,13 +487,14 @@ def simulate_inbound():
                         "workstation_id": ws_id,
                         "from": target_loc,
                         "to": target_out,
-                        "description": f"완충 작업대 {ws_id} 회수 → 포장존({target_out}) 이동",
+                        "description": f"완충 작업대 {ws_id} 회수 → {target_out} 이동",
                         "workstation_qr_id": ws_qr
                     }
                 else:
                     # 내일/모레 분류 라인 -> 창고(warehouse)로 이송
                     # 빈 창고 스팟 배정
-                    cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1;")
+                    cursor.execute("BEGIN;")
+                    cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1 FOR UPDATE;")
                     empty_spot_row = cursor.fetchone()
                     target_spot = empty_spot_row[0] if empty_spot_row else "warehouse"
                     
@@ -442,6 +503,7 @@ def simulate_inbound():
                             "UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;",
                             (ws_id, target_spot)
                         )
+                    cursor.execute("COMMIT;")
                     
                     cursor.execute(
                         "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE workstation_id = %s AND status = 'IN_WORKSTATION';",
@@ -705,7 +767,8 @@ def simulate_packaging():
             swap_triggered = False
             if remaining_count == 0 and redis_client:
                 # 7-1. 포장 완료된 빈 작업대를 창고로 회수
-                cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1;")
+                cursor.execute("BEGIN;")
+                cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1 FOR UPDATE;")
                 empty_spot_row = cursor.fetchone()
                 target_spot = empty_spot_row[0] if empty_spot_row else "warehouse"
                 
@@ -714,6 +777,7 @@ def simulate_packaging():
                         "UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;",
                         (ws_id, target_spot)
                     )
+                cursor.execute("COMMIT;")
                 
                 # 패키지의 workstation 매핑 해제 (포장 완료 후 작업대에서 분리)
                 cursor.execute(
@@ -1271,6 +1335,217 @@ def index():
             0%, 100% { border-color: rgba(0, 242, 254, 0.2); box-shadow: 0 0 0 0 rgba(0, 242, 254, 0.2); }
             50% { border-color: rgba(0, 242, 254, 0.8); box-shadow: 0 0 10px 0 rgba(0, 242, 254, 0.3); }
         }
+
+        @keyframes pulse-border-orange {
+            0%, 100% { border-color: rgba(245, 158, 11, 0.3); box-shadow: 0 8px 32px 0 rgba(245, 158, 11, 0.15); }
+            50% { border-color: rgba(245, 158, 11, 0.8); box-shadow: 0 8px 32px 0 rgba(245, 158, 11, 0.35); }
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-6px); }
+        }
+
+        /* === Floor Plan Styles === */
+        .conveyor-line {
+            background: rgba(16, 185, 129, 0.04);
+            border: 1px solid rgba(16, 185, 129, 0.12);
+            border-radius: 10px;
+            padding: 8px 12px;
+            transition: all 0.3s ease;
+        }
+        .conveyor-line:hover {
+            border-color: rgba(16, 185, 129, 0.35);
+            background: rgba(16, 185, 129, 0.08);
+        }
+        .conveyor-arrow {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .conveyor-label {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: #fff;
+            font-weight: 800;
+            font-size: 0.85rem;
+            border-radius: 8px;
+            flex-shrink: 0;
+            box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+        }
+        .conveyor-bar {
+            flex: 1;
+            height: 4px;
+            background: linear-gradient(90deg, rgba(16, 185, 129, 0.6), rgba(16, 185, 129, 0.15));
+            border-radius: 2px;
+            min-width: 30px;
+        }
+        .conveyor-line.right .conveyor-bar {
+            background: linear-gradient(270deg, rgba(16, 185, 129, 0.6), rgba(16, 185, 129, 0.15));
+        }
+        .robot-dot {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            font-size: 0.55rem;
+            font-weight: 800;
+            flex-shrink: 0;
+            cursor: default;
+            transition: all 0.3s ease;
+        }
+        .robot-dot.sg2 {
+            background: rgba(59, 130, 246, 0.8);
+            color: #fff;
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.4);
+        }
+        .robot-dot.sg2:hover {
+            box-shadow: 0 0 18px rgba(59, 130, 246, 0.6);
+            transform: scale(1.1);
+        }
+        .amr-dot {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: rgba(239, 68, 68, 0.7);
+            color: #fff;
+            font-size: 0.55rem;
+            font-weight: 800;
+            text-align: center;
+            line-height: 1.2;
+            box-shadow: 0 0 14px rgba(239, 68, 68, 0.35);
+            cursor: default;
+            transition: all 0.3s ease;
+            animation: amr-idle 3s ease-in-out infinite;
+        }
+        .amr-dot:hover {
+            box-shadow: 0 0 22px rgba(239, 68, 68, 0.6);
+            transform: scale(1.1);
+        }
+        @keyframes amr-idle {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-3px); }
+        }
+        .ws-slot-mini {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 28px;
+            border-radius: 5px;
+            background: rgba(156, 163, 175, 0.15);
+            border: 1.5px solid rgba(156, 163, 175, 0.35);
+            color: rgba(156, 163, 175, 0.7);
+            font-size: 0.7rem;
+            font-weight: 700;
+            flex-shrink: 0;
+            transition: all 0.3s ease;
+            cursor: default;
+        }
+        .ws-slot-mini.standby {
+            border-style: dashed;
+            opacity: 0.5;
+        }
+        .ws-slot-mini.occupied {
+            background: rgba(0, 242, 254, 0.15);
+            border-color: rgba(0, 242, 254, 0.5);
+            color: #00f2fe;
+            box-shadow: 0 0 8px rgba(0, 242, 254, 0.15);
+        }
+        .ws-slot-mini.occupied.standby {
+            opacity: 0.8;
+        }
+        .ws-slot-mini.pack {
+            background: rgba(245, 158, 11, 0.1);
+            border-color: rgba(245, 158, 11, 0.35);
+            color: rgba(245, 158, 11, 0.8);
+        }
+        .ws-slot-mini.pack.occupied {
+            background: rgba(245, 158, 11, 0.2);
+            border-color: rgba(245, 158, 11, 0.6);
+            color: #f59e0b;
+            box-shadow: 0 0 8px rgba(245, 158, 11, 0.2);
+        }
+        .packaging-zone {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            padding: 16px 28px;
+            background: rgba(245, 158, 11, 0.04);
+            border: 1px solid rgba(245, 158, 11, 0.15);
+            border-radius: 14px;
+            transition: all 0.3s ease;
+        }
+        .packaging-zone:hover {
+            border-color: rgba(245, 158, 11, 0.35);
+            background: rgba(245, 158, 11, 0.08);
+        }
+        .pack-header {
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: rgba(245, 158, 11, 0.8);
+            letter-spacing: 1px;
+        }
+        .pack-arrow {
+            font-size: 0.75rem;
+            color: rgba(16, 185, 129, 0.6);
+            font-weight: 700;
+            animation: pack-pulse 2s ease-in-out infinite;
+        }
+        @keyframes pack-pulse {
+            0%, 100% { opacity: 0.6; }
+            50% { opacity: 1; }
+        }
+        .pack-robot {
+            width: 28px !important;
+            height: 28px !important;
+        }
+        .warehouse-spot-cell {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 6px 4px;
+            border-radius: 8px;
+            background: rgba(0, 242, 254, 0.03);
+            border: 1px solid rgba(0, 242, 254, 0.12);
+            text-align: center;
+            transition: all 0.3s ease;
+            min-height: 52px;
+        }
+        .warehouse-spot-cell.occupied {
+            border-color: rgba(245, 158, 11, 0.35);
+            background: rgba(245, 158, 11, 0.06);
+        }
+        .warehouse-spot-cell.empty {
+            border-color: rgba(16, 185, 129, 0.2);
+            background: rgba(16, 185, 129, 0.03);
+        }
+        .warehouse-spot-cell .spot-name {
+            font-size: 0.55rem;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+        .warehouse-spot-cell .spot-ws-id {
+            font-size: 0.75rem;
+            font-weight: 800;
+            color: #fff;
+            margin: 2px 0;
+        }
+        .warehouse-spot-cell.empty .spot-ws-id {
+            color: rgba(16, 185, 129, 0.5);
+            font-size: 0.6rem;
+        }
     </style>
 </head>
 <body>
@@ -1302,28 +1577,168 @@ def index():
             </button>
         </div>
 
+        <!-- Day Transition Banner (Hidden by default) -->
+        <div id="day-transition-banner" style="display: none; background: linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(239, 68, 68, 0.15) 100%); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 16px; padding: 20px; margin-bottom: 2rem; align-items: center; justify-content: space-between; backdrop-filter: blur(12px); box-shadow: 0 8px 32px 0 rgba(245, 158, 11, 0.15); animation: pulse-border-orange 2s infinite;">
+            <div style="display: flex; align-items: center; gap: 16px;">
+                <div style="font-size: 2.2rem; animation: bounce 2s infinite;">🎉</div>
+                <div>
+                    <h3 style="margin: 0; color: #fff; font-size: 1.15rem; font-weight: 700; display: flex; align-items: center; gap: 8px;">
+                        오늘 영업일 운영 마감 완료! <span id="completed-day-badge" style="font-size: 0.75rem; background: #f59e0b; color: #000; padding: 2px 8px; border-radius: 9999px; font-weight: 800;">—</span>
+                    </h3>
+                    <p style="margin: 4px 0 0 0; color: var(--text-muted); font-size: 0.88rem;">오늘 물량의 모든 포장 공정이 성공적으로 종료되었습니다. 일자별 통계 보고서가 로컬 서버에 저장되었습니다. 다음 영업일의 물류 및 이송 처리를 승인하십시오.</p>
+                </div>
+            </div>
+            <button onclick="startNextDay()" style="background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); border: none; color: #000; font-weight: 800; padding: 14px 28px; border-radius: 12px; box-shadow: 0 4px 15px rgba(245, 158, 11, 0.4); display: flex; align-items: center; gap: 8px; font-size: 0.95rem; cursor: pointer; transition: all 0.3s ease;">
+                <span>🚀</span> 다음 영업일 개시 (Next Day Transition)
+            </button>
+        </div>
+
         <!-- Warehouse 2D Live Grid Map -->
         <div class="panel-card" style="margin-bottom: 2rem;">
-            <h2>Warehouse 2D Live Grid Map (바둑판식 실시간 맵) <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal; margin-left: 10px;">1.5m 격자 및 실시간 작업대 위치 시각화</span></h2>
-            <div style="position: relative; width: 100%; height: 350px; background: rgba(10, 15, 30, 0.9); border-radius: 12px; overflow: hidden; border: 1px solid var(--border-color);">
-                <canvas id="map-canvas" style="display: block; width: 100%; height: 100%;"></canvas>
+            <h2>Warehouse 2D Live Floor Plan <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal; margin-left: 10px;">실시간 물류 창고 배치도 (49×37 격자, 1.5m 간격)</span></h2>
+            <div id="floor-plan" style="position: relative; width: 100%; background: rgba(8, 12, 24, 0.95); border-radius: 16px; overflow: hidden; border: 1px solid var(--border-color); padding: 20px;">
+                
+                <!-- === 보관 창고 (Storage Area) (상단) === -->
+                <div style="text-align: center; margin-bottom: 6px;">
+                    <span style="font-size: 0.9rem; font-weight: 700; color: rgba(0, 242, 254, 0.75); letter-spacing: 4px;">◆ 보관 창고 (Storage Area) ◆</span>
+                </div>
+                <div id="warehouse-spots-map" style="display: grid; grid-template-columns: repeat(10, 1fr); gap: 6px; max-width: 700px; margin: 0 auto 12px auto; padding: 12px; background: rgba(0, 242, 254, 0.03); border: 1px solid rgba(0, 242, 254, 0.15); border-radius: 12px;">
+                    <!-- Populated by JS -->
+                </div>
+
+                <!-- === 출고 대기 구역 (Staging Area) (중단) === -->
+                <div style="text-align: center; margin-bottom: 6px; margin-top: 12px;">
+                    <span style="font-size: 0.9rem; font-weight: 700; color: rgba(245, 158, 11, 0.75); letter-spacing: 4px;">◆ 출고 대기 구역 (Staging Area) ◆</span>
+                </div>
+                <div id="staging-spots-map" style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; max-width: 420px; margin: 0 auto 12px auto; padding: 12px; background: rgba(245, 158, 11, 0.03); border: 1px solid rgba(245, 158, 11, 0.15); border-radius: 12px;">
+                    <!-- Populated by JS -->
+                </div>
+
+                <div style="border-top: 1px dashed rgba(255,255,255,0.1); margin: 10px 0;"></div>
+
+                <!-- === 인바운드 적재 라인 (상단 세트) === -->
+                <div style="display: flex; justify-content: space-between; align-items: stretch; margin: 16px 0; gap: 20px;">
+                    <!-- 좌측 라인 세트 (←진입) -->
+                    <div style="flex: 1; display: flex; flex-direction: column; gap: 8px;">
+                        <div class="conveyor-line" id="line-left-1" data-robot="sg2_in_01">
+                            <div class="conveyor-arrow" style="justify-content: flex-end;">
+                                <span class="conveyor-label">1</span>
+                                <span class="conveyor-bar"></span>
+                                <span class="robot-dot sg2" title="sg2_in_01">SG2</span>
+                                <div class="ws-slot-mini" id="ws-slot-sg2_in_01_A" title="A구역">A</div>
+                                <div class="ws-slot-mini standby" id="ws-slot-sg2_in_01_B" title="B구역">B</div>
+                            </div>
+                        </div>
+                        <div class="conveyor-line" id="line-left-2" data-robot="sg2_in_02">
+                            <div class="conveyor-arrow" style="justify-content: flex-end;">
+                                <span class="conveyor-label">2</span>
+                                <span class="conveyor-bar"></span>
+                                <span class="robot-dot sg2" title="sg2_in_02">SG2</span>
+                                <div class="ws-slot-mini" id="ws-slot-sg2_in_02_A" title="A구역">A</div>
+                                <div class="ws-slot-mini standby" id="ws-slot-sg2_in_02_B" title="B구역">B</div>
+                            </div>
+                        </div>
+                        <div class="conveyor-line" id="line-left-3" data-robot="sg2_in_03">
+                            <div class="conveyor-arrow" style="justify-content: flex-end;">
+                                <span class="conveyor-label">3</span>
+                                <span class="conveyor-bar"></span>
+                                <span class="robot-dot sg2" title="sg2_in_03">SG2</span>
+                                <div class="ws-slot-mini" id="ws-slot-sg2_in_03_A" title="A구역">A</div>
+                                <div class="ws-slot-mini standby" id="ws-slot-sg2_in_03_B" title="B구역">B</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 중앙 AMR 영역 -->
+                    <div style="flex: 1.2; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 14px; padding: 10px; background: rgba(255,255,255,0.015); border-radius: 12px; border: 1px dashed rgba(255,255,255,0.06);">
+                        <span style="font-size: 0.7rem; color: rgba(255,255,255,0.3); letter-spacing: 2px;">AMR 주행 영역</span>
+                        <div id="amr-area" style="display: flex; gap: 20px; flex-wrap: wrap; justify-content: center;">
+                            <div class="amr-dot" title="AMR_01">AMR<br>01</div>
+                            <div class="amr-dot" title="AMR_02">AMR<br>02</div>
+                            <div class="amr-dot" title="AMR_03">AMR<br>03</div>
+                            <div class="amr-dot" title="AMR_04">AMR<br>04</div>
+                            <div class="amr-dot" title="AMR_05">AMR<br>05</div>
+                        </div>
+                        <!-- 바둑판 격자 미니맵 -->
+                        <div style="font-size: 0.6rem; color: rgba(255,255,255,0.2);">49열 × 37행 = 1,813 QR격자</div>
+                    </div>
+
+                    <!-- 우측 라인 세트 (→진입) -->
+                    <div style="flex: 1; display: flex; flex-direction: column; gap: 8px;">
+                        <div class="conveyor-line right" id="line-right-1">
+                            <div class="conveyor-arrow">
+                                <div class="ws-slot-mini standby" title="B구역">B</div>
+                                <div class="ws-slot-mini" title="A구역">A</div>
+                                <span class="robot-dot sg2" title="sg2_in_01 (R)">SG2</span>
+                                <span class="conveyor-bar"></span>
+                                <span class="conveyor-label">1</span>
+                            </div>
+                        </div>
+                        <div class="conveyor-line right" id="line-right-2">
+                            <div class="conveyor-arrow">
+                                <div class="ws-slot-mini standby" title="B구역">B</div>
+                                <div class="ws-slot-mini" title="A구역">A</div>
+                                <span class="robot-dot sg2" title="sg2_in_02 (R)">SG2</span>
+                                <span class="conveyor-bar"></span>
+                                <span class="conveyor-label">2</span>
+                            </div>
+                        </div>
+                        <div class="conveyor-line right" id="line-right-3">
+                            <div class="conveyor-arrow">
+                                <div class="ws-slot-mini standby" title="B구역">B</div>
+                                <div class="ws-slot-mini" title="A구역">A</div>
+                                <span class="robot-dot sg2" title="sg2_in_03 (R)">SG2</span>
+                                <span class="conveyor-bar"></span>
+                                <span class="conveyor-label">3</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="border-top: 1px dashed rgba(255,255,255,0.1); margin: 10px 0;"></div>
+
+                <!-- === 포장 라인 (하단) === -->
+                <div style="display: flex; justify-content: center; gap: 40px; margin-top: 16px;">
+                    <div class="packaging-zone" id="pack-zone-a">
+                        <div class="pack-header">포장 라인 A</div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div class="ws-slot-mini pack" id="ws-slot-sg2_out_00_A" title="sg2_out_00_A 구역">A</div>
+                            <span class="robot-dot sg2 pack-robot" title="sg2_out_00">SG2</span>
+                        </div>
+                        <div class="pack-arrow">▼ 출고</div>
+                    </div>
+                    <div class="packaging-zone" id="pack-zone-b">
+                        <div class="pack-header">포장 라인 B</div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div class="ws-slot-mini pack standby" id="ws-slot-sg2_out_00_B" title="sg2_out_00_B 구역">B</div>
+                            <span class="robot-dot sg2 pack-robot" title="sg2_out_00 (B)">SG2</span>
+                        </div>
+                        <div class="pack-arrow">▼ 출고</div>
+                    </div>
+                </div>
             </div>
-            <div style="display: flex; gap: 20px; margin-top: 10px; font-size: 0.8rem; color: var(--text-muted); justify-content: center; flex-wrap: wrap;">
+
+            <!-- 범례 -->
+            <div style="display: flex; gap: 20px; margin-top: 12px; font-size: 0.78rem; color: var(--text-muted); justify-content: center; flex-wrap: wrap;">
                 <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="display: inline-block; width: 12px; height: 12px; border: 1.5px solid rgba(0, 242, 254, 0.4); background: rgba(0, 242, 254, 0.05); border-radius: 2px;"></span>
-                    <span>작업대 주차 구역 (Parking)</span>
+                    <span style="display: inline-block; width: 14px; height: 14px; background: rgba(59, 130, 246, 0.8); border-radius: 50%;"></span>
+                    <span>SG2 적재/포장 로봇</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="display: inline-block; width: 12px; height: 12px; border: 1.5px solid rgba(16, 185, 129, 0.4); background: rgba(16, 185, 129, 0.05); border-radius: 2px;"></span>
-                    <span>인바운드 적재 (Inbound A/B)</span>
+                    <span style="display: inline-block; width: 14px; height: 14px; background: rgba(239, 68, 68, 0.8); border-radius: 50%;"></span>
+                    <span>AMR 이송 로봇</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="display: inline-block; width: 12px; height: 12px; border: 1.5px solid rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.05); border-radius: 2px;"></span>
-                    <span>아웃바운드 포장 (Outbound A/B)</span>
+                    <span style="display: inline-block; width: 14px; height: 14px; background: rgba(156, 163, 175, 0.4); border: 1.5px solid rgba(156, 163, 175, 0.6); border-radius: 3px;"></span>
+                    <span>작업대 칸 (A/B)</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="display: inline-block; width: 12px; height: 12px; background: #00f2fe; border-radius: 50%; box-shadow: 0 0 8px #00f2fe;"></span>
-                    <span>실시간 작업대 (Workstation)</span>
+                    <span style="display: inline-block; width: 14px; height: 6px; background: linear-gradient(90deg, #10b981, #10b981); border-radius: 2px;"></span>
+                    <span>컨베이어 벨트 (1=첫째날, 2=둘째날, 3=셋째날)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="display: inline-block; width: 14px; height: 14px; background: rgba(0, 242, 254, 0.15); border: 1.5px solid rgba(0, 242, 254, 0.4); border-radius: 3px;"></span>
+                    <span>창고 주차 스팟</span>
                 </div>
             </div>
         </div>
@@ -1331,9 +1746,17 @@ def index():
         <div class="dashboard-grid">
             <!-- Left: Warehouse Parking spots -->
             <div class="panel-card">
-                <h2>Warehouse Parking Spots (10 Slots) <span style="font-size: 0.8rem; color: var(--text-muted);">spot_01 ~ spot_10</span></h2>
+                <h2>Warehouse Parking Spots (10 Slots) <span style="font-size: 0.8rem; color: rgba(0, 242, 254, 0.7); font-weight: normal; margin-left: 10px;">spot_01 ~ spot_10 (보관 영역)</span></h2>
                 <div class="spots-container" id="spots-list">
                     <!-- Dynamic spots go here -->
+                </div>
+            </div>
+
+            <!-- Left 2: Outbound Staging spots -->
+            <div class="panel-card">
+                <h2>Outbound Staging Spots (6 Slots) <span style="font-size: 0.8rem; color: rgba(245, 158, 11, 0.7); font-weight: normal; margin-left: 10px;">stage_01 ~ stage_06 (출고 대기 영역)</span></h2>
+                <div class="spots-container" id="staging-list">
+                    <!-- Dynamic staging spots go here -->
                 </div>
             </div>
 
@@ -1392,200 +1815,96 @@ def index():
             }, 3000);
         }
 
-        // 2D Live Grid Map State & Logic
+        // 2D Floor Plan State & Update Logic
         let locationsData = null;
         let workstationsData = [];
-        const wsPositions = {}; // Smoothly interpolated workstation positions
 
-        function initCanvas() {
-            const canvas = document.getElementById('map-canvas');
-            if (!canvas) return;
+        function updateFloorPlan(data) {
+            // 1. Update warehouse parking spots and staging spots in the floor plan
+            const spotsMap = document.getElementById('warehouse-spots-map');
+            const stagingMap = document.getElementById('staging-spots-map');
             
-            function resize() {
-                canvas.width = canvas.clientWidth * window.devicePixelRatio;
-                canvas.height = canvas.clientHeight * window.devicePixelRatio;
-                drawMap();
+            if (data.spots) {
+                if (spotsMap) spotsMap.innerHTML = '';
+                if (stagingMap) stagingMap.innerHTML = '';
+                
+                data.spots.forEach(spot => {
+                    const isOcc = spot.status === 'OCCUPIED';
+                    const cell = document.createElement('div');
+                    cell.className = `warehouse-spot-cell ${isOcc ? 'occupied' : 'empty'}`;
+                    cell.innerHTML = `
+                        <div class="spot-name">${spot.spot_id.toUpperCase()}</div>
+                        <div class="spot-ws-id">${spot.workstation_id || '—'}</div>
+                    `;
+                    
+                    if (spot.spot_id.startsWith('spot_')) {
+                        if (spotsMap) spotsMap.appendChild(cell);
+                    } else if (spot.spot_id.startsWith('stage_')) {
+                        if (stagingMap) stagingMap.appendChild(cell);
+                    }
+                });
             }
-            window.addEventListener('resize', resize);
-            resize();
-            
-            // Start rendering animation loop (60 FPS interpolation)
-            function animate() {
-                drawMap();
-                requestAnimationFrame(animate);
+
+            // 2. Update conveyor line workstation A/B slots
+            if (data.workstations) {
+                // Build a map: location -> workstation info
+                const locWsMap = {};
+                data.workstations.forEach(ws => {
+                    const loc = ws.current_location.toLowerCase();
+                    locWsMap[loc] = ws;
+                    // Also handle MOVING_TO and ROTATING states
+                    if (loc.startsWith('moving_to_')) {
+                        const target = loc.replace('moving_to_', '');
+                        if (!locWsMap[target]) locWsMap[target] = ws;
+                    }
+                    if (loc.endsWith('_rotating')) {
+                        const target = loc.replace('_rotating', '');
+                        if (!locWsMap[target]) locWsMap[target] = ws;
+                    }
+                });
+
+                // Inbound slots (sg2_in_01_A/B through sg2_in_03_A/B)
+                const inboundSlots = [
+                    'sg2_in_01_a', 'sg2_in_01_b',
+                    'sg2_in_02_a', 'sg2_in_02_b',
+                    'sg2_in_03_a', 'sg2_in_03_b',
+                ];
+                inboundSlots.forEach(slotKey => {
+                    const el = document.getElementById(`ws-slot-${slotKey.replace(/_a$/, '_A').replace(/_b$/, '_B')}`);
+                    if (!el) return;
+                    const ws = locWsMap[slotKey];
+                    if (ws) {
+                        el.classList.add('occupied');
+                        el.title = `${ws.workstation_id} @ ${ws.current_location}`;
+                        const filledCount = ws.slots.filter(s => s.status === 'FULL').length;
+                        el.textContent = `${ws.workstation_id.replace('WS','')}`;
+                    } else {
+                        el.classList.remove('occupied');
+                        el.title = slotKey.includes('_b') ? 'B구역 (대기)' : 'A구역 (활성)';
+                        el.textContent = slotKey.includes('_b') ? 'B' : 'A';
+                    }
+                });
+
+                // Outbound packing slots
+                const outboundSlots = ['sg2_out_00_a', 'sg2_out_00_b'];
+                outboundSlots.forEach(slotKey => {
+                    const el = document.getElementById(`ws-slot-${slotKey.replace(/_a$/, '_A').replace(/_b$/, '_B')}`);
+                    if (!el) return;
+                    const ws = locWsMap[slotKey];
+                    if (ws) {
+                        el.classList.add('occupied');
+                        el.title = `${ws.workstation_id} @ ${ws.current_location}`;
+                        el.textContent = `${ws.workstation_id.replace('WS','')}`;
+                    } else {
+                        el.classList.remove('occupied');
+                        el.title = slotKey.includes('_b') ? 'B구역 (대기)' : 'A구역 (활성)';
+                        el.textContent = slotKey.includes('_b') ? 'B' : 'A';
+                    }
+                });
             }
-            requestAnimationFrame(animate);
         }
 
-        function drawMap() {
-            const canvas = document.getElementById('map-canvas');
-            if (!canvas) return;
-            const ctx = canvas.getContext('2d');
-            
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Coordinate range boundaries based on warehouse.yaml
-            const minX = -40;
-            const maxX = 40;
-            const minY = -40;
-            const maxY = 30;
-            
-            function toCanvas(x, y) {
-                const cx = ((x - minX) / (maxX - minX)) * canvas.width;
-                const cy = canvas.height - ((y - minY) / (maxY - minY)) * canvas.height;
-                return { x: cx, y: cy };
-            }
-            
-            // 1. Draw Checkerboard Grid (바둑판)
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)';
-            ctx.lineWidth = 1;
-            
-            // Vertical grid lines (every 1.5m)
-            for (let x = -38.0; x <= 38.0; x += 1.5) {
-                const p1 = toCanvas(x, -36.08);
-                const p2 = toCanvas(x, 25.0);
-                ctx.beginPath();
-                ctx.moveTo(p1.x, p1.y);
-                ctx.lineTo(p2.x, p2.y);
-                ctx.stroke();
-            }
-            // Horizontal grid lines (every 1.5m)
-            for (let y = -36.08; y <= 25.0; y += 1.5) {
-                const p1 = toCanvas(-38.0, y);
-                const p2 = toCanvas(38.0, y);
-                ctx.beginPath();
-                ctx.moveTo(p1.x, p1.y);
-                ctx.lineTo(p2.x, p2.y);
-                ctx.stroke();
-            }
-            
-            // Outer boundaries of warehouse
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-            ctx.lineWidth = 2;
-            const borderLeftTop = toCanvas(-38.0, 25.0);
-            const borderRightBottom = toCanvas(38.0, -36.08);
-            ctx.beginPath();
-            ctx.rect(borderLeftTop.x, borderLeftTop.y, borderRightBottom.x - borderLeftTop.x, borderRightBottom.y - borderLeftTop.y);
-            ctx.stroke();
-            
-            if (!locationsData) return;
-            
-            // 2. Draw logical spots
-            for (const [name, loc] of Object.entries(locationsData)) {
-                const cp = toCanvas(loc.x, loc.y);
-                let color = 'rgba(255, 255, 255, 0.2)';
-                let bg = 'rgba(255, 255, 255, 0.01)';
-                
-                if (loc.type === 'PARKING_SPOT') {
-                    color = 'rgba(0, 242, 254, 0.4)';
-                    bg = 'rgba(0, 242, 254, 0.03)';
-                } else if (loc.type === 'LOADING_SPOT' || loc.type === 'STANDBY_SPOT') {
-                    color = 'rgba(16, 185, 129, 0.4)';
-                    bg = 'rgba(16, 185, 129, 0.03)';
-                } else if (loc.type === 'PACKAGING_SPOT') {
-                    color = 'rgba(245, 158, 11, 0.4)';
-                    bg = 'rgba(245, 158, 11, 0.03)';
-                }
-                
-                const size = Math.max(8, canvas.width * 0.012);
-                ctx.strokeStyle = color;
-                ctx.fillStyle = bg;
-                ctx.lineWidth = 1.5;
-                ctx.beginPath();
-                ctx.rect(cp.x - size/2, cp.y - size/2, size, size);
-                ctx.fill();
-                ctx.stroke();
-                
-                // Label text
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
-                ctx.font = `${Math.max(7, canvas.width * 0.009)}px Outfit`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'top';
-                
-                let label = name;
-                if (name.startsWith('spot_')) label = 'S' + name.substring(5);
-                else if (name.startsWith('sg2_in_')) {
-                    const parts = name.split('_');
-                    label = 'I' + parseInt(parts[2]) + parts[3];
-                } else if (name.startsWith('sg2_out_')) {
-                    const parts = name.split('_');
-                    label = 'O' + parts[3];
-                }
-                ctx.fillText(label, cp.x, cp.y + size/2 + 2);
-            }
-            
-            // 3. Draw Workstations (with LERP interpolation)
-            const norm_locs = {};
-            for (const [key, val] of Object.entries(locationsData)) {
-                norm_locs[key.toUpperCase()] = val;
-            }
-            
-            workstationsData.forEach(ws => {
-                let targetKey = ws.current_location.toUpperCase();
-                let isMoving = false;
-                
-                if (targetKey.startsWith('MOVING_TO_')) {
-                    targetKey = targetKey.replace('MOVING_TO_', '');
-                    isMoving = true;
-                } else if (targetKey.endsWith('_ROTATING')) {
-                    targetKey = targetKey.replace('_ROTATING', '');
-                }
-                
-                const targetCoords = norm_locs[targetKey];
-                if (!targetCoords) return;
-                
-                if (!wsPositions[ws.workstation_id]) {
-                    wsPositions[ws.workstation_id] = { x: targetCoords.x, y: targetCoords.y };
-                } else {
-                    const pos = wsPositions[ws.workstation_id];
-                    pos.x += (targetCoords.x - pos.x) * 0.08;
-                    pos.y += (targetCoords.y - pos.y) * 0.08;
-                }
-                
-                const currentPos = wsPositions[ws.workstation_id];
-                const cp = toCanvas(currentPos.x, currentPos.y);
-                
-                if (isMoving) {
-                    ctx.strokeStyle = 'rgba(0, 242, 254, 0.15)';
-                    ctx.lineWidth = 1.5;
-                    ctx.setLineDash([4, 4]);
-                    const destCp = toCanvas(targetCoords.x, targetCoords.y);
-                    ctx.beginPath();
-                    ctx.moveTo(cp.x, cp.y);
-                    ctx.lineTo(destCp.x, destCp.y);
-                    ctx.stroke();
-                    ctx.setLineDash([]);
-                }
-                
-                const radius = Math.max(6, canvas.width * 0.009);
-                
-                ctx.shadowColor = '#00f2fe';
-                ctx.shadowBlur = isMoving ? 18 : 8;
-                ctx.fillStyle = '#00f2fe';
-                ctx.beginPath();
-                ctx.arc(cp.x, cp.y, radius, 0, 2 * Math.PI);
-                ctx.fill();
-                ctx.shadowBlur = 0;
-                
-                ctx.strokeStyle = '#ffffff';
-                ctx.lineWidth = 1.5;
-                ctx.stroke();
-                
-                ctx.fillStyle = '#090d16';
-                ctx.beginPath();
-                ctx.arc(cp.x, cp.y, radius * 0.4, 0, 2 * Math.PI);
-                ctx.fill();
-                
-                ctx.fillStyle = '#ffffff';
-                ctx.font = `bold ${Math.max(8, canvas.width * 0.01)}px Outfit`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'bottom';
-                ctx.fillText(ws.workstation_id, cp.x, cp.y - radius - 3);
-            });
-        }
 
-        // Initialize map canvas after DOM load
-        setTimeout(initCanvas, 100);
 
         // 1. 모의 적재 이벤트 트리거
         async function simulateInbound() {
@@ -1659,6 +1978,22 @@ def index():
             reader.readAsText(file);
         }
 
+        // 1.5. 다음 영업일 개시 트리거
+        async function startNextDay() {
+            try {
+                const response = await fetch('/api/start_next_day', { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    showToast("🚀 " + data.message);
+                    fetchStatus();
+                } else {
+                    showToast("❌ 개시 실패: " + data.message);
+                }
+            } catch (err) {
+                showToast("❌ API 통신 오류 발생");
+            }
+        }
+
         // 2. DB 초기화 트리거
         async function resetDatabase() {
             if(!confirm("PostgreSQL과 Redis 큐를 초기상태로 완전히 리셋하시겠습니까?")) return;
@@ -1687,9 +2022,28 @@ def index():
                 locationsData = data.locations;
                 workstationsData = data.workstations;
 
-                // 3-1. Render Warehouse spots
+                // Update the 2D floor plan
+                updateFloorPlan(data);
+
+                // Update day transition banner visibility
+                const banner = document.getElementById('day-transition-banner');
+                if (banner) {
+                    if (data.day_status === 'PENDING_TRANSITION') {
+                        banner.style.display = 'flex';
+                        const badge = document.getElementById('completed-day-badge');
+                        if (badge) badge.innerText = data.completed_day || '—';
+                    } else {
+                        banner.style.display = 'none';
+                    }
+                }
+
+                // 3-1. Render Warehouse spots & Staging spots
                 const spotsContainer = document.getElementById('spots-list');
-                spotsContainer.innerHTML = '';
+                const stagingContainer = document.getElementById('staging-list');
+                
+                if (spotsContainer) spotsContainer.innerHTML = '';
+                if (stagingContainer) stagingContainer.innerHTML = '';
+                
                 data.spots.forEach(spot => {
                     const isOccupied = spot.status === 'OCCUPIED';
                     const item = document.createElement('div');
@@ -1699,7 +2053,12 @@ def index():
                         <div class="spot-ws">${spot.workstation_id || '—'}</div>
                         <div class="spot-status-badge">${isOccupied ? 'OCCUPIED' : 'EMPTY'}</div>
                     `;
-                    spotsContainer.appendChild(item);
+                    
+                    if (spot.spot_id.startsWith('spot_')) {
+                        if (spotsContainer) spotsContainer.appendChild(item);
+                    } else if (spot.spot_id.startsWith('stage_')) {
+                        if (stagingContainer) stagingContainer.appendChild(item);
+                    }
                 });
 
                 // 3-2. Render Workstations
@@ -1819,5 +2178,5 @@ def index():
     """
 
 if __name__ == "__main__":
-    uvicorn.run("dashboard_server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("dashboard_server:app", host="0.0.0.0", port=8009, reload=True)
 

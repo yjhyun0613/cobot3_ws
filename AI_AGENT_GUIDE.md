@@ -126,7 +126,7 @@ docker exec -i warehouse_postgres psql -U rokey -d warehouse_db < docker/init.sq
 ```bash
 python3 scratch/dashboard_server.py
 ```
-* 웹 브라우저에서 `http://localhost:8000`으로 접속하여 10개 작업대 및 창고 주차 스팟 상태를 모니터링합니다.
+* 웹 브라우저에서 `http://localhost:8009`으로 접속하여 10개 작업대 및 창고 주차 스팟 상태를 모니터링합니다.
 
 ### ⑤ 모의 시뮬레이션 시나리오 테스트
 ```bash
