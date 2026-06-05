@@ -134,6 +134,16 @@ def get_status():
                     "slot_number": row[6],
                     "qr_id": row[7]
                 })
+
+            # 3.5. Fetch floor QR location mappings
+            cursor.execute("""
+                SELECT location_name, x_coord, y_coord, location_type 
+                FROM floor_qr_map 
+                WHERE location_name IS NOT NULL;
+            """)
+            locations = {}
+            for loc_name, x, y, loc_type in cursor.fetchall():
+                locations[loc_name] = {"x": x, "y": y, "type": loc_type}
                 
         # 4. Redis Active Queue Tasks (Sorted Set, 내림차순 조회)
         redis_tasks = []
@@ -157,7 +167,8 @@ def get_status():
             "workstations": workstations,
             "spots": spots,
             "packages": packages,
-            "redis_tasks": redis_tasks
+            "redis_tasks": redis_tasks,
+            "locations": locations
         }
     except Exception as e:
         if pg_conn:
@@ -1274,6 +1285,32 @@ def index():
             </button>
         </div>
 
+        <!-- Warehouse 2D Live Grid Map -->
+        <div class="panel-card" style="margin-bottom: 2rem;">
+            <h2>Warehouse 2D Live Grid Map (바둑판식 실시간 맵) <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal; margin-left: 10px;">1.5m 격자 및 실시간 작업대 위치 시각화</span></h2>
+            <div style="position: relative; width: 100%; height: 350px; background: rgba(10, 15, 30, 0.9); border-radius: 12px; overflow: hidden; border: 1px solid var(--border-color);">
+                <canvas id="map-canvas" style="display: block; width: 100%; height: 100%;"></canvas>
+            </div>
+            <div style="display: flex; gap: 20px; margin-top: 10px; font-size: 0.8rem; color: var(--text-muted); justify-content: center; flex-wrap: wrap;">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="display: inline-block; width: 12px; height: 12px; border: 1.5px solid rgba(0, 242, 254, 0.4); background: rgba(0, 242, 254, 0.05); border-radius: 2px;"></span>
+                    <span>작업대 주차 구역 (Parking)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="display: inline-block; width: 12px; height: 12px; border: 1.5px solid rgba(16, 185, 129, 0.4); background: rgba(16, 185, 129, 0.05); border-radius: 2px;"></span>
+                    <span>인바운드 적재 (Inbound A/B)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="display: inline-block; width: 12px; height: 12px; border: 1.5px solid rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.05); border-radius: 2px;"></span>
+                    <span>아웃바운드 포장 (Outbound A/B)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="display: inline-block; width: 12px; height: 12px; background: #00f2fe; border-radius: 50%; box-shadow: 0 0 8px #00f2fe;"></span>
+                    <span>실시간 작업대 (Workstation)</span>
+                </div>
+            </div>
+        </div>
+
         <div class="dashboard-grid">
             <!-- Left: Warehouse Parking spots -->
             <div class="panel-card">
@@ -1337,6 +1374,201 @@ def index():
                 toast.classList.remove('show');
             }, 3000);
         }
+
+        // 2D Live Grid Map State & Logic
+        let locationsData = null;
+        let workstationsData = [];
+        const wsPositions = {}; // Smoothly interpolated workstation positions
+
+        function initCanvas() {
+            const canvas = document.getElementById('map-canvas');
+            if (!canvas) return;
+            
+            function resize() {
+                canvas.width = canvas.clientWidth * window.devicePixelRatio;
+                canvas.height = canvas.clientHeight * window.devicePixelRatio;
+                drawMap();
+            }
+            window.addEventListener('resize', resize);
+            resize();
+            
+            // Start rendering animation loop (60 FPS interpolation)
+            function animate() {
+                drawMap();
+                requestAnimationFrame(animate);
+            }
+            requestAnimationFrame(animate);
+        }
+
+        function drawMap() {
+            const canvas = document.getElementById('map-canvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Coordinate range boundaries based on warehouse.yaml
+            const minX = -40;
+            const maxX = 40;
+            const minY = -40;
+            const maxY = 30;
+            
+            function toCanvas(x, y) {
+                const cx = ((x - minX) / (maxX - minX)) * canvas.width;
+                const cy = canvas.height - ((y - minY) / (maxY - minY)) * canvas.height;
+                return { x: cx, y: cy };
+            }
+            
+            // 1. Draw Checkerboard Grid (바둑판)
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)';
+            ctx.lineWidth = 1;
+            
+            // Vertical grid lines (every 1.5m)
+            for (let x = -38.0; x <= 38.0; x += 1.5) {
+                const p1 = toCanvas(x, -36.08);
+                const p2 = toCanvas(x, 25.0);
+                ctx.beginPath();
+                ctx.moveTo(p1.x, p1.y);
+                ctx.lineTo(p2.x, p2.y);
+                ctx.stroke();
+            }
+            // Horizontal grid lines (every 1.5m)
+            for (let y = -36.08; y <= 25.0; y += 1.5) {
+                const p1 = toCanvas(-38.0, y);
+                const p2 = toCanvas(38.0, y);
+                ctx.beginPath();
+                ctx.moveTo(p1.x, p1.y);
+                ctx.lineTo(p2.x, p2.y);
+                ctx.stroke();
+            }
+            
+            // Outer boundaries of warehouse
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+            ctx.lineWidth = 2;
+            const borderLeftTop = toCanvas(-38.0, 25.0);
+            const borderRightBottom = toCanvas(38.0, -36.08);
+            ctx.beginPath();
+            ctx.rect(borderLeftTop.x, borderLeftTop.y, borderRightBottom.x - borderLeftTop.x, borderRightBottom.y - borderLeftTop.y);
+            ctx.stroke();
+            
+            if (!locationsData) return;
+            
+            // 2. Draw logical spots
+            for (const [name, loc] of Object.entries(locationsData)) {
+                const cp = toCanvas(loc.x, loc.y);
+                let color = 'rgba(255, 255, 255, 0.2)';
+                let bg = 'rgba(255, 255, 255, 0.01)';
+                
+                if (loc.type === 'PARKING_SPOT') {
+                    color = 'rgba(0, 242, 254, 0.4)';
+                    bg = 'rgba(0, 242, 254, 0.03)';
+                } else if (loc.type === 'LOADING_SPOT' || loc.type === 'STANDBY_SPOT') {
+                    color = 'rgba(16, 185, 129, 0.4)';
+                    bg = 'rgba(16, 185, 129, 0.03)';
+                } else if (loc.type === 'PACKAGING_SPOT') {
+                    color = 'rgba(245, 158, 11, 0.4)';
+                    bg = 'rgba(245, 158, 11, 0.03)';
+                }
+                
+                const size = Math.max(8, canvas.width * 0.012);
+                ctx.strokeStyle = color;
+                ctx.fillStyle = bg;
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.rect(cp.x - size/2, cp.y - size/2, size, size);
+                ctx.fill();
+                ctx.stroke();
+                
+                // Label text
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+                ctx.font = `${Math.max(7, canvas.width * 0.009)}px Outfit`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+                
+                let label = name;
+                if (name.startsWith('spot_')) label = 'S' + name.substring(5);
+                else if (name.startsWith('sg2_in_')) {
+                    const parts = name.split('_');
+                    label = 'I' + parseInt(parts[2]) + parts[3];
+                } else if (name.startsWith('sg2_out_')) {
+                    const parts = name.split('_');
+                    label = 'O' + parts[3];
+                }
+                ctx.fillText(label, cp.x, cp.y + size/2 + 2);
+            }
+            
+            // 3. Draw Workstations (with LERP interpolation)
+            const norm_locs = {};
+            for (const [key, val] of Object.entries(locationsData)) {
+                norm_locs[key.toUpperCase()] = val;
+            }
+            
+            workstationsData.forEach(ws => {
+                let targetKey = ws.current_location.toUpperCase();
+                let isMoving = false;
+                
+                if (targetKey.startsWith('MOVING_TO_')) {
+                    targetKey = targetKey.replace('MOVING_TO_', '');
+                    isMoving = true;
+                } else if (targetKey.endsWith('_ROTATING')) {
+                    targetKey = targetKey.replace('_ROTATING', '');
+                }
+                
+                const targetCoords = norm_locs[targetKey];
+                if (!targetCoords) return;
+                
+                if (!wsPositions[ws.workstation_id]) {
+                    wsPositions[ws.workstation_id] = { x: targetCoords.x, y: targetCoords.y };
+                } else {
+                    const pos = wsPositions[ws.workstation_id];
+                    pos.x += (targetCoords.x - pos.x) * 0.08;
+                    pos.y += (targetCoords.y - pos.y) * 0.08;
+                }
+                
+                const currentPos = wsPositions[ws.workstation_id];
+                const cp = toCanvas(currentPos.x, currentPos.y);
+                
+                if (isMoving) {
+                    ctx.strokeStyle = 'rgba(0, 242, 254, 0.15)';
+                    ctx.lineWidth = 1.5;
+                    ctx.setLineDash([4, 4]);
+                    const destCp = toCanvas(targetCoords.x, targetCoords.y);
+                    ctx.beginPath();
+                    ctx.moveTo(cp.x, cp.y);
+                    ctx.lineTo(destCp.x, destCp.y);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+                
+                const radius = Math.max(6, canvas.width * 0.009);
+                
+                ctx.shadowColor = '#00f2fe';
+                ctx.shadowBlur = isMoving ? 18 : 8;
+                ctx.fillStyle = '#00f2fe';
+                ctx.beginPath();
+                ctx.arc(cp.x, cp.y, radius, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+                
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+                
+                ctx.fillStyle = '#090d16';
+                ctx.beginPath();
+                ctx.arc(cp.x, cp.y, radius * 0.4, 0, 2 * Math.PI);
+                ctx.fill();
+                
+                ctx.fillStyle = '#ffffff';
+                ctx.font = `bold ${Math.max(8, canvas.width * 0.01)}px Outfit`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'bottom';
+                ctx.fillText(ws.workstation_id, cp.x, cp.y - radius - 3);
+            });
+        }
+
+        // Initialize map canvas after DOM load
+        setTimeout(initCanvas, 100);
 
         // 1. 모의 적재 이벤트 트리거
         async function simulateInbound() {
@@ -1433,6 +1665,10 @@ def index():
                 const response = await fetch('/api/status');
                 if (!response.ok) return;
                 const data = await response.json();
+
+                // Update global data for map canvas
+                locationsData = data.locations;
+                workstationsData = data.workstations;
 
                 // 3-1. Render Warehouse spots
                 const spotsContainer = document.getElementById('spots-list');
