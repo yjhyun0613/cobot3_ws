@@ -662,13 +662,13 @@ class ControlTowerNode(Node):
                         ws_id, ws_qr = sg2_out_status['B'][0]
                         self.get_logger().info(f'[Keep-Alive] 포장존 A구역이 비어 있습니다. B구역의 {ws_id}(QR: {ws_qr})를 A구역으로 이동시킵니다.')
                         self.trigger_workstation_move(ws_id, 'sg2_out_00_B', 'sg2_out_00_A', ws_qr)
-                    # B구역에도 없는 경우 -> 창고에서 완충된 작업대를 조회해서 A구역으로 바로 공급
+                    # B구역에도 없는 경우 -> 창고에서 완충된 작업대를 조회해서 A구역으로 바로 공급 (오늘 물량만)
                     else:
                         cursor.execute(
                             "SELECT w.workstation_id, w.current_location, w.qr_id "
                             "FROM workstations w "
                             "JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WAREHOUSE' "
-                            "WHERE w.current_location LIKE 'spot_%%' "
+                            "WHERE w.current_location LIKE 'spot_%%' AND p.route_zone = '2026-06-01' "
                             "GROUP BY w.workstation_id, w.current_location, w.qr_id "
                             "HAVING COUNT(p.package_id) = 8 "
                             "LIMIT 1;"

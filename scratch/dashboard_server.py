@@ -559,12 +559,12 @@ def simulate_packaging():
                     pg_conn.close()
                     return {"success": True, "message": f"대기 중이던 작업대 {ws_id}를 활성 포장존(sg2_out_00_A)으로 승격 배치했습니다."}
                 
-                # 1-2. 포장 구역(A/B)에 작업대가 아예 없으면, 창고에서 완충된 작업대를 가져옴
+                # 1-2. 포장 구역(A/B)에 작업대가 아예 없으면, 창고에서 완충된 작업대를 가져옴 (오늘 날짜 물량만)
                 cursor.execute("""
                     SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
                     FROM workstations w
                     JOIN packages p ON w.workstation_id = p.workstation_id
-                    WHERE p.status = 'IN_WAREHOUSE'
+                    WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = '2026-06-01'
                     LIMIT 1;
                 """)
                 warehouse_ws = cursor.fetchone()
@@ -650,12 +650,12 @@ def simulate_packaging():
             # 6. 7번째 포장 완료 시 → Look-ahead: 다음 포장 대기 작업대 사전 호출 (B구역 대기존으로)
             lookahead_triggered = False
             if completed_count == 7 and redis_client:
-                # 창고에 IN_WAREHOUSE 패키지가 있는 작업대 조회
+                # 창고에 오늘 물량(2026-06-01)의 IN_WAREHOUSE 패키지가 있는 작업대 조회
                 cursor.execute("""
                     SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
                     FROM workstations w
                     JOIN packages p ON w.workstation_id = p.workstation_id
-                    WHERE p.status = 'IN_WAREHOUSE'
+                    WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = '2026-06-01'
                     AND w.workstation_id != %s
                     LIMIT 1;
                 """, (ws_id,))
@@ -741,12 +741,12 @@ def simulate_packaging():
                     }
                     push_priority_task(redis_client, task_deploy)
                 else:
-                    # B구역에 없다면 창고에서 직접 가져오기
+                    # B구역에 없다면 창고에서 직접 가져오기 (오늘 물량만)
                     cursor.execute("""
                         SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
                         FROM workstations w
                         JOIN packages p ON w.workstation_id = p.workstation_id
-                        WHERE p.status = 'IN_WAREHOUSE'
+                        WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = '2026-06-01'
                         AND w.workstation_id != %s
                         LIMIT 1;
                     """, (ws_id,))

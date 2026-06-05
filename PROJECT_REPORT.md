@@ -54,9 +54,9 @@ NVIDIA Isaac Sim 시뮬레이터 환경에서 다중 로봇(컨베이어 분류 
   * 서비스 서버와 액션 클라이언트를 유기적으로 스케줄링하는 `task_scheduler_loop` 탑재, QR ID 우선 매핑/조회 및 Redis Sorted Set(ZSET) 기반 우선순위 큐 스케줄러 반영.
   * **하이브리드 통신**: `/fleet/amr_states`, `/fleet/workstation_states`, `/fleet/package_states`, `/fleet/task_events` 토픽에 JSON 직렬화 데이터를 1Hz 및 이벤트 기반으로 브로드캐스트하는 퍼블리셔 탑재.
   * **교착 방지 규격**: 무한 블로킹을 차단하기 위해 `wait_for_server` 호출 시 `timeout_sec=1.0` 타임아웃 예외 처리 전면 반영.
+  * **출고 예정일 필터링**: 창고에서 포장존 A/B구역으로 완충 작업대를 공급하는 Keep-Alive 스케줄러 쿼리에 `route_zone = '2026-06-01'` 조건을 추가하여, 오늘 날짜 배송 물량만 안전하게 출고되도록 보완.
 * **웹 대시보드 및 테스트 스크립트 (`scratch/` 디렉토리)**:
-
-  * `dashboard_server.py`: FastAPI와 HTML/JS를 이용한 실시간 다크 모드 대시보드로, 10개의 작업대 및 창고 구역 상태, Redis AMR 우선순위 큐, 패키지 상태를 종합 모니터링하고 모의 적재 시뮬레이션을 원클릭으로 수행할 수 있음.
+  * `dashboard_server.py`: FastAPI와 HTML/JS를 이용한 실시간 다크 모드 대시보드로, 10개의 작업대 및 창고 구역 상태, Redis AMR 우선순위 큐, 패키지 상태를 종합 모니터링하고 모의 적재 시뮬레이션을 원클릭으로 수행할 수 있음. 2D Live Grid Map(바둑판식 실시간 맵)과 함께 포장 시뮬레이션 시 오늘 출고일(`2026-06-01`)에 해당하는 작업대만 창고에서 이송하여 포장하도록 제한 조건을 구현함.
   * `run_simulation_test.py` & `run_qr_simulation_test.py`: ROS2 액션 서버와 서비스 클라이언트를 모킹하여 실제 환경 없이도 전체 프로세스의 정상 컴파일, QR코드 비전 해독 연동 및 통신 루프를 검증함.
 * **QR코드 생성 및 USD 매핑 모듈 (`scratch/` 디렉토리)**:
   * `qr_handler.py`: `qrcode` 라이브러리를 사용한 QR 생성 및 C 의존성 없이 안정적인 `zxing-cpp` 기반 비전 디코딩 패키지.
