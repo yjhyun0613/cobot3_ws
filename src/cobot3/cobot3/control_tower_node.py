@@ -6,6 +6,7 @@ from rclpy.action import ActionClient
 # 커스텀 ROS2 인터페이스 임포트
 from cobot3_interfaces.srv import GetPackageRoute, CheckWarehouseStatus, ReportInboundProgress
 from cobot3_interfaces.action import MovePackage, ManageWorkstation, StartPackaging
+from std_msgs.msg import String
 
 import json
 import time
@@ -52,10 +53,19 @@ class ControlTowerNode(Node):
         self.manage_workstation_action_client = ActionClient(self, ManageWorkstation, 'manage_workstation')
         self.start_packaging_action_client = ActionClient(self, StartPackaging, 'start_packaging')
 
+        # 3.5 fleet 상태 모니터링용 JSON 토픽 퍼블리셔 등록
+        self.amr_states_pub = self.create_publisher(String, '/fleet/amr_states', 10)
+        self.workstation_states_pub = self.create_publisher(String, '/fleet/workstation_states', 10)
+        self.package_states_pub = self.create_publisher(String, '/fleet/package_states', 10)
+        self.task_events_pub = self.create_publisher(String, '/fleet/task_events', 10)
+
         # 4. 주기적 상태 체크 및 스케줄러 타이머 구동 (1초마다 실행)
         self.scheduler_timer = self.create_timer(1.0, self.task_scheduler_loop)
+        # fleet 상태 브로드캐스트 타이머 구동 (1초마다 실행)
+        self.fleet_states_timer = self.create_timer(1.0, self.publish_fleet_states_callback)
         
-        self.get_logger().info('ROS2 서비스 서버 및 액션 클라이언트 준비 완료.')
+        self.get_logger().info('ROS2 서비스 서버, 액션 클라이언트 및 Fleet 퍼블리셔 준비 완료.')
+
 
     def init_databases(self):
         """데이터베이스 연결 초기화"""
@@ -348,7 +358,8 @@ class ControlTowerNode(Node):
     def push_amr_task(self, task_dict):
         """AMR 작업 명령을 Redis 대기 큐(Sorted Set)에 집어넣음"""
         import uuid
-        task_dict['uuid'] = str(uuid.uuid4())
+        task_uuid = str(uuid.uuid4())
+        task_dict['uuid'] = task_uuid
         task_type = task_dict.get('task_type', 'TASK')
         score = self.get_task_priority(task_type)
 
@@ -366,6 +377,39 @@ class ControlTowerNode(Node):
                     self.get_logger().error(f'Redis Push 실패: {str(e)}')
         else:
             self.get_logger().warn(f'[Mock Queue] AMR 태스크 추가 (DB 미연결) -> {task_dict}')
+
+        # task_events 토픽 발행 (QUEUED)
+        self.publish_task_event(
+            task_id=task_uuid,
+            task_type=task_type,
+            priority=score,
+            workstation_id=task_dict.get('workstation_id', ''),
+            workstation_qr_id=task_dict.get('workstation_qr_id', ''),
+            start_location=task_dict.get('from', ''),
+            target_location=task_dict.get('to', ''),
+            status='QUEUED'
+        )
+
+    def publish_task_event(self, task_id, task_type, priority, workstation_id, workstation_qr_id, start_location, target_location, status, assigned_amr=None):
+        """Task 상태 변경 이벤트를 JSON 형식으로 /fleet/task_events 토픽에 발행"""
+        event = {
+            "schema_version": "1.0",
+            "timestamp": time.time(),
+            "task_id": task_id,
+            "type": task_type,
+            "priority": priority,
+            "workstation_id": workstation_id,
+            "workstation_qr_id": workstation_qr_id,
+            "start_location": start_location,
+            "target_location": target_location,
+            "status": status,
+            "assigned_amr": assigned_amr
+        }
+        msg = String()
+        msg.data = json.dumps(event)
+        self.task_events_pub.publish(msg)
+        self.get_logger().info(f"[Task Event Published] Task {task_id} -> {status}")
+
 
     # ==========================================
     # 주기적 스케줄링 및 액션 제어 루프
@@ -403,6 +447,7 @@ class ControlTowerNode(Node):
     def execute_amr_task(self, task):
         """큐에서 꺼낸 태스크 종류에 맞춰 ROS2 액션 명령 하달"""
         task_type = task.get('task_type')
+        task_id = task.get('uuid')
 
         if task_type == 'DIRECT_WAREHOUSE':
             # 단일 패키지 창고 직송 액션 전송
@@ -413,7 +458,32 @@ class ControlTowerNode(Node):
             goal_msg.package_qr_id = task.get('package_qr_id', '')
 
             self.get_logger().info(f'AMR에게 단일 택배({goal_msg.package_id}, QR: {goal_msg.package_qr_id}) 창고 직송 액션 전송 중...')
-            self.move_package_action_client.wait_for_server()
+            if not self.move_package_action_client.wait_for_server(timeout_sec=1.0):
+                self.get_logger().error('AMR Action Server (move_package) is NOT available! Skipping DIRECT_WAREHOUSE.')
+                self.publish_task_event(
+                    task_id=task_id,
+                    task_type="DIRECT_WAREHOUSE",
+                    priority=100,
+                    workstation_id="",
+                    workstation_qr_id="",
+                    start_location="bg2",
+                    target_location=goal_msg.destination_zone,
+                    status='FAILED',
+                    assigned_amr='AMR_01'
+                )
+                return
+            # task_events 토픽 발행 (ASSIGNED)
+            self.publish_task_event(
+                task_id=task_id,
+                task_type="DIRECT_WAREHOUSE",
+                priority=100,
+                workstation_id="",
+                workstation_qr_id="",
+                start_location="bg2",
+                target_location=goal_msg.destination_zone,
+                status='ASSIGNED',
+                assigned_amr='AMR_01'
+            )
             self.move_package_action_client.send_goal_async(goal_msg)
 
         elif task_type == 'PRE_FETCH_EMPTY_WORKSTATION':
@@ -461,19 +531,20 @@ class ControlTowerNode(Node):
                     self.get_logger().error(f'창고 빈 작업대 조회 중 에러: {str(e)}')
 
             if workstation_id != 'WS_TEMP_EMPTY':
-                self.trigger_workstation_move(workstation_id, start_location, target_location, workstation_qr_id)
+                self.trigger_workstation_move(workstation_id, start_location, target_location, workstation_qr_id, task_id=task_id)
             else:
                 self.get_logger().warn("경고: 대기 중인 빈 작업대가 없어 이송을 대기합니다.")
 
         elif task_type == 'PRE_FETCH_WORKSTATION':
             # 포장 라인을 위해 창고의 작업대를 포장 로봇 앞으로 가져오는 액션
             workstation_id = task['workstation_id']
-            self.trigger_workstation_move(workstation_id, task['from'], task['to'], task.get('workstation_qr_id', ""))
+            self.trigger_workstation_move(workstation_id, task['from'], task['to'], task.get('workstation_qr_id', ""), task_id=task_id)
 
         elif task_type == 'ROTATE_WORKSTATION':
             # 작업대 180도 제자리 회전 액션
             workstation_id = task['workstation_id']
-            self.trigger_workstation_move(workstation_id, task['from'], task['to'], task.get('workstation_qr_id', ""))
+            self.trigger_workstation_move(workstation_id, task['from'], task['to'], task.get('workstation_qr_id', ""), task_id=task_id)
+
 
     def check_completed_workstations(self):
         """8개 칸이 모두 채워진 완성된 작업대를 파악해 이동 명령(AMR) 스케줄링"""
@@ -615,8 +686,12 @@ class ControlTowerNode(Node):
         except Exception as e:
             self.get_logger().error(f'Keep-Alive Dispatcher 실행 중 에러: {str(e)}')
 
-    def trigger_workstation_move(self, workstation_id, start, target, workstation_qr_id=""):
+    def trigger_workstation_move(self, workstation_id, start, target, workstation_qr_id="", task_id=None):
         """AMR에게 작업대 통째로 이송하도록 액션 골 전송 및 DB 위치 선점 업데이트"""
+        import uuid
+        if not task_id:
+            task_id = f"AUTO_{str(uuid.uuid4())[:8]}"
+
         actual_target = target
         actual_start = start
 
@@ -670,17 +745,51 @@ class ControlTowerNode(Node):
                 except Exception as e:
                     self.get_logger().error(f'출발 스팟 비우기 중 에러: {str(e)}')
 
-        # 이송 작업이 중복으로 트리거되는 걸 방지하기 위해 DB 위치를 즉시 업데이트
+        # 이송 작업이 중복으로 트리거되는 걸 방지하기 위해 DB 위치 및 상태 즉시 업데이트
         if self.pg_conn:
             try:
                 with self.pg_conn.cursor() as cursor:
                     cursor.execute(
-                        "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
+                        "UPDATE workstations SET current_location = %s, status = 'PROCESSING', reserved_by = 'AMR_01' WHERE workstation_id = %s;",
                         (f"MOVING_TO_{actual_target.upper()}", workstation_id)
                     )
             except Exception as e:
                 self.get_logger().error(f'작업대 이동 상태 DB 업데이트 실패: {str(e)}')
                 return
+
+        # 3. floor_qr_map 테이블을 조회하여 물리 좌표 및 바닥 QR ID 동적 획득
+        target_qr_id = ""
+        target_x = 0.0
+        target_y = 0.0
+        target_yaw = 0.0
+
+        start_coords_str = "Unknown"
+        target_coords_str = "Unknown"
+        if self.pg_conn:
+            try:
+                with self.pg_conn.cursor() as cursor:
+                    # 출발지 물리 정보 조회
+                    cursor.execute(
+                        "SELECT qr_id, x_coord, y_coord FROM floor_qr_map WHERE location_name = %s;",
+                        (actual_start,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        start_coords_str = f"{row[0]} ({row[1]}, {row[2]})"
+                    
+                    # 목적지 물리 정보 조회
+                    cursor.execute(
+                        "SELECT qr_id, x_coord, y_coord FROM floor_qr_map WHERE location_name = %s;",
+                        (actual_target,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        target_qr_id = row[0]
+                        target_x = row[1]
+                        target_y = row[2]
+                        target_coords_str = f"{target_qr_id} ({target_x}, {target_y})"
+            except Exception as db_err:
+                self.get_logger().error(f'[DB] 위치 물리 좌표 조회 중 오류: {db_err}')
 
         # AMR 액션 호출
         goal_msg = ManageWorkstation.Goal()
@@ -688,49 +797,151 @@ class ControlTowerNode(Node):
         goal_msg.start_location = actual_start
         goal_msg.target_location = actual_target
         goal_msg.workstation_qr_id = workstation_qr_id
+        goal_msg.target_qr_id = target_qr_id
+        goal_msg.target_x = target_x
+        goal_msg.target_y = target_y
+        goal_msg.target_yaw = target_yaw
 
-        self.get_logger().info(f'AMR에게 작업대 {workstation_id}(QR: {workstation_qr_id}) 이송 액션 전송: {actual_start} -> {actual_target}')
-        self.manage_workstation_action_client.wait_for_server()
+        self.get_logger().info(
+            f'AMR에게 작업대 {workstation_id}(QR: {workstation_qr_id}) 이송 액션 전송:\n'
+            f'  - 출발지: {actual_start} [{start_coords_str}]\n'
+            f'  - 목적지: {actual_target} [{target_coords_str}]'
+        )
+        if not self.manage_workstation_action_client.wait_for_server(timeout_sec=1.0):
+            self.get_logger().error(f'AMR Action Server (manage_workstation) is NOT available! Skipping move for {workstation_id}.')
+            self.publish_task_event(
+                task_id=task_id,
+                task_type="MOVE_WORKSTATION",
+                priority=80,
+                workstation_id=workstation_id,
+                workstation_qr_id=workstation_qr_id,
+                start_location=actual_start,
+                target_location=actual_target,
+                status='FAILED',
+                assigned_amr='AMR_01'
+            )
+            # Reset workstation status in PG
+            if self.pg_conn:
+                try:
+                    with self.pg_conn.cursor() as cursor:
+                        cursor.execute(
+                            "UPDATE workstations SET status = 'WAITING', reserved_by = NULL WHERE workstation_id = %s;",
+                            (workstation_id,)
+                        )
+                except Exception as e:
+                    self.get_logger().error(f'복구 실패: {str(e)}')
+            return
         
+        # task_events 토픽 발행 (ASSIGNED)
+        self.publish_task_event(
+            task_id=task_id,
+            task_type="MOVE_WORKSTATION",
+            priority=80,
+            workstation_id=workstation_id,
+            workstation_qr_id=workstation_qr_id,
+            start_location=actual_start,
+            target_location=actual_target,
+            status='ASSIGNED',
+            assigned_amr='AMR_01'
+        )
+
         # 액션 완료 시 결과를 받아 실제 DB 최종 위치를 수정하도록 콜백 설정
         send_goal_future = self.manage_workstation_action_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(
-            lambda future: self.workstation_move_response_callback(future, workstation_id, actual_target)
+            lambda future: self.workstation_move_response_callback(future, workstation_id, actual_target, task_id)
         )
 
-    def workstation_move_response_callback(self, future, workstation_id, target):
+    def workstation_move_response_callback(self, future, workstation_id, target, task_id):
         """AMR의 작업대 이송 액션 결과 확인 콜백"""
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.get_logger().warn(f'작업대 {workstation_id} 이송 요청이 AMR에 의해 거절당했습니다.')
+            # task_events 토픽 발행 (FAILED)
+            self.publish_task_event(
+                task_id=task_id,
+                task_type="MOVE_WORKSTATION",
+                priority=80,
+                workstation_id=workstation_id,
+                workstation_qr_id="",
+                start_location="",
+                target_location=target,
+                status='FAILED',
+                assigned_amr='AMR_01'
+            )
+            if self.pg_conn:
+                try:
+                    with self.pg_conn.cursor() as cursor:
+                        cursor.execute(
+                            "UPDATE workstations SET status = 'WAITING', reserved_by = NULL WHERE workstation_id = %s;",
+                            (workstation_id,)
+                        )
+                except Exception as e:
+                    self.get_logger().error(f'거절 후 DB 복구 실패: {str(e)}')
             return
 
         self.get_logger().info(f'작업대 {workstation_id} 이송 목표 수락됨. 이동 진행 중...')
         get_result_future = goal_handle.get_result_async()
         get_result_future.add_done_callback(
-            lambda res_future: self.workstation_move_completed_callback(res_future, workstation_id, target)
+            lambda res_future: self.workstation_move_completed_callback(res_future, workstation_id, target, task_id)
         )
 
-    def workstation_move_completed_callback(self, future, workstation_id, target):
-        """AMR이 이송을 완료했을 때 최종적으로 DB 갱신"""
+    def workstation_move_completed_callback(self, future, workstation_id, target, task_id):
+        """AMR이 이송을 완료했을 때 최종적으로 DB 갱신 및 완료 이벤트 전송"""
         result = future.result().result
         if result.success:
             self.get_logger().info(f'=== [성공] 작업대 {workstation_id} 최종 도착 완료: -> {target} ===')
             if self.pg_conn:
                 try:
                     with self.pg_conn.cursor() as cursor:
+                        new_status = 'PROCESSING' if target == 'sg2_out_00_A' else 'WAITING'
                         cursor.execute(
-                            "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
-                            (target, workstation_id)
+                            "UPDATE workstations SET current_location = %s, status = %s, reserved_by = NULL WHERE workstation_id = %s;",
+                            (target, new_status, workstation_id)
                         )
                 except Exception as e:
                     self.get_logger().error(f'도착지 DB 최종 반영 실패: {str(e)}')
+
+            # task_events 토픽 발행 (COMPLETED)
+            self.publish_task_event(
+                task_id=task_id,
+                task_type="MOVE_WORKSTATION",
+                priority=80,
+                workstation_id=workstation_id,
+                workstation_qr_id="",
+                start_location="",
+                target_location=target,
+                status='COMPLETED',
+                assigned_amr='AMR_01'
+            )
 
             # 만약 포장 구역 A(sg2_out_00_A)에 안전하게 도착했다면 포장 공정(Action) 트리거
             if target == 'sg2_out_00_A':
                 self.trigger_packaging_process(workstation_id)
         else:
             self.get_logger().error(f'[실패] 작업대 {workstation_id} 이송 중 에러 발생')
+            if self.pg_conn:
+                try:
+                    with self.pg_conn.cursor() as cursor:
+                        cursor.execute(
+                            "UPDATE workstations SET status = 'WAITING', reserved_by = NULL WHERE workstation_id = %s;",
+                            (workstation_id,)
+                        )
+                except Exception as e:
+                    self.get_logger().error(f'실패 후 DB 복구 실패: {str(e)}')
+
+            # task_events 토픽 발행 (FAILED)
+            self.publish_task_event(
+                task_id=task_id,
+                task_type="MOVE_WORKSTATION",
+                priority=80,
+                workstation_id=workstation_id,
+                workstation_qr_id="",
+                start_location="",
+                target_location=target,
+                status='FAILED',
+                assigned_amr='AMR_01'
+            )
+
 
     # ==========================================
     # 포장 공정 액션 (sg2_out_00) 핸들링
@@ -758,7 +969,18 @@ class ControlTowerNode(Node):
         goal_msg.workstation_qr_id = workstation_qr_id
 
         self.get_logger().info(f'포장 로봇 sg2_out_00에게 {workstation_id}(QR: {workstation_qr_id}) 포장 시작 명령 전송...')
-        self.start_packaging_action_client.wait_for_server()
+        if not self.start_packaging_action_client.wait_for_server(timeout_sec=1.0):
+            self.get_logger().error('Packaging Action Server (start_packaging) is NOT available! Skipping packaging process.')
+            if self.pg_conn:
+                try:
+                    with self.pg_conn.cursor() as cursor:
+                        cursor.execute(
+                            "UPDATE workstations SET status = 'WAITING', reserved_by = NULL WHERE workstation_id = %s;",
+                            (workstation_id,)
+                        )
+                except Exception as e:
+                    self.get_logger().error(f'복구 실패: {str(e)}')
+            return
         
         send_goal_future = self.start_packaging_action_client.send_goal_async(
             goal_msg, 
@@ -868,8 +1090,122 @@ class ControlTowerNode(Node):
             # 빈 작업대를 창고(warehouse)로 이동하도록 AMR에게 지시
             self.trigger_workstation_move(workstation_id, 'sg2_out_00_A', 'warehouse', ws_qr_id)
 
+    def publish_fleet_states_callback(self):
+        """1초 주기로 플릿 상태(AMR, 작업대, 패키지)를 직렬화하여 각 토픽에 발행"""
+        # 1. AMR States
+        amr_states = {}
+        if self.redis_client:
+            try:
+                keys = self.redis_client.keys("amr:*")
+                for key in keys:
+                    # Skip queue key
+                    if key == "queue:amr_tasks":
+                        continue
+                    parts = key.split(":")
+                    if len(parts) > 1:
+                        amr_id = parts[1]
+                        # Try hash first
+                        val = self.redis_client.hgetall(key)
+                        if val:
+                            amr_states[amr_id] = {
+                                "state": val.get("state", "IDLE"),
+                                "current_qr_id": val.get("current_qr_id", ""),
+                                "target_qr_id": val.get("target_qr_id", ""),
+                                "carrying_workstation_id": val.get("carrying_workstation_id", None) or None,
+                                "battery": float(val.get("battery", 100.0)),
+                                "available": val.get("available", "true").lower() in ["true", "1", "yes"]
+                            }
+                        else:
+                            val_str = self.redis_client.get(key)
+                            if val_str:
+                                try:
+                                    amr_states[amr_id] = json.loads(val_str)
+                                except json.JSONDecodeError:
+                                    pass
+            except Exception as e:
+                self.get_logger().error(f'Redis에서 AMR 상태 로드 중 에러: {str(e)}')
+
+        if not amr_states:
+            # Fallback mock for demo/dashboard
+            amr_states = {
+                "AMR_01": {
+                    "state": "IDLE",
+                    "current_qr_id": "QR_0030",
+                    "target_qr_id": "",
+                    "carrying_workstation_id": None,
+                    "battery": 82.5,
+                    "available": True
+                }
+            }
+
+        amr_msg = String()
+        amr_msg.data = json.dumps(amr_states)
+        self.amr_states_pub.publish(amr_msg)
+
+        # 2. Workstation States (JOIN floor_qr_map and packages occupied slots)
+        workstations_list = []
+        if self.pg_conn:
+            try:
+                with self.pg_conn.cursor() as cursor:
+                    # w.status, w.reserved_by가 새로 추가됨
+                    cursor.execute(
+                        "SELECT w.workstation_id, w.qr_id, COALESCE(f.qr_id, w.current_location) as current_location_qr, "
+                        "       w.status, w.reserved_by, "
+                        "       COALESCE(array_to_json(array_agg(p.slot_number ORDER BY p.slot_number) FILTER (WHERE p.slot_number IS NOT NULL AND p.status = 'IN_WORKSTATION')), '[]'::json) as filled_slots "
+                        "FROM workstations w "
+                        "LEFT JOIN floor_qr_map f ON w.current_location = f.location_name "
+                        "LEFT JOIN packages p ON w.workstation_id = p.workstation_id "
+                        "GROUP BY w.workstation_id, w.current_location, f.qr_id, w.qr_id, w.status, w.reserved_by;"
+                    )
+                    rows = cursor.fetchall()
+                    for row in rows:
+                        workstations_list.append({
+                            "workstation_id": row[0],
+                            "workstation_qr_id": row[1] or "",
+                            "current_location": row[2],
+                            "status": row[3] or "WAITING",
+                            "slot_count": 8,
+                            "filled_slots": row[5] if isinstance(row[5], list) else json.loads(row[5] or '[]'),
+                            "reserved_by": row[4]
+                        })
+            except Exception as e:
+                self.get_logger().error(f'PostgreSQL에서 작업대 상태 로드 중 에러: {str(e)}')
+
+        ws_msg = String()
+        ws_msg.data = json.dumps({"workstations": workstations_list})
+        self.workstation_states_pub.publish(ws_msg)
+
+        # 3. Package States (only WAITING, IN_WORKSTATION, IN_WAREHOUSE status)
+        packages_list = []
+        if self.pg_conn:
+            try:
+                with self.pg_conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT package_id, customer_name, route_zone, status, outbound_id, workstation_id, slot_number, qr_id "
+                        "FROM packages WHERE status != 'COMPLETED';"
+                    )
+                    rows = cursor.fetchall()
+                    for row in rows:
+                        packages_list.append({
+                            "package_id": row[0],
+                            "customer_name": row[1],
+                            "route_zone": row[2],
+                            "status": row[3],
+                            "outbound_id": row[4],
+                            "workstation_id": row[5],
+                            "slot_number": row[6],
+                            "qr_id": row[7] or ""
+                        })
+            except Exception as e:
+                self.get_logger().error(f'PostgreSQL에서 패키지 상태 로드 중 에러: {str(e)}')
+
+        pkg_msg = String()
+        pkg_msg.data = json.dumps({"packages": packages_list})
+        self.package_states_pub.publish(pkg_msg)
+
 
 def main(args=None):
+
     rclpy.init(args=args)
     node = ControlTowerNode()
     

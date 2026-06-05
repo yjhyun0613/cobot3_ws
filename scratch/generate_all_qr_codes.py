@@ -140,6 +140,107 @@ def main():
     print(f"  - 격자 크기: {len(x_coords)}열 x {len(y_coords)}행 = 총 {total_points}개 노드")
     print(f"  - 범위: X [{x_coords[0]} ~ {x_coords[-1]}], Y [{y_coords[0]} ~ {y_coords[-1]}]")
 
+    # 4. 데이터베이스 floor_qr_map 테이블 연동 및 데이터 적재
+    print("\n[4] PostgreSQL floor_qr_map 테이블 연동 및 데이터 적재 시작...")
+    db_conn = None
+    try:
+        import psycopg2
+        db_conn = psycopg2.connect(
+            host='localhost',
+            port=5432,
+            user='rokey',
+            password='rokey_pass',
+            database='warehouse_db'
+        )
+        db_conn.autocommit = True
+        print("  - PostgreSQL 데이터베이스 연결 성공.")
+    except Exception as db_err:
+        print(f"  - [경고] 데이터베이스 연결 실패 (psycopg2 미설치 또는 컨테이너 미구동): {db_err}")
+        print("    (격자 맵 파일 생성을 계속 진행합니다)")
+
+    if db_conn:
+        try:
+            with db_conn.cursor() as cursor:
+                # 테이블 비우기
+                cursor.execute("TRUNCATE TABLE floor_qr_map CASCADE;")
+                
+                # 논리 스팟 정의
+                logical_spots = {}
+                
+                # 1) 주차 구역 (spot_01 ~ spot_10)
+                # Y = -29.025
+                parking_xs = [-15.275, -13.775, -12.275, -10.775, -9.275, -7.775, -6.275, -4.775, -3.275, -1.775]
+                for idx, px in enumerate(parking_xs, 1):
+                    spot_name = f"spot_{idx:02d}"
+                    logical_spots[(px, -29.025)] = {
+                        "name": spot_name,
+                        "type": "PARKING_SPOT",
+                        "desc": f"Warehouse workstation parking slot {idx:02d}"
+                    }
+                
+                # 2) 입고 로봇 구역 (sg2_in_01_A/B ~ sg2_in_03_A/B)
+                # sg2_in_01: X = -25.775
+                # sg2_in_02: X = -21.275
+                # sg2_in_03: X = -16.775
+                # A: Y = 15.975, B: Y = 14.475
+                inbound_xs = [-25.775, -21.275, -16.775]
+                for robot_idx, ix in enumerate(inbound_xs, 1):
+                    # A구역 (Loading)
+                    logical_spots[(ix, 15.975)] = {
+                        "name": f"sg2_in_{robot_idx:02d}_A",
+                        "type": "LOADING_SPOT",
+                        "desc": f"Inbound {robot_idx:02d} A-buffer (Loading)"
+                    }
+                    # B구역 (Standby)
+                    logical_spots[(ix, 14.475)] = {
+                        "name": f"sg2_in_{robot_idx:02d}_B",
+                        "type": "STANDBY_SPOT",
+                        "desc": f"Inbound {robot_idx:02d} B-buffer (Standby)"
+                    }
+                
+                # 3) 출고 포장 구역 (sg2_out_00_A/B)
+                # X = 20.725
+                # A: Y = -15.525, B: Y = -17.025
+                logical_spots[(20.725, -15.525)] = {
+                    "name": "sg2_out_00_A",
+                    "type": "PACKAGING_SPOT",
+                    "desc": "Outbound packing zone A (Active)"
+                }
+                logical_spots[(20.725, -17.025)] = {
+                    "name": "sg2_out_00_B",
+                    "type": "PACKAGING_SPOT",
+                    "desc": "Outbound packing zone B (Standby)"
+                }
+
+                # 대량 삽입용 쿼리 리스트
+                insert_data = []
+                for xc in x_coords:
+                    for yc in y_coords:
+                        qr_id = f"FLOOR_X_{xc}_Y_{yc}"
+                        spot_info = logical_spots.get((xc, yc))
+                        if spot_info:
+                            loc_name = spot_info["name"]
+                            loc_type = spot_info["type"]
+                            desc = spot_info["desc"]
+                        else:
+                            loc_name = None
+                            loc_type = "PATHWAY"
+                            desc = "Warehouse floor grid pathway"
+                        
+                        insert_data.append((qr_id, xc, yc, 0.0, loc_name, loc_type, desc))
+
+                # Bulk insert using executemany
+                cursor.executemany(
+                    "INSERT INTO floor_qr_map (qr_id, x_coord, y_coord, z_coord, location_name, location_type, description) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s);",
+                    insert_data
+                )
+                print(f"  - floor_qr_map 테이블에 총 {len(insert_data)}개 레코드 적재 완료!")
+        except Exception as insert_err:
+            print(f"  - [에러] floor_qr_map 데이터 적재 중 오류 발생: {insert_err}")
+        finally:
+            db_conn.close()
+
     # 모든 격자점을 파일로 출력할지 결정
     if args.all_floor:
         print(f"  - 모든 {total_points}개의 격자점 QR코드 생성을 시작합니다. 잠시만 기다려주세요...")

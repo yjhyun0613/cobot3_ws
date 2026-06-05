@@ -9,6 +9,10 @@
 
 ## 📌 1. 인터페이스 변경 이력 요약
 
+### v2.1 → v2.2 (AMR 플릿 하이브리드 연동 규격 반영, 2026-06-05)
+* **`ManageWorkstation.action` Goal 확장**: AMR 이동 시 QR ID와 좌표의 동시 지정을 지원하기 위해 `target_qr_id`, `target_x`, `target_y`, `target_yaw` 필드를 추가했습니다.
+* **상태 모니터링 JSON 토픽 추가**: 제어 채널과 분리된 실시간 상태 공유 채널 구축을 위해 `/fleet/amr_states`, `/fleet/workstation_states`, `/fleet/package_states`, `/fleet/task_events` 토픽 명세를 연동 문서 규격에 통합하였습니다.
+
 ### v2.0 → v2.1 (작업대 8칸 확장 및 우선순위 큐 동기화, 2026-06-04)
 * **슬롯 범위 주석 정합성 동기화**: `ReportInboundProgress.srv` 및 `StartPackaging.action` 내의 슬롯 번호 가이드를 기존 `1~4`에서 실제 적용된 8칸 레이아웃 규격인 **`1~8`**로 수정하였습니다.
 * **우선순위 제어 연동**: 우선순위 큐(Redis Sorted Set) 및 180도 회전 시퀀스(`ROTATE_WORKSTATION`) 도입에 따라 `ManageWorkstation.action`의 목적지 물리 위치 제어 상태(`_A_ROTATING`, `_A`, `_B` 등)와의 정합성을 보장했습니다.
@@ -101,6 +105,10 @@ AMR에게 작업대를 다른 공정존이나 보관용 창고로 이송하도�
 | | `start_location` | `string` | 출발 물리 위치 (예: `"sg2_in_01"`) |
 | | `target_location` | `string` | 도착 물리 위치 (예: `"sg2_out_00_A"`) |
 | | `workstation_qr_id` | `string` | 작업대 고유 QR코드 ID (예: `"WORKSTATION_WS01"`) |
+| | `target_qr_id` | `string` | 목적지 바닥 QR ID (예: `"QR_0030"`) |
+| | `target_x` | `float64` | 목적지 X 물리 좌표 (m) |
+| | `target_y` | `float64` | 목적지 Y 물리 좌표 (m) |
+| | `target_yaw` | `float64` | 목적지 Yaw 물리 각도 (rad) |
 | **Result** | `success` | `bool` | 이송 완료 성공 여부 |
 | **Feedback** | `distance_remaining` | `float32` | 목적지까지 남은 거리 (m) |
 | | `status` | `string` | 현재 상태 (`"PICKING"`, `"NAVIGATING"`, `"PLACING"`) |
@@ -121,3 +129,88 @@ AMR에게 작업대를 다른 공정존이나 보관용 창고로 이송하도�
 | | `final_output_ids` | `string[]` | 생성된 고유 출고 ID 리스트 (포장 로봇 ID prefix 포함) |
 | **Feedback** | `completed_slots` | `int32` | 현재 포장 완료된 슬롯 누적 갯수 (1~8) |
 | | `last_packed_slot` | `string` | 직전에 포장 완료된 슬롯 번호 (예: `"slot_3"`) |
+
+---
+
+## 📊 4. Fleet 상태 모니터링 JSON 토픽 상세 (State Plane)
+
+하이브리드 통신 아키텍처에 따라, 제어 명령(Action/Service) 채널과 분리되어 실시간 상태 모니터링 및 대시보드 연동을 위해 발행되는 JSON 형식의 ROS2 토픽 명세입니다. (메시지 유형: `std_msgs/msg/String` 내 직렬화된 JSON 문자열)
+
+### ① `/fleet/amr_states`
+* **발행 주기**: 1Hz 주기 (Periodic)
+* **내용**: 각 AMR(자율 이송 로봇)의 현재 운전 상태, 위치(바닥 QR), 목표 위치, 배터리 잔량 및 가용 여부입니다.
+* **JSON 페이로드 구조**:
+  ```json
+  {
+    "AMR_01": {
+      "state": "IDLE",
+      "current_qr_id": "QR_0030",
+      "target_qr_id": "",
+      "carrying_workstation_id": null,
+      "battery": 82.5,
+      "available": true
+    }
+  }
+  ```
+
+### ② `/fleet/workstation_states`
+* **발행 주기**: 1Hz 주기 (Periodic)
+* **내용**: 물류창고 내 전체 작업대의 현재 물리적 위치(바닥 QR ID), 작업 상태, 적재 슬롯 상태(PostgreSQL packages 테이블 연계 동적 생성)입니다.
+* **JSON 페이로드 구조**:
+  ```json
+  {
+    "workstations": [
+      {
+        "workstation_id": "WS01",
+        "workstation_qr_id": "WORKSTATION_WS01",
+        "current_location": "QR_0030",
+        "status": "WAITING",
+        "slot_count": 8,
+        "filled_slots": [1, 2, 3, 4],
+        "reserved_by": null
+      }
+    ]
+  }
+  ```
+
+### ③ `/fleet/package_states`
+* **발행 주기**: 1Hz 주기 (Periodic)
+* **내용**: 창고 내에 존재하는 활성 패키지들(상태가 `COMPLETED`가 아닌 패키지)의 실시간 상태 데이터입니다.
+* **JSON 페이로드 구조**:
+  ```json
+  {
+    "packages": [
+      {
+        "package_id": "PKG_RAND_001",
+        "customer_name": "김태희",
+        "route_zone": "2026-06-01",
+        "status": "WAITING",
+        "outbound_id": null,
+        "workstation_id": null,
+        "slot_number": null,
+        "qr_id": "PKG_RAND_001"
+      }
+    ]
+  }
+  ```
+
+### ④ `/fleet/task_events`
+* **발행 주기**: 이벤트 발생 시 즉시 발행 (Event-driven)
+* **내용**: 관제 센터가 생성하고 AMR에 할당하여 실행 완료 또는 실패에 이르는 태스크 생애주기 전반의 상태 변경 로그입니다.
+* **JSON 페이로드 구조**:
+  ```json
+  {
+    "schema_version": "1.0",
+    "timestamp": 1780626168.9948,
+    "task_id": "uuid-string",
+    "type": "MOVE_WORKSTATION",
+    "priority": 80,
+    "workstation_id": "WS01",
+    "workstation_qr_id": "WORKSTATION_WS01",
+    "start_location": "spot_01",
+    "target_location": "sg2_in_01_A",
+    "status": "ASSIGNED",
+    "assigned_amr": "AMR_01"
+  }
+  ```
+

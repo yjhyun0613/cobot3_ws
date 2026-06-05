@@ -223,7 +223,13 @@ AMR 이송 속도가 로봇의 적재 및 포장 속도보다 느려 발생하�
 
 ---
 
-## 🗺️ 9. 바닥 QR코드 공간 격자 맵 데이터베이스(Spatial Floor QR Map DB) 연동 설계 - [진행 예정 / 미완료]
+## 🗺️ 9. 바닥 QR코드 공간 격자 맵 데이터베이스(Spatial Floor QR Map DB) 연동 설계 - [완료]
+
+> [!NOTE]
+> **적용 완료**: 2026년 6월 5일 구현 완료.
+> - PostgreSQL 데이터베이스 초기화 스크립트(`docker/init.sql`)에 `floor_qr_map` 테이블 정의 추가.
+> - 격자 생성기(`scratch/generate_all_qr_codes.py`) 실행 시 1,813개의 물리 격자 좌표 및 논리 스팟(`spot_XX`, `sg2_in_XX_A/B`, `sg2_out_00_A/B`) 정보를 PostgreSQL DB로 자동 적재 연동 완료.
+> - 관제탑(`control_tower_node.py`) 및 모의 로봇 에뮬레이터(`run_full_simulation_robot.py`) 기동 시 하드코딩된 목적지 명칭 대신 `floor_qr_map` 데이터베이스를 실시간으로 쿼리하여 물리 coordinates와 바닥 QR 마커 식별자를 해석(Resolution)하는 구조 구현 및 검증 완료.
 
 ### 9.1 배경 및 필요성
 * 바닥에 배치된 격자형 QR코드(예: 1,813개의 바닥 QR)는 AMR이 이동 및 로컬라이제이션(Localization)을 수행하는 물리적 기준 역할을 합니다.
@@ -252,3 +258,96 @@ PostgreSQL에 다음과 같은 공간 격자 맵 정보 관리 테이블을 정�
      ```
 3. **AMR 자율주행 격자 생성**:
    * 대시보드 및 관제 노드는 기동 시 `floor_qr_map`을 쿼리하여 가용 좌표 지도를 구성하고, AMR의 현재 좌표와 매핑된 바닥 QR를 조회하여 최단 경로(A* 알고리즘 등)를 동적으로 계산합니다.
+
+---
+
+## 🤝 10. AMR 플릿 연동 및 하이브리드 통신 아키텍처 규격 - [구현 완료]
+
+> [!NOTE]
+> **설계 및 구현 완료**: 2026년 6월 5일 설계 검토 및 합의 완료 후 관제탑 노드(`control_tower_node.py`) 및 인터페이스 정의 수정, 토픽 발행 검증까지 최종 완료되었습니다.
+
+### 10.1 핵심 설계 원칙 (4대 수정안)
+1. **수정안 1 (통신 제한)**: JSON 토픽은 제어 명령용이 아니라 모니터링과 대시보드 표시용으로 제한한다.
+2. **수정안 2 (제어 채널)**: AMR 이동, 작업대 픽업/드롭, 작업 취소는 반드시 ROS2 Action으로 처리한다.
+3. **수정안 3 (좌표 전송)**: QR ID는 `QR_XXXX` 형식을 사용하되, 관제탑은 DB의 `floor_qr_map`에서 좌표를 조회하고, AMR에는 `target_qr_id`와 `target_pose`를 함께 전달한다.
+4. **수정안 4 (DB 정규화)**: DB는 정규화 구조를 원본으로 유지하고, `filled_slots` 같은 배열 데이터는 관제탑이 송신 시점에 실시간으로 생성한다.
+
+### 10.2 아키텍처 비교 요약 (동작 한계 정의)
+* **제어 명령 (Control Plane)**: `ROS2 Action/Service`를 사용하여 성공/실패 결과 반환, 피드더백, 중도 취소(Action Cancel)를 처리함으로써 무선 네트워크 불안정 시에도 데드락이나 명령 유실이 발생하지 않도록 조치합니다.
+* **상태 모니터링 (Data/State Plane)**: `/fleet/amr_states`, `/fleet/workstation_states`, `/fleet/package_states`, `/fleet/task_events` 토픽에 JSON을 직렬화하여 송신함으로써 빌드 변경 최소화 및 대시보드 연동성을 확보합니다.
+* **비상 백업 (Fail-safe)**: DB 장애 대응을 위해 AMR 로컬 장비 내에 `floor_qr_map.yaml` 파일을 비상 백업 맵으로 상시 유지하여, 관제탑과의 연결 유실 시에도 마커 스캔을 통해 로컬 복구 주행이 가능하도록 백업 체계를 구축합니다.
+
+### 10.3 상세 구현 규격 및 JSON 메시지 구조
+* **`ManageWorkstation.action` Goal 확장**:
+  ```protobuf
+  string target_qr_id        # 목적지 바닥 QR ID (예: "QR_0030")
+  float64 target_x           # 목적지 X 좌표 (m)
+  float64 target_y           # 목적지 Y 좌표 (m)
+  float64 target_yaw         # 목적지 Yaw 각도 (rad)
+  ```
+
+* **상태 모니터링 JSON 토픽 사양**:
+  1. `/fleet/amr_states` (`std_msgs/msg/String` JSON):
+     ```json
+     {
+       "AMR_01": {
+         "state": "IDLE",
+         "current_qr_id": "QR_0030",
+         "target_qr_id": "",
+         "carrying_workstation_id": null,
+         "battery": 82.5,
+         "available": true
+       }
+     }
+     ```
+  2. `/fleet/workstation_states` (`std_msgs/msg/String` JSON):
+     ```json
+     {
+       "workstations": [
+         {
+           "workstation_id": "WS01",
+           "workstation_qr_id": "WORKSTATION_WS01",
+           "current_location": "QR_0030",
+           "status": "WAITING",
+           "slot_count": 8,
+           "filled_slots": [1, 2, 3, 4],
+           "reserved_by": null
+         }
+       ]
+     }
+     ```
+  3. `/fleet/package_states` (`std_msgs/msg/String` JSON):
+     ```json
+     {
+       "packages": [
+         {
+           "package_id": "PKG_RAND_001",
+           "customer_name": "김태희",
+           "route_zone": "2026-06-01",
+           "status": "WAITING",
+           "outbound_id": null,
+           "workstation_id": null,
+           "slot_number": null,
+           "qr_id": "PKG_RAND_001"
+         }
+       ]
+     }
+     ```
+  4. `/fleet/task_events` (`std_msgs/msg/String` JSON):
+     ```json
+     {
+       "schema_version": "1.0",
+       "timestamp": 1780626168.9948,
+       "task_id": "uuid-string",
+       "type": "MOVE_WORKSTATION",
+       "priority": 80,
+       "workstation_id": "WS01",
+       "workstation_qr_id": "WORKSTATION_WS01",
+       "start_location": "spot_01",
+       "target_location": "sg2_in_01_A",
+       "status": "ASSIGNED",
+       "assigned_amr": "AMR_01"
+     }
+     ```
+
+

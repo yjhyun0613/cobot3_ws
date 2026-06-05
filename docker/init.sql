@@ -3,6 +3,7 @@ DROP TABLE IF EXISTS packages;
 DROP TABLE IF EXISTS warehouse_locations;
 DROP TABLE IF EXISTS workstations;
 DROP TABLE IF EXISTS robots;
+DROP TABLE IF EXISTS floor_qr_map;
 
 -- 2. robots 테이블 생성
 CREATE TABLE robots (
@@ -15,7 +16,9 @@ CREATE TABLE robots (
 CREATE TABLE workstations (
     workstation_id VARCHAR(50) PRIMARY KEY,
     current_location VARCHAR(50) NOT NULL, -- sg2_in_01, warehouse, sg2_out_00, spot_XX, etc.
-    qr_id VARCHAR(100) UNIQUE
+    qr_id VARCHAR(100) UNIQUE,
+    status VARCHAR(50) DEFAULT 'WAITING',
+    reserved_by VARCHAR(50)
 );
 
 -- 4. warehouse_locations 테이블 생성
@@ -37,7 +40,18 @@ CREATE TABLE packages (
     qr_id VARCHAR(100) UNIQUE
 );
 
--- 6. 기본 데이터 삽입 (Mock Data)
+-- 6. floor_qr_map 테이블 생성
+CREATE TABLE floor_qr_map (
+    qr_id VARCHAR(100) PRIMARY KEY,
+    x_coord DOUBLE PRECISION NOT NULL,
+    y_coord DOUBLE PRECISION NOT NULL,
+    z_coord DOUBLE PRECISION DEFAULT 0.0,
+    location_name VARCHAR(50),
+    location_type VARCHAR(50),
+    description TEXT
+);
+
+-- 7. 기본 데이터 삽입 (Mock Data)
 -- 로봇 등록
 INSERT INTO robots (robot_id, robot_type, qr_id) VALUES
 ('bg2', 'CONVEYOR_SORTER', 'ROBOT_bg2'),

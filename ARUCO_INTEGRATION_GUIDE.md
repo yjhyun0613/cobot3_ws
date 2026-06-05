@@ -73,8 +73,8 @@ INSERT INTO robots (robot_id, robot_type, qr_id)
 VALUES ('bg3', 'CONVEYOR_SORTER', 'ROBOT_bg3');
 
 -- 2. 신규 작업대 등록 시 (QR ID: WORKSTATION_WS11)
-INSERT INTO workstations (workstation_id, current_location, qr_id) 
-VALUES ('WS11', 'spot_01', 'WORKSTATION_WS11');
+INSERT INTO workstations (workstation_id, current_location, qr_id, status, reserved_by) 
+VALUES ('WS11', 'spot_01', 'WORKSTATION_WS11', 'WAITING', NULL);
 
 -- 3. 신규 택배 등록 시 (QR ID: PKG_RAND_100)
 INSERT INTO packages (package_id, customer_name, route_zone, status, qr_id) 

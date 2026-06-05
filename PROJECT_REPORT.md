@@ -30,12 +30,13 @@ NVIDIA Isaac Sim 시뮬레이터 환경에서 다중 로봇(컨베이어 분류 
 실시간 연산 성능과 이력 정합성 유지를 위해 **하이브리드 DB 구조**를 채택했습니다.
 
 ### ① PostgreSQL (관계형 DB - 마스터 데이터 관리)
-* **`packages`**: 택배 라이프사이클 추적, 적재된 작업대 번호/슬롯 번호 및 ArUco 마커 ID(`aruco_id`) 기록.
-* **`workstations`**: 2x4 작업대의 현재 물리적 위치, 슬롯별 적재 수령인/상태 및 ArUco 마커 ID(`aruco_id`) 모니터링.
-* **`robots`**: 관제 시스템에 등록된 제어 대상 로봇 목록 및 ArUco 마커 ID(`aruco_id`).
+* **`packages`**: 택배 라이프사이클 추적, 적재된 작업대 번호/슬롯 번호 및 QR코드 ID(`qr_id`) 기록.
+* **`workstations`**: 2x8 작업대의 현재 물리적 위치, 제어 상태(`status`), AMR 선점 예약 정보(`reserved_by`), 슬롯별 적재 상태 및 QR코드 ID(`qr_id`) 모니터링.
+* **`robots`**: 관제 시스템에 등록된 제어 대상 로봇 목록 및 QR코드 ID(`qr_id`).
+* **`floor_qr_map`**: AMR 격자 주행 및 위치 좌표 매핑용 1,813개 바닥 QR코드 절대 좌표(`x_coord`, `y_coord`, `z_coord`) 관리.
 
 ### ② Redis (인메모리 NoSQL - 실시간 제어 및 우선순위 큐)
-* **AMR 상태 해시 (`amr:[id]:status`)**: 실시간 물리적 3D 좌표 및 상태값 캐싱.
+* **AMR 상태 해시 (`amr:[id]:status` 또는 `amr:[id]`)**: 실시간 물리적 3D 좌표, 구동 상태, 배터리 잔량 캐싱.
 * **AMR 명령 큐 (`queue:amr_tasks`)**: Sorted Set(ZSET) 기반으로 태스크별 우선순위(Score)에 따라 AMR에 비동기로 내리는 정밀 스케줄링 대기열.
 
 ---
@@ -46,11 +47,13 @@ NVIDIA Isaac Sim 시뮬레이터 환경에서 다중 로봇(컨베이어 분류 
   * PostgreSQL 15, Redis 7 컨테이너 설정 및 DB 초기화 스크립트 작성.
   * 개발 편의를 위해 웹 브라우저에서 DB 내용을 보고 파일로 다운로드할 수 있는 **Adminer(포트 8080)** 및 **Redis Commander(포트 8081)** 모니터링 서비스 탑재.
 * **ROS2 커스텀 인터페이스 (`cobot3_interfaces` 패키지)**:
-  * 서비스: `GetPackageRoute.srv`, `CheckWarehouseStatus.srv`, `ReportInboundProgress.srv` (카메라 인식 연동을 위한 ArUco ID 관련 필드 포함)
-  * 액션: `MovePackage.action`, `ManageWorkstation.action`, `StartPackaging.action` (이송/제어 명령 고유 식별용 ArUco ID 필드 포함)
+  * 서비스: `GetPackageRoute.srv`, `CheckWarehouseStatus.srv`, `ReportInboundProgress.srv` (카메라 인식 연동을 위한 QR ID 관련 필드 포함)
+  * 액션: `MovePackage.action`, `ManageWorkstation.action` (AMR 이송용 물리 좌표 `target_x/y/yaw` 및 `target_qr_id` 추가), `StartPackaging.action` (이송/제어 명령 고유 식별용 QR ID 필드 포함)
 * **관제 센터 핵심 노드 (`control_tower_node.py`)**:
   * PostgreSQL/Redis 라이브러리 연동 및 멀티스레드 비동기 콜백 적용.
-  * 서비스 서버와 액션 클라이언트를 유기적으로 스케줄링하는 `task_scheduler_loop` 탑재, QR/ArUco ID 우선 매핑/조회 및 Redis Sorted Set(ZSET) 기반 우선순위 큐 스케줄러 반영.
+  * 서비스 서버와 액션 클라이언트를 유기적으로 스케줄링하는 `task_scheduler_loop` 탑재, QR ID 우선 매핑/조회 및 Redis Sorted Set(ZSET) 기반 우선순위 큐 스케줄러 반영.
+  * **하이브리드 통신**: `/fleet/amr_states`, `/fleet/workstation_states`, `/fleet/package_states`, `/fleet/task_events` 토픽에 JSON 직렬화 데이터를 1Hz 및 이벤트 기반으로 브로드캐스트하는 퍼블리셔 탑재.
+  * **교착 방지 규격**: 무한 블로킹을 차단하기 위해 `wait_for_server` 호출 시 `timeout_sec=1.0` 타임아웃 예외 처리 전면 반영.
 * **웹 대시보드 및 테스트 스크립트 (`scratch/` 디렉토리)**:
 
   * `dashboard_server.py`: FastAPI와 HTML/JS를 이용한 실시간 다크 모드 대시보드로, 10개의 작업대 및 창고 구역 상태, Redis AMR 우선순위 큐, 패키지 상태를 종합 모니터링하고 모의 적재 시뮬레이션을 원클릭으로 수행할 수 있음.

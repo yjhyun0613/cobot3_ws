@@ -16,7 +16,9 @@ erDiagram
     WORKSTATIONS {
         VARCHAR workstation_id PK "작업대 ID (WS01~10)"
         VARCHAR current_location "작업대 실시간 위치"
-        INT aruco_id UNIQUE "ArUco ID (11~20)"
+        VARCHAR qr_id UNIQUE "QR코드 ID"
+        VARCHAR status "제어 상태 (WAITING, PROCESSING)"
+        VARCHAR reserved_by "선점 AMR ID (NULL 허용)"
     }
     WAREHOUSE_LOCATIONS {
         VARCHAR spot_id PK "창고 주차 구역 (spot_01~10)"

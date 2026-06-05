@@ -77,6 +77,8 @@ erDiagram
 | **`workstation_id`** | `VARCHAR(50)` | `PRIMARY KEY` | 작업대 고유 문자열 ID | `'WS01'`, `'WS10'` |
 | **`current_location`** | `VARCHAR(50)` | `NOT NULL` | 작업대의 실시간 위치 | `'sg2_in_01_A'`, `'spot_01'`, `'sg2_out_00_A'`, `'sg2_out_00_B'` |
 | **`qr_id`** | `VARCHAR(100)` | `UNIQUE` | 작업대 고유 QR코드 ID | `'WORKSTATION_WS01'`, `'WORKSTATION_WS10'` |
+| **`status`** | `VARCHAR(50)` | `DEFAULT 'WAITING'` | 작업대의 제어 상태 | `'WAITING'`, `'PROCESSING'` |
+| **`reserved_by`** | `VARCHAR(50)` | - | 현재 작업대를 예약/선점 중인 AMR 식별자 | `'AMR_01'`, `NULL` |
 
 ---
 

@@ -18,6 +18,7 @@ graph TD
     Outbound[sg2_out_00_A: 포장 로봇] -->|StartPackaging| CT
     CT <-->|SQL / Real-time Query| DB[(PostgreSQL)]
     CT <-->|ZADD / ZPOPMAX Priority Tasks| Redis[(Redis Command Queue)]
+    CT -->|1Hz JSON Broadcast / Event-driven| Fleet[/"/fleet/* Topics (amr_states, workstation_states, package_states, task_events)"/]
 ```
 
 ---
@@ -46,7 +47,7 @@ graph TD
 
 ### ① PostgreSQL 테이블 구조
 * **`robots`**: 관제 대상 로봇 식별 정보.
-* **`workstations`**: 작업대 실시간 위치 및 8개 슬롯 점유 현황.
+* **`workstations`**: 작업대 실시간 위치, 제어 상태(status), AMR 선점 정보(reserved_by) 및 8개 슬롯 점유 현황.
 * **`warehouse_locations`**: 창고 내 10개 주차 스팟(`spot_01` ~ `spot_10`)의 실시간 점유 상태.
 * **`packages`**: 택배 상태(`WAITING`, `IN_WORKSTATION`, `IN_WAREHOUSE`, `COMPLETED`) 및 이력.
 

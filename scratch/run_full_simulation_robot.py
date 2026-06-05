@@ -73,14 +73,40 @@ class MockFullRobotNode(Node):
     def execute_manage_ws(self, goal_handle):
         goal = goal_handle.request
         target = goal.target_location
-        is_rotation = target.endswith('_ROTATE')
+        is_rotation = target.endswith('_ROTATE') or 'ROTATING' in target or 'ROTATING' in goal.start_location
+
+        start_coords = "Unknown"
+        target_coords = "Unknown"
+
+        if self.pg_conn:
+            try:
+                with self.pg_conn.cursor() as cursor:
+                    # Resolve start location
+                    cursor.execute(
+                        "SELECT qr_id, x_coord, y_coord FROM floor_qr_map WHERE location_name = %s;",
+                        (goal.start_location,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        start_coords = f"{row[0]} ({row[1]}, {row[2]})"
+
+                    # Resolve target location
+                    cursor.execute(
+                        "SELECT qr_id, x_coord, y_coord FROM floor_qr_map WHERE location_name = %s;",
+                        (target,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        target_coords = f"{row[0]} ({row[1]}, {row[2]})"
+            except Exception as e:
+                self.get_logger().error(f'AMR 위치 해석 중 오류: {e}')
 
         if is_rotation:
-            self.get_logger().info(f'🤖 [AMR] 작업대 {goal.workstation_id} 180도 제자리 회전 시작! (위치: {goal.start_location})')
+            self.get_logger().info(f'🤖 [AMR] 작업대 {goal.workstation_id} 180도 제자리 회전 시작! (위치: {goal.start_location} [{start_coords}])')
         else:
             self.get_logger().info(
                 f'🤖 [AMR] 작업대 이송 시작: {goal.workstation_id} '
-                f'({goal.start_location} ➡️ {target})'
+                f'({goal.start_location} [{start_coords}] ➡️ {target} [{target_coords}])'
             )
 
         # 피드백 제공 시연
@@ -102,7 +128,22 @@ class MockFullRobotNode(Node):
 
     def execute_move_pkg(self, goal_handle):
         goal = goal_handle.request
-        self.get_logger().info(f'🤖 [AMR] 단일 패키지 직송 시작: {goal.package_id} ➡️ {goal.destination_zone}')
+        dest_coords = "Unknown"
+
+        if self.pg_conn:
+            try:
+                with self.pg_conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT qr_id, x_coord, y_coord FROM floor_qr_map WHERE location_name = %s;",
+                        (goal.destination_zone,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        dest_coords = f"{row[0]} ({row[1]}, {row[2]})"
+            except Exception as e:
+                self.get_logger().error(f'AMR 패키지 직송 위치 해석 중 오류: {e}')
+
+        self.get_logger().info(f'🤖 [AMR] 단일 패키지 직송 시작: {goal.package_id} ➡️ {goal.destination_zone} [{dest_coords}]')
         
         feedback_msg = MovePackage.Feedback()
         feedback_msg.current_position = "Moving"

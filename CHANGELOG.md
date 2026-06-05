@@ -177,4 +177,25 @@
   * **시뮬레이션 대시보드(`dashboard_server.py`)**:
     * `/api/simulate_packaging` API를 개편하여 A구역 작업대 포장 완료, 7번째 Look-ahead 호출(B구역 대기), 8번째 전체 완포 시 B구역의 예비 작업대를 A구역으로 승격시키는 일련의 자동화 동작 완비.
 
+---
+
+## 📅 2026년 6월 5일 (금요일)
+
+* **09:20** - **바닥 QR코드 공간 격자 맵 데이터베이스(Spatial Floor QR Map DB) 연동 완료**
+  - PostgreSQL 데이터베이스 초기화 SQL 스크립트(`docker/init.sql`) 내 `floor_qr_map` 테이블 정의 추가.
+  - 격자 생성기(`scratch/generate_all_qr_codes.py`)를 확장하여, 실행 시 1,813개 격자점의 미터법 X, Y, Z 좌표와 함께 논리 주차/작업 공간 매핑 데이터(`spot_XX`, `sg2_in_XX_A/B`, `sg2_out_00_A/B`)를 PostgreSQL DB에 일괄 TRUNCATE 후 Bulk Insert(적재)하도록 연동 모듈 추가.
+  - 관제 센터 노드(`control_tower_node.py`)의 `trigger_workstation_move`에서 이송 액션을 발행할 때, 하드코딩 좌표나 고정 문자열 대신 데이터베이스의 `floor_qr_map` 테이블을 조회하여 물리 Goal coordinates와 바닥 QR ID를 실시간으로 해석(Resolution)하고 검증하는 로직 통합.
+  - 모의 로봇 에뮬레이터(`run_full_simulation_robot.py`)의 `execute_manage_ws` 및 `execute_move_pkg` 콜백 내에서 동일하게 PostgreSQL DB를 쿼리해 이동 경로의 시/종점 물리 좌표와 마커 식별자를 화면에 실시간으로 로깅하도록 에뮬레이터 통합 완료.
+
+* **10:55** - **AMR 플릿 연동 및 하이브리드 통신 아키텍처 설계 합의 완료**
+  - AMR 개발자 피드백을 기반으로 4대 연동 설계 원칙 수립 및 `SYSTEM_IMPROVEMENT_PLAN.md`에 공식 규격 추가 반영.
+  - 제어 채널과 상태 모니터링 채널을 확실하게 분리하여 제어는 ROS2 Action/Service로만 수행하고, `/fleet/*` JSON 토픽은 공유/모니터링으로만 제한하도록 아키텍처 정립.
+  - `QR_XXXX` 식별자 관리 하에서 DB `floor_qr_map`과 AMR 로컬 백업 YAML 캐시를 연계한 2중 복구체계 및 Goal 전송 시 좌표 동시 인하 규격 검토 완료.
+
+* **11:30** - **AMR 플릿 연동 하이브리드 통신 규격 구현 및 검증 완료**
+  - `ManageWorkstation.action` 정의를 수정하여 Goal 필드에 `target_qr_id`(string), `target_x/y/yaw`(float64)를 추가하고, 관제 센터 노드(`control_tower_node.py`)에서 DB의 `floor_qr_map`을 통해 실시간 좌표 및 바닥 QR ID를 획득하여 Action Goal Payload로 함께 하향 전송하도록 수정 완료.
+  - `control_tower_node.py` 내에 `/fleet/amr_states`, `/fleet/workstation_states`, `/fleet/package_states`, `/fleet/task_events` 4개 JSON 토픽 퍼블리셔 등록 및 1Hz 주기 전송 루틴 추가 완료.
+  - `workstations` 테이블의 `status`, `reserved_by` 컬럼 상태를 AMR 액션 제어 주기(`trigger_workstation_move`, `completed`, `failed` 등)에 맞춰 실시간으로 PostgreSQL에 갱신/동기화하도록 제어 루프를 개선하고, 작업 상태 변경 시 즉시 `/fleet/task_events`에 JSON 이벤트를 발행하는 이벤트 핸들러 추가 완료.
+  - 액션 클라이언트 대기 로직에서 발생할 수 있는 교착 상태(Deadlock)를 방지하기 위해 `wait_for_server` 호출에 `timeout_sec=1.0` 타임아웃 규격을 전면 도입하고 실패 예외 처리 로직 반영 완료.
+
 
