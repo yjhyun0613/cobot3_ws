@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse
 import uvicorn
 import csv
 import io
+from datetime import datetime
 
 app = FastAPI(title="Coupang Warehouse Control Panel")
 
@@ -271,12 +272,23 @@ def simulate_inbound():
             
             pkg_id, cust_name, zone, pkg_qr = pkg_row
             
+            # 목적지 분류 날짜들을 동적으로 조회하여 인바운드 라인 매핑
+            cursor.execute("SELECT DISTINCT route_zone FROM packages WHERE status != 'COMPLETED' ORDER BY route_zone;")
+            active_dates = [r[0] for r in cursor.fetchall()]
+            
+            while len(active_dates) < 3:
+                active_dates.append("9999-12-31") # 기본 패딩
+                
+            today_date = active_dates[0]
+            tomorrow_date = active_dates[1]
+            day_after_date = active_dates[2]
+
             # 목적지 분류에 따른 대상 로봇 결정
-            if zone == '2026-06-01':
+            if zone == today_date:
                 target_robot = 'sg2_in_01'
-            elif zone == '2026-06-02':
+            elif zone == tomorrow_date:
                 target_robot = 'sg2_in_02'
-            elif zone == '2026-06-03':
+            elif zone == day_after_date:
                 target_robot = 'sg2_in_03'
             else:
                 target_robot = 'sg2_in_01'
@@ -525,6 +537,11 @@ def simulate_packaging():
     
     try:
         with pg_conn.cursor() as cursor:
+            # 오늘 출고 대상 날짜 동적 조회 (미완료 패키지 중 가장 오래된 날짜)
+            cursor.execute("SELECT DISTINCT route_zone FROM packages WHERE status != 'COMPLETED' ORDER BY route_zone;")
+            active_dates = [r[0] for r in cursor.fetchall()]
+            today_date = active_dates[0] if active_dates else datetime.now().strftime('%Y-%m-%d')
+
             # 1. 활성 포장 구역(sg2_out_00_A)에 위치한 작업대 찾기
             cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = 'sg2_out_00_A' LIMIT 1;")
             ws_row = cursor.fetchone()
@@ -564,9 +581,9 @@ def simulate_packaging():
                     SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
                     FROM workstations w
                     JOIN packages p ON w.workstation_id = p.workstation_id
-                    WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = '2026-06-01'
+                    WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s
                     LIMIT 1;
-                """)
+                """, (today_date,))
                 warehouse_ws = cursor.fetchone()
                 if not warehouse_ws:
                     pg_conn.close()
@@ -650,15 +667,15 @@ def simulate_packaging():
             # 6. 7번째 포장 완료 시 → Look-ahead: 다음 포장 대기 작업대 사전 호출 (B구역 대기존으로)
             lookahead_triggered = False
             if completed_count == 7 and redis_client:
-                # 창고에 오늘 물량(2026-06-01)의 IN_WAREHOUSE 패키지가 있는 작업대 조회
+                # 창고에 오늘 물량의 IN_WAREHOUSE 패키지가 있는 작업대 조회
                 cursor.execute("""
                     SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
                     FROM workstations w
                     JOIN packages p ON w.workstation_id = p.workstation_id
-                    WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = '2026-06-01'
+                    WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s
                     AND w.workstation_id != %s
                     LIMIT 1;
-                """, (ws_id,))
+                """, (today_date, ws_id))
                 next_ws_row = cursor.fetchone()
                 
                 if next_ws_row:
@@ -746,10 +763,10 @@ def simulate_packaging():
                         SELECT DISTINCT w.workstation_id, w.current_location, w.qr_id
                         FROM workstations w
                         JOIN packages p ON w.workstation_id = p.workstation_id
-                        WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = '2026-06-01'
+                        WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s
                         AND w.workstation_id != %s
                         LIMIT 1;
-                    """, (ws_id,))
+                    """, (today_date, ws_id))
                     next_ws_row = cursor.fetchone()
                     
                     if next_ws_row:

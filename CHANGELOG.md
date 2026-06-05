@@ -198,4 +198,11 @@
   - `workstations` 테이블의 `status`, `reserved_by` 컬럼 상태를 AMR 액션 제어 주기(`trigger_workstation_move`, `completed`, `failed` 등)에 맞춰 실시간으로 PostgreSQL에 갱신/동기화하도록 제어 루프를 개선하고, 작업 상태 변경 시 즉시 `/fleet/task_events`에 JSON 이벤트를 발행하는 이벤트 핸들러 추가 완료.
   - 액션 클라이언트 대기 로직에서 발생할 수 있는 교착 상태(Deadlock)를 방지하기 위해 `wait_for_server` 호출에 `timeout_sec=1.0` 타임아웃 규격을 전면 도입하고 실패 예외 처리 로직 반영 완료.
 
+* **13:18** - **동적 출고예정일(route_zone) 기반 라우팅 및 창고 완충 작업대 포장 선별 로직 구현**
+  - 기존의 하드코딩된 출고 예정일(`2026-06-01`) 처리 방식을 탈피하고, 데이터베이스 내 미처리(`status != 'COMPLETED'`) 패키지들의 고유 `route_zone` 날짜를 오름차순으로 정렬한 동적 목록을 획득하는 구조 설계.
+  - **`dashboard_server.py` & `control_tower_node.py`**:
+    - 조회된 미처리 날짜 목록의 첫 번째 원소를 "오늘의 출고 대상 일자(`today_date`)"로 삼아, 창고 완충 작업대를 포장존으로 공급하는 쿼리(`simulate_packaging` 및 keep-alive scheduler)에 바인딩 변수로 동적 할당되도록 수정 완료.
+    - 입고 시뮬레이션(`/api/simulate_inbound`)에서 조회된 배송 날짜의 상대 순서에 따라 `sg2_in_01`(오늘), `sg2_in_02`(내일), `sg2_in_03`(모레) 라인으로 분기 라우팅되도록 개선 완료.
+    - 오늘 물량이 모두 출고 완료되면 별도의 수동 조작 없이 다음 출고 예정 날짜가 "오늘 날짜"로 자동 승격되어 연속 처리가 보장됨.
+  - 관련 변경 내용을 프로젝트 종합 보고서(`PROJECT_REPORT.md`) 및 인터페이스 명세서(`INTERFACE_CHANGES.md`)에 상세 기술하고 전체 동기화 완료.
 

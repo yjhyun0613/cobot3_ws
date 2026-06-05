@@ -664,14 +664,19 @@ class ControlTowerNode(Node):
                         self.trigger_workstation_move(ws_id, 'sg2_out_00_B', 'sg2_out_00_A', ws_qr)
                     # B구역에도 없는 경우 -> 창고에서 완충된 작업대를 조회해서 A구역으로 바로 공급 (오늘 물량만)
                     else:
+                        cursor.execute("SELECT DISTINCT route_zone FROM packages WHERE status != 'COMPLETED' ORDER BY route_zone;")
+                        active_dates = [r[0] for r in cursor.fetchall()]
+                        today_date = active_dates[0] if active_dates else datetime.now().strftime('%Y-%m-%d')
+
                         cursor.execute(
                             "SELECT w.workstation_id, w.current_location, w.qr_id "
                             "FROM workstations w "
                             "JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WAREHOUSE' "
-                            "WHERE w.current_location LIKE 'spot_%%' AND p.route_zone = '2026-06-01' "
+                            "WHERE w.current_location LIKE 'spot_%%' AND p.route_zone = %s "
                             "GROUP BY w.workstation_id, w.current_location, w.qr_id "
                             "HAVING COUNT(p.package_id) = 8 "
-                            "LIMIT 1;"
+                            "LIMIT 1;",
+                            (today_date,)
                         )
                         row = cursor.fetchone()
                         if row:
