@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse
 import uvicorn
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = FastAPI(title="Coupang Warehouse Control Panel")
 
@@ -278,9 +278,12 @@ async def upload_packages(request: Request):
                 detail=f"CSV file must contain columns: {', '.join(required_fields)}"
             )
         
-        pg_conn, _ = get_db_connections()
+        pg_conn, redis_client = get_db_connections()
         if not pg_conn:
             raise HTTPException(status_code=500, detail="Database connection failed.")
+            
+        if redis_client:
+            redis_client.set('system:inbound_started', 'true')
             
         success_count = 0
         with pg_conn.cursor() as cursor:
@@ -330,6 +333,7 @@ def reset_db():
             
         with pg_conn.cursor() as cursor:
             cursor.execute(sql_queries)
+            cursor.execute("TRUNCATE TABLE packages CASCADE;")
             
         # 2. Redis 상태 및 큐 초기화
         if redis_client:
@@ -439,6 +443,7 @@ def start_next_day():
 
         redis_client.set('system:day_status', 'RUNNING')
         redis_client.delete('system:completed_day')
+        redis_client.set('system:inbound_started', 'false')
         
         if pg_conn:
             pg_conn.close()

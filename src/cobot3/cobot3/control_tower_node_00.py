@@ -589,7 +589,9 @@ class ControlTowerNode(Node):
                     cursor.execute("SELECT COUNT(*) FROM packages WHERE route_zone = %s AND status = 'WAITING';", (today_date,))
                     waiting_today_count = cursor.fetchone()[0]
                     
-                    if waiting_today_count == 0:
+                    inbound_started = self.redis_client.get('system:inbound_started') == 'true' if self.redis_client else True
+                    
+                    if waiting_today_count == 0 and inbound_started:
                         cursor.execute("""
                             SELECT w.workstation_id, w.current_location, w.qr_id
                             FROM workstations w
@@ -708,15 +710,29 @@ class ControlTowerNode(Node):
                             if not today_date:
                                 today_date = '2026-06-06'
 
+                            cursor.execute("SELECT COUNT(*) FROM packages WHERE route_zone = %s AND status = 'WAITING';", (today_date,))
+                            waiting_today = cursor.fetchone()[0]
                             cursor.execute(
-                                "SELECT w.workstation_id, w.current_location, w.qr_id "
-                                "FROM workstations w "
-                                "JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WAREHOUSE' "
-                                "WHERE (w.current_location LIKE 'spot_%%' OR w.current_location LIKE 'stage_%%') AND p.route_zone = %s "
-                                "GROUP BY w.workstation_id, w.current_location, w.qr_id "
-                                "HAVING COUNT(p.package_id) = 8 "
-                                "ORDER BY CASE WHEN w.current_location LIKE 'stage_%%' THEN 0 ELSE 1 END ASC, w.current_location ASC "
-                                "LIMIT 1;",
+                                "SELECT COUNT(*) FROM packages WHERE route_zone = %s AND status = 'IN_WORKSTATION' "
+                                "AND workstation_id IN (SELECT workstation_id FROM workstations WHERE current_location IN ('sg2_in_01_A', 'sg2_in_01_B'));",
+                                (today_date,)
+                            )
+                            inbound_today_packages = cursor.fetchone()[0]
+                            
+                            having_cond = "HAVING COUNT(p.package_id) = 8"
+                            inbound_started = self.redis_client.get('system:inbound_started') == 'true' if self.redis_client else True
+                            if waiting_today == 0 and inbound_today_packages == 0 and inbound_started:
+                                having_cond = "HAVING COUNT(p.package_id) > 0"
+
+                            cursor.execute(
+                                f"SELECT w.workstation_id, w.current_location, w.qr_id "
+                                f"FROM workstations w "
+                                f"JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WAREHOUSE' "
+                                f"WHERE (w.current_location LIKE 'spot_%%' OR w.current_location LIKE 'stage_%%') AND p.route_zone = %s "
+                                f"GROUP BY w.workstation_id, w.current_location, w.qr_id "
+                                f"{having_cond} "
+                                f"ORDER BY CASE WHEN w.current_location LIKE 'stage_%%' THEN 0 ELSE 1 END ASC, w.current_location ASC "
+                                f"LIMIT 1;",
                                 (today_date,)
                             )
                             row = cursor.fetchone()
@@ -1407,9 +1423,13 @@ class ControlTowerNode(Node):
                                 today_date = '2026-06-06'
                             
                             if today_date:
-                                cursor.execute("SELECT COUNT(*) FROM packages WHERE route_zone = %s AND status != 'COMPLETED';", (today_date,))
-                                remaining_today = cursor.fetchone()[0]
-                                if remaining_today == 0:
+                                cursor.execute(
+                                    "SELECT COUNT(*), COUNT(CASE WHEN status != 'COMPLETED' THEN 1 END) "
+                                    "FROM packages WHERE route_zone = %s;",
+                                    (today_date,)
+                                )
+                                total_today, remaining_today = cursor.fetchone()
+                                if total_today > 0 and remaining_today == 0:
                                     self.get_logger().info(f'=== 🎉 [Day Finished] 오늘({today_date})의 모든 물량 완료 감지! 일자 전환 모드 진입. ===')
                                     self.write_daily_report(today_date, cursor)
                                     self.redis_client.set('system:day_status', 'PENDING_TRANSITION')

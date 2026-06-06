@@ -56,7 +56,8 @@ NVIDIA Isaac Sim 시뮬레이터 환경에서 다중 로봇(컨베이어 분류 
   * **교착 방지 규격**: 무한 블로킹을 차단하기 위해 `wait_for_server` 호출 시 `timeout_sec=1.0` 타임아웃 예외 처리 전면 반영.
   * **동적 출고 예정일 필터링**: 창고에서 포장존 A/B구역으로 완충 작업대를 공급하는 Keep-Alive 스케줄러에 미완료 패키지의 `route_zone` 중 가장 빠른 날짜를 동적으로 감지하여 공급하도록 고도화.
   * **중복 입고 검증 수정**: `CheckWarehouseStatus` 호출 시 수령인 이름이 아닌 패키지 고유 ID(`package_id`) 기준으로 정확히 중복 보관 여부를 검증하여 오작동 차단.
-  * **일자 전환(Day Transition) 워크플로우**: 오늘 출고 날짜(`route_zone`)의 모든 패키지 포장이 완료되면 `daily_report_YYYY-MM-DD.md` 보고서를 자동 생성하고, Redis `system:day_status`를 `PENDING_TRANSITION`으로 설정해 시스템을 다음 영업일 대기 모드로 전환.
+  * **일자 전환(Day Transition) 워크플로우 및 이월 적재(Carry-over)**: 오늘 출고 날짜(`route_zone`)의 모든 패키지 포장이 완료되면 `daily_report_YYYY-MM-DD.md` 보고서를 자동 생성하고, Redis `system:day_status`를 `PENDING_TRANSITION`으로 설정해 시스템을 다음 영업일 대기 모드로 전환합니다. 다음 날이 시작되면 빈 작업대는 창고로 복귀하고, 내일/모레용으로 부분 적재되었던 작업대는 물리적으로 상위 라인으로 승격(2->1, 3->2)되어 다음 날 업로드되는 신규 CSV 패키지를 이어서 적재(Carry-over)합니다.
+  * **조기 포장 방지용 `inbound_started` 플래그 도입**: 영업일 전환 후 신규 CSV가 업로드되어 입고가 시작되기 전까지 부분 적재된 이월 작업대가 포장존으로 자동 공급(플러시)되지 않도록 제어하는 Redis 기반 연동 로직을 통합하였습니다.
   * **AMR 액션 서버 오프라인 및 실패 예외 복구**: 관제탑 노드가 구동 시점에 AMR 액션 서버를 찾지 못하거나 거절/실패가 발생할 때, 이미 이송 예약 및 `MOVING_TO_...`로 갱신되었던 작업대와 스팟 상태가 원복되지 않아 교착 상태(Deadlock)를 초래하는 문제를 방지하기 위해 `recover_workstation_move_db_state()` 복구 헬퍼 함수를 구현 및 통합했습니다.
   * **제자리 회전(180도) 포장 이중 트리거(Double-trigger) 버그 수정**: 작업대 이송 완료 시 출발지(`start`) 정보를 연동하고 출발지가 회전 동작(`_ROTATING` 계열)인 경우 포장 로봇이 중복 실행되지 않도록 예외 처리 적용.
   * **기타 안정화**: Redis `decode_responses=True` 사용 시 문자열 디코딩 예외 안전 분기 처리 및 빈 작업대 조회 시 `IN_WORKSTATION`과 `IN_WAREHOUSE` 상태 통합 점검으로 자원 누수 방지.
