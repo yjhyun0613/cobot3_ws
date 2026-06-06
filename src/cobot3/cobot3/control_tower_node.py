@@ -2,6 +2,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.action import ActionClient
+import os
 
 # 커스텀 ROS2 인터페이스 임포트
 from cobot3_interfaces.srv import GetPackageRoute, CheckWarehouseStatus, ReportInboundProgress
@@ -575,7 +576,30 @@ class ControlTowerNode(Node):
                     "GROUP BY w.workstation_id, w.current_location, w.qr_id "
                     "HAVING COUNT(p.package_id) = 8;"
                 )
-                rows = cursor.fetchall()
+                rows = list(cursor.fetchall())
+                
+                # 오늘 날짜 구하기 및 마지막 남은 작업대(8칸 미만) 체크
+                today_date = self.redis_client.get('system:today_date') if self.redis_client else '2026-06-06'
+                if not today_date:
+                    today_date = '2026-06-06'
+                cursor.execute("SELECT COUNT(*) FROM packages WHERE route_zone = %s AND status = 'WAITING';", (today_date,))
+                waiting_today_count = cursor.fetchone()[0]
+                
+                if waiting_today_count == 0:
+                    cursor.execute("""
+                        SELECT w.workstation_id, w.current_location, w.qr_id
+                        FROM workstations w
+                        JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WORKSTATION'
+                        WHERE w.current_location = 'sg2_in_01_A' AND p.route_zone = %s
+                        GROUP BY w.workstation_id, w.current_location, w.qr_id
+                        HAVING COUNT(p.package_id) > 0 AND COUNT(p.package_id) < 8;
+                    """, (today_date,))
+                    extra_rows = cursor.fetchall()
+                    for er in extra_rows:
+                        if er not in rows:
+                            rows.append(er)
+                            self.get_logger().info(f'[Scheduler] 오늘({today_date})의 대기 패키지가 없으므로, sg2_in_01_A의 마지막 작업대 {er[0]} 이송을 결정합니다.')
+
                 for row in rows:
                     ws_id, curr_loc, ws_qr_id = row[0], row[1], row[2]
                     if ws_qr_id is None:
@@ -695,9 +719,9 @@ class ControlTowerNode(Node):
                         self.trigger_workstation_move(ws_id, 'sg2_out_00_B', 'sg2_out_00_A', ws_qr)
                     # B구역에도 없는 경우 -> 창고에서 완충된 작업대를 조회해서 A구역으로 바로 공급 (오늘 물량만)
                     else:
-                        cursor.execute("SELECT DISTINCT route_zone FROM packages WHERE status != 'COMPLETED' ORDER BY route_zone;")
-                        active_dates = [r[0] for r in cursor.fetchall()]
-                        today_date = active_dates[0] if active_dates else datetime.now().strftime('%Y-%m-%d')
+                        today_date = self.redis_client.get('system:today_date') if self.redis_client else '2026-06-06'
+                        if not today_date:
+                            today_date = '2026-06-06'
 
                         cursor.execute(
                             "SELECT w.workstation_id, w.current_location, w.qr_id "
@@ -1087,10 +1111,9 @@ class ControlTowerNode(Node):
             if self.pg_conn:
                 try:
                     with self.pg_conn.cursor() as cursor:
-                        # 오늘 날짜를 동적으로 획득
-                        cursor.execute("SELECT DISTINCT route_zone FROM packages WHERE status != 'COMPLETED' ORDER BY route_zone;")
-                        active_dates = [r[0] for r in cursor.fetchall()]
-                        today_date = active_dates[0] if active_dates else datetime.now().strftime('%Y-%m-%d')
+                        today_date = self.redis_client.get('system:today_date') if self.redis_client else '2026-06-06'
+                        if not today_date:
+                            today_date = '2026-06-06'
 
                         # 오늘 날짜의 완충 작업대 조회 (Staging 우선, Storage 다음)
                         cursor.execute(
@@ -1195,9 +1218,9 @@ class ControlTowerNode(Node):
                         )
 
                         # 오늘 날짜를 구함
-                        cursor.execute("SELECT DISTINCT route_zone FROM packages WHERE status != 'COMPLETED' ORDER BY route_zone;")
-                        active_dates = [r[0] for r in cursor.fetchall()]
-                        today_date = active_dates[0] if active_dates else None
+                        today_date = self.redis_client.get('system:today_date') if self.redis_client else '2026-06-06'
+                        if not today_date:
+                            today_date = '2026-06-06'
 
                         if today_date:
                             # 오늘 날짜의 미완료 패키지가 아직 남았는지 검사
@@ -1281,7 +1304,11 @@ class ControlTowerNode(Node):
             report_content.append("\n---\n*본 보고서는 관제 센터 노드(control_tower)에 의해 자동 생성되었습니다. 다음 영업일 운영을 개시하려면 대시보드에서 [Next Day Transition] 단추를 누르십시오.*")
             
             # 4. 파일 쓰기
-            filename = f"/home/rokey/cobot3_ws/daily_report_{date_str}.md"
+            home_dir = os.path.expanduser('~')
+            workspace_dir = os.path.join(home_dir, 'cobot3_ws')
+            if not os.path.exists(workspace_dir):
+                workspace_dir = os.getcwd()
+            filename = os.path.join(workspace_dir, f"daily_report_{date_str}.md")
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write("\n".join(report_content))
                 
@@ -1402,6 +1429,26 @@ class ControlTowerNode(Node):
         pkg_msg = String()
         pkg_msg.data = json.dumps({"packages": packages_list})
         self.package_states_pub.publish(pkg_msg)
+
+        # 오늘 물량 완료 검사 (Day finished check)
+        if self.pg_conn and self.redis_client:
+            try:
+                day_status = self.redis_client.get('system:day_status')
+                if day_status != 'PENDING_TRANSITION':
+                        today_date = self.redis_client.get('system:today_date') if self.redis_client else '2026-06-06'
+                        if not today_date:
+                            today_date = '2026-06-06'
+                        
+                        if today_date:
+                            cursor.execute("SELECT COUNT(*) FROM packages WHERE route_zone = %s AND status != 'COMPLETED';", (today_date,))
+                            remaining_today = cursor.fetchone()[0]
+                            if remaining_today == 0:
+                                self.get_logger().info(f'=== 🎉 [Day Finished] 오늘({today_date})의 모든 물량 완료 감지! 일자 전환 모드 진입. ===')
+                                self.write_daily_report(today_date, cursor)
+                                self.redis_client.set('system:day_status', 'PENDING_TRANSITION')
+                                self.redis_client.set('system:completed_day', today_date)
+            except Exception as e:
+                self.get_logger().error(f'일일 완료 검사 중 에러: {str(e)}')
 
 
 def main(args=None):

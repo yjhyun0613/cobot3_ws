@@ -277,3 +277,11 @@
   - **SQL 500 에러 해결**: 포장 시뮬레이션(`/api/simulate_packaging`) API 호출 시 PostgreSQL의 `SELECT DISTINCT` 문에서 `ORDER BY` 표현식이 `SELECT` 목록에 포함되어 있지 않아 발생하던 SQL Syntax 구문 오류를, `IN (SELECT DISTINCT ...)` 서브쿼리 구조로 리팩토링하여 완벽하게 해결했습니다.
   - **지능형 AMR 실시간 동적 렌더링**: Redis 내부에 AMR 정보(`amr:*`)가 없을 경우를 대비하여, 현재 PostgreSQL에서 이송 중(`moving_to_*` 또는 `_rotating`)인 워크스테이션의 위치를 추적해 자동으로 AMR 인스턴스를 동적으로 바인딩하고 시각화하는 지능형 폴백(Smart Fallback Mock) 로직을 `dashboard_server.py`의 `/api/status` API에 추가 구현했습니다. 이로 인해 시뮬레이션 도중 AMRs가 2D Floor Plan 상에서 부드럽게 이송 이동하는 효과를 실시간으로 모니터링할 수 있습니다.
   - **서버 포트 및 바인딩 관리**: Uvicorn reload 환경에서 8009 포트의 기존 프로세스를 강제 종료(`fuser -k 8009/tcp`)하고 재시작함으로써, 최신 변경 코드가 안정적으로 웹 대시보드에 무중단 반영되도록 조치했습니다.
+
+---
+
+## 📅 2026년 6월 6일 (토요일)
+
+* **23:25** - **창고 및 출고 대기 창고 레이아웃 축소 및 통로(Aisle) 반영 완료**
+  - **데이터베이스 스키마 및 마이그레이션**: `docker/init.sql`의 창고 스팟 등록을 10개(`spot_01` ~ `spot_10`), 출고 대기 스팟을 6개(`stage_01` ~ `stage_06`)로 축소하고, 현재 활성화된 작업대의 위치 정보를 보존한 채 신규 레이아웃에 맞춰 테이블을 재생성하는 `migrate_layout.py` 스크립트를 구축하여 DB 마이그레이션을 안전하게 수행 완료.
+  - **대시보드 UI 그리드 및 좌표 고도화**: `dashboard_server.py`의 HTML 레이아웃에서 창고 영역을 5행 2열 구조(각 층 사이에 가로 통로 배치), 출고 대기 영역을 2행 5열 구조(각 1x2 세로 열 사이에 세로 통로 배치)로 전면 재편하였으며, AMR의 실시간 렌더링을 위해 `locationCoords` 매핑 수식을 새로운 슬롯 좌표계로 동기화 완료.

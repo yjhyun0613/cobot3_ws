@@ -34,9 +34,29 @@ def get_db_connections():
         print(f"DB Connection Error: {e}")
         return None, None
 
+def get_active_dates(redis_client):
+    today_date = redis_client.get('system:today_date')
+    if not today_date:
+        today_date = '2026-06-06'
+        redis_client.set('system:today_date', today_date)
+    try:
+        t_dt = datetime.strptime(today_date, '%Y-%m-%d')
+    except ValueError:
+        try:
+            t_dt = datetime.strptime(today_date, '%Y%m%d')
+            today_date = t_dt.strftime('%Y-%m-%d')
+            redis_client.set('system:today_date', today_date)
+        except Exception:
+            today_date = '2026-06-06'
+            t_dt = datetime.strptime(today_date, '%Y-%m-%d')
+            redis_client.set('system:today_date', today_date)
+    tomorrow_dt = t_dt + timedelta(days=1)
+    day_after_dt = t_dt + timedelta(days=2)
+    return today_date, tomorrow_dt.strftime('%Y-%m-%d'), day_after_dt.strftime('%Y-%m-%d')
+
 def get_task_priority(task_type):
     """태스크 종류별 우선순위 점수 반환"""
-    if task_type in ['DIRECT_WAREHOUSE', 'RETRIEVE_FULL_WORKSTATION', 'ROTATE_WORKSTATION']:
+    if task_type in ['DIRECT_WAREHOUSE', 'RETRIEVE_FULL_WORKSTATION', 'ROTATE_WORKSTATION', 'PRE_FETCH_WORKSTATION']:
         return 100
     elif task_type == 'DEPLOY_EMPTY_WORKSTATION':
         return 90
@@ -311,9 +331,12 @@ def reset_db():
         with pg_conn.cursor() as cursor:
             cursor.execute(sql_queries)
             
-        # 2. Redis 큐 초기화
+        # 2. Redis 상태 및 큐 초기화
         if redis_client:
             redis_client.delete('queue:amr_tasks')
+            redis_client.set('system:today_date', '2026-06-06')
+            redis_client.set('system:day_status', 'RUNNING')
+            redis_client.delete('system:completed_day')
             
         pg_conn.close()
         return {"success": True, "message": "데이터베이스가 성공적으로 초기화되었습니다."}
@@ -328,11 +351,102 @@ def start_next_day():
     if not redis_client:
         raise HTTPException(status_code=500, detail="Redis connection failed")
     try:
+        # 0. Redis 날짜 1일 증가
+        today_date = redis_client.get('system:today_date')
+        if not today_date:
+            today_date = '2026-06-06'
+        try:
+            t_dt = datetime.strptime(today_date, '%Y-%m-%d')
+        except ValueError:
+            t_dt = datetime.strptime(today_date, '%Y%m%d')
+        next_date = (t_dt + timedelta(days=1)).strftime('%Y-%m-%d')
+        redis_client.set('system:today_date', next_date)
+        
+        shift_count = 0
+        if pg_conn:
+            with pg_conn.cursor() as cursor:
+                # 0-1. 라인에 있는 빈 작업대들을 창고로 우선 복귀
+                cursor.execute("""
+                    SELECT workstation_id, current_location, qr_id FROM workstations
+                    WHERE (current_location ILIKE '%sg2_in_01%' 
+                       OR current_location ILIKE '%sg2_in_02%' 
+                       OR current_location ILIKE '%sg2_in_03%')
+                      AND workstation_id NOT IN (
+                          SELECT DISTINCT workstation_id FROM packages
+                          WHERE status IN ('IN_WORKSTATION', 'IN_WAREHOUSE') AND workstation_id IS NOT NULL
+                      );
+                """)
+                empty_ws_to_return = cursor.fetchall()
+                for ws_id, curr_loc, qr_id in empty_ws_to_return:
+                    cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' AND spot_id LIKE 'spot_%%' ORDER BY spot_id ASC LIMIT 1;")
+                    spot_row = cursor.fetchone()
+                    if not spot_row:
+                        cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' AND spot_id LIKE 'stage_%%' ORDER BY spot_id ASC LIMIT 1;")
+                        spot_row = cursor.fetchone()
+                    if spot_row:
+                        target_spot = spot_row[0]
+                        # DB에서 위치와 창고 주차 상태를 즉시 선점하여 중복 방지
+                        cursor.execute("UPDATE workstations SET current_location = %s WHERE workstation_id = %s;", (target_spot, ws_id))
+                        cursor.execute("UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;", (ws_id, target_spot))
+                        
+                        task_data = {
+                            "task_type": "PRE_FETCH_WORKSTATION",
+                            "workstation_id": ws_id,
+                            "from": curr_loc,
+                            "to": target_spot,
+                            "description": f"영업일 전환: 빈 작업대 반납 ({curr_loc} ➡️ {target_spot})",
+                            "workstation_qr_id": qr_id if qr_id else ""
+                        }
+                        push_priority_task(redis_client, task_data)
+                        shift_count += 1
+
+                # 1. 영업일 전환 시 물리적 이동(대안 A)이 필요한 작업대 조회
+                cursor.execute("""
+                    SELECT workstation_id, current_location, qr_id 
+                    FROM workstations 
+                    WHERE current_location ILIKE '%sg2_in_02%' 
+                       OR current_location ILIKE '%sg2_in_03%';
+                """)
+                ws_rows = cursor.fetchall()
+                for ws_id, curr_loc, qr_id in ws_rows:
+                    ws_qr = qr_id if qr_id else ""
+                    target_loc = None
+                    
+                    # 대안 A 물리 이송 위치 결정 (02 -> 01, 03 -> 02)
+                    if "sg2_in_02" in curr_loc:
+                        target_loc = curr_loc.replace("sg2_in_02", "sg2_in_01")
+                    elif "SG2_IN_02" in curr_loc:
+                        target_loc = curr_loc.replace("SG2_IN_02", "SG2_IN_01")
+                    elif "sg2_in_03" in curr_loc:
+                        target_loc = curr_loc.replace("sg2_in_03", "sg2_in_02")
+                    elif "SG2_IN_03" in curr_loc:
+                        target_loc = curr_loc.replace("SG2_IN_03", "SG2_IN_02")
+                    
+                    if target_loc:
+                        # DB에서 위치 상태를 즉시 선점하여 중복 방지
+                        cursor.execute("UPDATE workstations SET current_location = %s WHERE workstation_id = %s;", (target_loc, ws_id))
+                        
+                        task_data = {
+                            "task_type": "PRE_FETCH_WORKSTATION",
+                            "workstation_id": ws_id,
+                            "from": curr_loc,
+                            "to": target_loc,
+                            "description": f"영업일 전환 (대안 A): {ws_id} ({curr_loc} ➡️ {target_loc})",
+                            "workstation_qr_id": ws_qr
+                        }
+                        push_priority_task(redis_client, task_data)
+                        shift_count += 1
+
         redis_client.set('system:day_status', 'RUNNING')
         redis_client.delete('system:completed_day')
+        
         if pg_conn:
             pg_conn.close()
-        return {"success": True, "message": "성공적으로 다음 영업일로 전환되었습니다."}
+            
+        msg = f"성공적으로 다음 영업일({next_date})로 전환되었습니다."
+        if shift_count > 0:
+            msg += f" (작업대 {shift_count}개 물리 이송 태스크 발행 완료)"
+        return {"success": True, "message": msg}
     except Exception as e:
         if pg_conn:
             pg_conn.close()
@@ -355,16 +469,8 @@ def simulate_inbound():
             
             pkg_id, cust_name, zone, pkg_qr = pkg_row
             
-            # 목적지 분류 날짜들을 동적으로 조회하여 인바운드 라인 매핑
-            cursor.execute("SELECT DISTINCT route_zone FROM packages WHERE status != 'COMPLETED' ORDER BY route_zone;")
-            active_dates = [r[0] for r in cursor.fetchall()]
-            
-            while len(active_dates) < 3:
-                active_dates.append("9999-12-31") # 기본 패딩
-                
-            today_date = active_dates[0]
-            tomorrow_date = active_dates[1]
-            day_after_date = active_dates[2]
+            # Redis 기준 오늘, 내일, 모레 날짜 결정
+            today_date, tomorrow_date, day_after_date = get_active_dates(redis_client)
 
             # 목적지 분류에 따른 대상 로봇 결정
             if zone == today_date:
@@ -672,10 +778,8 @@ def simulate_packaging():
     
     try:
         with pg_conn.cursor() as cursor:
-            # 오늘 출고 대상 날짜 동적 조회 (미완료 패키지 중 가장 오래된 날짜)
-            cursor.execute("SELECT DISTINCT route_zone FROM packages WHERE status != 'COMPLETED' ORDER BY route_zone;")
-            active_dates = [r[0] for r in cursor.fetchall()]
-            today_date = active_dates[0] if active_dates else datetime.now().strftime('%Y-%m-%d')
+            # Redis 기준 오늘 날짜 결정
+            today_date = get_active_dates(redis_client)[0]
 
             # 1. 활성 포장 구역(sg2_out_00_A)에 위치한 작업대 찾기
             cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = 'sg2_out_00_A' LIMIT 1;")
@@ -1756,18 +1860,18 @@ def index():
                     <!-- Warehouse (Right side) -->
                     <div style="position: absolute; right: 50px; top: 150px; display: flex; flex-direction: column; align-items: center;">
                         <div style="font-weight: 800; font-size: 1.1rem; color: var(--primary); margin-bottom: 8px; letter-spacing: 2px; text-shadow: 0 0 10px rgba(0, 242, 254, 0.35);">창고</div>
-                        <!-- 10x4 Grid of Slots with Cyan center Aisle -->
-                        <div id="warehouse-grid-container" style="display: grid; grid-template-columns: 24px 24px 20px 24px 24px; gap: 2px; border: 1.5px solid rgba(0, 242, 254, 0.25); background: rgba(8, 12, 24, 0.8); padding: 3px; border-radius: 6px;">
-                            <!-- Populated dynamically: 10 rows -->
+                        <!-- 5x2 slots with horizontal aisles in between -->
+                        <div id="warehouse-grid-container" style="display: grid; grid-template-columns: 24px 24px; grid-template-rows: 24px 20px 24px 20px 24px 20px 24px 20px 24px; gap: 2px; border: 1.5px solid rgba(0, 242, 254, 0.25); background: rgba(8, 12, 24, 0.8); padding: 3px; border-radius: 6px;">
+                            <!-- Populated dynamically: 5 rows of 2 slots -->
                         </div>
                     </div>
 
                     <!-- Staging Area (Middle Bottom) -->
                     <div style="position: absolute; left: 150px; bottom: 120px; display: flex; flex-direction: column; align-items: center;">
                         <div style="font-weight: 800; font-size: 1.1rem; color: var(--warning); margin-bottom: 8px; letter-spacing: 2px; text-shadow: 0 0 10px rgba(245, 158, 11, 0.35);">출고 대기 창고</div>
-                        <!-- 4x4 Grid with Cyan center Aisle -->
-                        <div id="staging-grid-container" style="display: grid; grid-template-columns: 24px 24px 20px 24px 24px; gap: 2px; border: 1.5px solid rgba(245, 158, 11, 0.25); background: rgba(8, 12, 24, 0.8); padding: 3px; border-radius: 6px;">
-                            <!-- Populated dynamically: 4 rows -->
+                        <!-- 3x2 vertical slots with vertical aisles in between -->
+                        <div id="staging-grid-container" style="display: grid; grid-template-columns: 24px 20px 24px 20px 24px; grid-template-rows: 24px 24px; gap: 2px; border: 1.5px solid rgba(245, 158, 11, 0.25); background: rgba(8, 12, 24, 0.8); padding: 3px; border-radius: 6px;">
+                            <!-- Populated dynamically: 2 rows of 3 columns -->
                         </div>
                     </div>
 
@@ -1800,7 +1904,7 @@ def index():
         <div class="dashboard-grid">
             <!-- Left: Warehouse Parking spots -->
             <div class="panel-card">
-                <h2>Warehouse Parking Spots (40 Slots) <span style="font-size: 0.8rem; color: rgba(0, 242, 254, 0.7); font-weight: normal; margin-left: 10px;">spot_01 ~ spot_40 (보관 영역)</span></h2>
+                <h2>Warehouse Parking Spots (10 Slots) <span style="font-size: 0.8rem; color: rgba(0, 242, 254, 0.7); font-weight: normal; margin-left: 10px;">spot_01 ~ spot_10 (보관 영역)</span></h2>
                 <div class="spots-container" id="spots-list">
                     <!-- Dynamic spots go here -->
                 </div>
@@ -1808,7 +1912,7 @@ def index():
 
             <!-- Left 2: Outbound Staging spots -->
             <div class="panel-card">
-                <h2>Outbound Staging Spots (16 Slots) <span style="font-size: 0.8rem; color: rgba(245, 158, 11, 0.7); font-weight: normal; margin-left: 10px;">stage_01 ~ stage_16 (출고 대기 영역)</span></h2>
+                <h2>Outbound Staging Spots (6 Slots) <span style="font-size: 0.8rem; color: rgba(245, 158, 11, 0.7); font-weight: normal; margin-left: 10px;">stage_01 ~ stage_06 (출고 대기 영역)</span></h2>
                 <div class="spots-container" id="staging-list">
                     <!-- Dynamic staging spots go here -->
                 </div>
@@ -1886,25 +1990,24 @@ def index():
             'sg2_out_00_b': { x: 607, y: 697 }
         };
 
-        // Populate Warehouse spot coordinates (10 rows, columns: 1, 2, 4, 5)
-        for (let r = 0; r < 10; r++) {
-            const y = 192 + r * 26; // base top + row offset
+        // Populate Warehouse spot coordinates (5 rows, 2 columns with horizontal aisles)
+        for (let r = 0; r < 5; r++) {
+            const y = 192 + r * 48; // base top + row offset (slot 24px + aisle 20px + gap 4px = 48px)
             const pad2 = (n) => String(n).padStart(2, '0');
-            locationCoords[`spot_${pad2(4*r+1)}`] = { x: 636, y: y };
-            locationCoords[`spot_${pad2(4*r+2)}`] = { x: 662, y: y };
-            locationCoords[`spot_${pad2(4*r+3)}`] = { x: 708, y: y };
-            locationCoords[`spot_${pad2(4*r+4)}`] = { x: 734, y: y };
+            locationCoords[`spot_${pad2(2*r+1)}`] = { x: 636, y: y };
+            locationCoords[`spot_${pad2(2*r+2)}`] = { x: 662, y: y };
         }
 
-        // Populate Staging spot coordinates (4 rows, columns: 1, 2, 4, 5)
-        for (let r = 0; r < 4; r++) {
-            const y = 604 + r * 26; // base top + row offset
-            const pad2 = (n) => String(n).padStart(2, '0');
-            locationCoords[`stage_${pad2(4*r+1)}`] = { x: 212, y: y };
-            locationCoords[`stage_${pad2(4*r+2)}`] = { x: 238, y: y };
-            locationCoords[`stage_${pad2(4*r+3)}`] = { x: 284, y: y };
-            locationCoords[`stage_${pad2(4*r+4)}`] = { x: 310, y: y };
-        }
+        // Populate Staging spot coordinates (3 columns of 1x2 slots with vertical aisles)
+        // Col 1 (stage_01, stage_02)
+        locationCoords['stage_01'] = { x: 212, y: 604 };
+        locationCoords['stage_02'] = { x: 212, y: 630 };
+        // Col 2 (stage_03, stage_04)
+        locationCoords['stage_03'] = { x: 260, y: 604 };
+        locationCoords['stage_04'] = { x: 260, y: 630 };
+        // Col 3 (stage_05, stage_06)
+        locationCoords['stage_05'] = { x: 308, y: 604 };
+        locationCoords['stage_06'] = { x: 308, y: 630 };
 
         function createSpotCell(spot, isStaging) {
             const cell = document.createElement('div');
@@ -1962,42 +2065,50 @@ def index():
                     data.spots.forEach(s => { spotMap[s.spot_id] = s; });
                     const pad2 = (n) => String(n).padStart(2, '0');
                     
-                    for (let r = 0; r < 10; r++) {
-                        whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(4*r + 1)}`], false));
-                        whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(4*r + 2)}`], false));
+                    for (let r = 0; r < 5; r++) {
+                        whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(2*r + 1)}`], false));
+                        whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(2*r + 2)}`], false));
                         
-                        const aisle = document.createElement('div');
-                        aisle.style.background = 'rgba(0, 242, 254, 0.25)';
-                        aisle.style.height = '24px';
-                        aisle.style.boxShadow = 'inset 0 0 6px rgba(0, 242, 254, 0.4)';
-                        whContainer.appendChild(aisle);
-                        
-                        whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(4*r + 3)}`], false));
-                        whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(4*r + 4)}`], false));
+                        if (r < 4) {
+                            const aisle = document.createElement('div');
+                            aisle.style.gridColumn = 'span 2';
+                            aisle.style.background = 'rgba(0, 242, 254, 0.25)';
+                            aisle.style.height = '20px';
+                            aisle.style.boxShadow = 'inset 0 0 6px rgba(0, 242, 254, 0.4)';
+                            whContainer.appendChild(aisle);
+                        }
                     }
                 }
                 
-                // 2. Render staging grid
+                // 2. Render staging grid (3 columns of 1x2 vertical slots, separated by vertical aisles)
                 const stContainer = document.getElementById('staging-grid-container');
                 if (stContainer) {
                     stContainer.innerHTML = '';
                     const spotMap = {};
                     data.spots.forEach(s => { spotMap[s.spot_id] = s; });
-                    const pad2 = (n) => String(n).padStart(2, '0');
                     
-                    for (let r = 0; r < 4; r++) {
-                        stContainer.appendChild(createSpotCell(spotMap[`stage_${pad2(4*r + 1)}`], true));
-                        stContainer.appendChild(createSpotCell(spotMap[`stage_${pad2(4*r + 2)}`], true));
-                        
+                    const createAisle = () => {
                         const aisle = document.createElement('div');
                         aisle.style.background = 'rgba(245, 158, 11, 0.25)';
+                        aisle.style.width = '20px';
                         aisle.style.height = '24px';
                         aisle.style.boxShadow = 'inset 0 0 6px rgba(245, 158, 11, 0.4)';
-                        stContainer.appendChild(aisle);
-                        
-                        stContainer.appendChild(createSpotCell(spotMap[`stage_${pad2(4*r + 3)}`], true));
-                        stContainer.appendChild(createSpotCell(spotMap[`stage_${pad2(4*r + 4)}`], true));
-                    }
+                        return aisle;
+                    };
+
+                    // Row 0
+                    stContainer.appendChild(createSpotCell(spotMap[`stage_01`], true));
+                    stContainer.appendChild(createAisle());
+                    stContainer.appendChild(createSpotCell(spotMap[`stage_03`], true));
+                    stContainer.appendChild(createAisle());
+                    stContainer.appendChild(createSpotCell(spotMap[`stage_05`], true));
+                    
+                    // Row 1
+                    stContainer.appendChild(createSpotCell(spotMap[`stage_02`], true));
+                    stContainer.appendChild(createAisle());
+                    stContainer.appendChild(createSpotCell(spotMap[`stage_04`], true));
+                    stContainer.appendChild(createAisle());
+                    stContainer.appendChild(createSpotCell(spotMap[`stage_06`], true));
                 }
             }
 

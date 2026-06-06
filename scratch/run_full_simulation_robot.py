@@ -4,6 +4,8 @@ import time
 import os
 import threading
 import psycopg2
+import redis
+from datetime import datetime, timedelta
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer
@@ -69,6 +71,17 @@ class MockFullRobotNode(Node):
             self.get_logger().info('PostgreSQL 연동 완료 (상태 변경 감지용)')
         except Exception as e:
             self.get_logger().error(f'PostgreSQL 연결 실패: {e}')
+            
+        try:
+            self.redis_client = redis.Redis(
+                host='localhost',
+                port=6379,
+                decode_responses=True
+            )
+            self.get_logger().info('Redis 연동 완료')
+        except Exception as e:
+            self.get_logger().error(f'Redis 연결 실패: {e}')
+            self.redis_client = None
 
     def execute_manage_ws(self, goal_handle):
         goal = goal_handle.request
@@ -287,15 +300,16 @@ def inbound_sim_loop(node):
                 dest_date = route_res.route_destination
                 node.get_logger().info(f'[Scenario]   - 분류 목적지 획득: {dest_date} (오프라인 모드: {is_offline})')
 
-                # 목적지 분류 날짜들을 동적으로 조회하여 인바운드 라인 매핑
-                cursor.execute("SELECT DISTINCT route_zone FROM packages WHERE status != 'COMPLETED' ORDER BY route_zone;")
-                active_dates = [r[0] for r in cursor.fetchall()]
-                while len(active_dates) < 3:
-                    active_dates.append("9999-12-31")
-                
-                today_date = active_dates[0]
-                tomorrow_date = active_dates[1]
-                day_after_date = active_dates[2]
+                # Redis 기준 오늘, 내일, 모레 날짜 계산
+                today_date = node.redis_client.get('system:today_date') if node.redis_client else '2026-06-06'
+                if not today_date:
+                    today_date = '2026-06-06'
+                try:
+                    t_dt = datetime.strptime(today_date, '%Y-%m-%d')
+                except ValueError:
+                    t_dt = datetime.strptime(today_date, '%Y%m%d')
+                tomorrow_date = (t_dt + timedelta(days=1)).strftime('%Y-%m-%d')
+                day_after_date = (t_dt + timedelta(days=2)).strftime('%Y-%m-%d')
 
                 # 목적지 날짜에 따른 적재 로봇 결정
                 if dest_date == today_date:

@@ -1,0 +1,57 @@
+실제 날짜 기준 영업일 전환 및 이월 작업대 연속 적재 시스템 구현 계획서
+사용자가 정리해 주신 피드백을 바탕으로, 실제 달력 날짜 기준으로 영업일을 관리하고 이월된 작업대에 패키지를 이어서 적재하며, 3개 입고 라인을 고정식으로 운영하는 시스템으로 고도화하는 계획입니다.
+
+User Review Required
+IMPORTANT
+
+핵심 설계 및 운영 정책:
+
+이월 작업대 연속 적재:
+입고 시뮬레이션 시, 해당 날짜의 라인에 이미 대기 중인 작업대가 있다면 (예: 어제 이월되어 오늘 라인 1에 배치된 작업대), 새 작업대를 부르지 않고 **기존 작업대의 다음 빈 슬롯(1~8)**에 이어서 적재합니다.
+실제 날짜 기반 관리 (system:today_date):
+DB의 패키지 날짜를 검색해 동적으로 오늘 날짜를 구하는 대신, Redis에 저장된 실제 날짜 변수(system:today_date)를 시스템의 기준 날짜(시작일: 2026-06-06)로 사용합니다.
+영업일이 전환될 때 이 날짜를 하루씩 증가시킵니다. (2026-06-06 ➡️ 2026-06-07 ➡️ ... ➡️ 2026-06-12)
+입고 라인의 일자별 역할 고정:
+Line 1 (sg2_in_01): 항상 today_date (오늘 물량)
+Line 2 (sg2_in_02): 항상 today_date + 1일 (내일 물량)
+Line 3 (sg2_in_03): 항상 today_date + 2일 (모레 물량)
+물리적 시프트 및 영업일 전환:
+오늘 물량이 모두 분류 및 포장 완료(COMPLETED)되어 하루가 마무리되면, 영업일 전환 시 물리적으로 Line 2의 작업대를 Line 1로, Line 3의 작업대를 Line 2로 이송합니다.
+Open Questions
+NOTE
+
+시뮬레이션 패키지 적재 완료 조건:
+현재 하루 물량은 20개로 고정되어 기동할 예정입니다.
+오늘 영업일의 모든 패키지(오늘 날짜에 할당된 패키지들)가 완료(status = 'COMPLETED')되었을 때 오늘 작업을 마무리하고 Next Day Transition 가능 상태로 전환합니다. 이 정책으로 확정해 진행하겠습니다.
+Proposed Changes
+1. 관제탑 노드 수정
+[MODIFY] 
+control_tower_node_00.py
+날짜 조회 방식 변경:
+active_dates를 DB 패키지 조회 대신 Redis system:today_date 값을 기준으로 계산하도록 변경합니다.
+today_date = redis_client.get('system:today_date') (없을 시 2026-06-06)
+tomorrow_date = today_date + 1일
+day_after_date = today_date + 2일
+하루 마감 감시 루틴 수정:
+publish_fleet_states_callback 내의 주기적 일일 완료 체크 쿼리에서 today_date를 Redis 기준으로 조회하여 해당 날짜의 미완료 패키지가 0개일 때 PENDING_TRANSITION 상태로 안전하게 전환하도록 조치합니다.
+2. 대시보드 및 시뮬레이터 서버 수정
+[MODIFY] 
+dashboard_server.py
+API /api/simulate (입고 시뮬레이션) 수정:
+today_date, tomorrow_date, day_after_date 날짜 계산을 Redis의 system:today_date를 기준으로 수행합니다.
+패키지의 route_zone 날짜를 비교하여 매칭되는 고정 라인(Line 1, 2, 3)으로 라우팅합니다.
+해당 라인에 이미 배치되어 있는 작업대가 있다면, 기존 작업대를 조회하여 다음 빈 슬롯(예: 4번째 슬롯 등)에 이어서 적재하도록 로직의 완결성을 보장합니다.
+API /api/start_next_day (영업일 전환) 수정:
+영업일 전환 시 Redis의 system:today_date 날짜를 하루 더한 값(예: 2026-06-07)으로 증가시키고 저장합니다.
+물리적으로 Line 2 ➡️ Line 1, Line 3 ➡️ Line 2로 작업대를 이동시키는 PRE_FETCH_WORKSTATION 이송 태스크를 생성하여 Redis 큐에 넣습니다.
+[MODIFY] 
+run_full_simulation_robot.py
+로봇 시뮬레이터 내부의 날짜 판정 로직도 Redis의 system:today_date 기준 날짜 계산에 동조하도록 연동 수정합니다.
+Verification Plan
+Automated/Manual Verification
+데이터베이스를 리셋하고 system:today_date를 2026-06-06으로 설정합니다.
+packages_2026-06-06.csv를 적재하여 20개의 물량을 입고 시뮬레이션합니다.
+오늘(06-06), 내일(06-07), 모레(06-08) 물량이 각각 Line 1, 2, 3에 올바르게 분기 적재되는지 확인합니다.
+라인에 이미 주차된 작업대가 있는 경우, 새 작업대를 호출하지 않고 기존 작업대의 비어있는 슬롯에 순차적으로 상자가 적재되는지 검증합니다.
+오늘 날짜(2026-06-06)의 모든 패키지 포장이 완료되면 대시보드 상태가 PENDING_TRANSITION으로 전환되는지 확인합니다.
+Next Day Transition을 트리거하여 날짜가 2026-06-07로 정상 승격되고, 작업대들이 물리적으로 Line 2 ➡️ Line 1, Line 3 ➡️ Line 2로 이송되는지 검증합니다.

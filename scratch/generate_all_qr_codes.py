@@ -52,7 +52,10 @@ def main():
 
     print("=== 물류창고 통합 QR코드 자산 빌더 구동 ===")
     
-    yaml_path = "/home/rokey/cobot3_ws/src/cobot3/resource/map/warehouse.yaml"
+    home_dir = os.path.expanduser('~')
+    yaml_path = os.path.join(home_dir, "cobot3_ws/src/cobot3/resource/map/warehouse.yaml")
+    if not os.path.exists(yaml_path):
+        yaml_path = os.path.join(os.getcwd(), "src/cobot3/resource/map/warehouse.yaml")
     try:
         map_info = load_map_info(yaml_path)
         print(f"맵 정보 로드 성공:")

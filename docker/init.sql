@@ -85,56 +85,17 @@ INSERT INTO warehouse_locations (spot_id, workstation_id, status) VALUES
 ('spot_07', 'WS07', 'OCCUPIED'),
 ('spot_08', 'WS08', 'OCCUPIED'),
 ('spot_09', 'WS09', 'OCCUPIED'),
-('spot_10', 'WS10', 'OCCUPIED'),
-('spot_11', NULL, 'EMPTY'),
-('spot_12', NULL, 'EMPTY'),
-('spot_13', NULL, 'EMPTY'),
-('spot_14', NULL, 'EMPTY'),
-('spot_15', NULL, 'EMPTY'),
-('spot_16', NULL, 'EMPTY'),
-('spot_17', NULL, 'EMPTY'),
-('spot_18', NULL, 'EMPTY'),
-('spot_19', NULL, 'EMPTY'),
-('spot_20', NULL, 'EMPTY'),
-('spot_21', NULL, 'EMPTY'),
-('spot_22', NULL, 'EMPTY'),
-('spot_23', NULL, 'EMPTY'),
-('spot_24', NULL, 'EMPTY'),
-('spot_25', NULL, 'EMPTY'),
-('spot_26', NULL, 'EMPTY'),
-('spot_27', NULL, 'EMPTY'),
-('spot_28', NULL, 'EMPTY'),
-('spot_29', NULL, 'EMPTY'),
-('spot_30', NULL, 'EMPTY'),
-('spot_31', NULL, 'EMPTY'),
-('spot_32', NULL, 'EMPTY'),
-('spot_33', NULL, 'EMPTY'),
-('spot_34', NULL, 'EMPTY'),
-('spot_35', NULL, 'EMPTY'),
-('spot_36', NULL, 'EMPTY'),
-('spot_37', NULL, 'EMPTY'),
-('spot_38', NULL, 'EMPTY'),
-('spot_39', NULL, 'EMPTY'),
-('spot_40', NULL, 'EMPTY');
+('spot_10', 'WS10', 'OCCUPIED');
 
--- 출고 대기 구역 등록 (stage_01 ~ stage_16)
+
+-- 출고 대기 구역 등록 (stage_01 ~ stage_06)
 INSERT INTO warehouse_locations (spot_id, workstation_id, status) VALUES
 ('stage_01', NULL, 'EMPTY'),
 ('stage_02', NULL, 'EMPTY'),
 ('stage_03', NULL, 'EMPTY'),
 ('stage_04', NULL, 'EMPTY'),
 ('stage_05', NULL, 'EMPTY'),
-('stage_06', NULL, 'EMPTY'),
-('stage_07', NULL, 'EMPTY'),
-('stage_08', NULL, 'EMPTY'),
-('stage_09', NULL, 'EMPTY'),
-('stage_10', NULL, 'EMPTY'),
-('stage_11', NULL, 'EMPTY'),
-('stage_12', NULL, 'EMPTY'),
-('stage_13', NULL, 'EMPTY'),
-('stage_14', NULL, 'EMPTY'),
-('stage_15', NULL, 'EMPTY'),
-('stage_16', NULL, 'EMPTY');
+('stage_06', NULL, 'EMPTY');
 
 
 -- 초기 입고 예정 택배 데이터 (2026-06-01 기준)
