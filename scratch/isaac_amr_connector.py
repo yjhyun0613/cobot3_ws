@@ -132,7 +132,7 @@ def create_workstation_prim(path_str):
 
     geom = UsdGeom.Cube.Define(stage, Sdf.Path(path_str))
     xform = UsdGeom.XformCommonAPI(geom)
-    xform.SetScale(Gf.Vec3d(1.3 / 2.0, 1.3 / 2.0, 0.8 / 2.0))
+    xform.SetScale(Gf.Vec3f(1.3 / 2.0, 1.3 / 2.0, 0.8 / 2.0))
     geom.CreateDisplayColorAttr([(0.9, 0.45, 0.1)])  # Orange
     print(f"  [WS] 3D 모델 생성 완료: {path_str}")
     return geom.GetPrim()

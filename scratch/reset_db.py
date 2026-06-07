@@ -75,9 +75,19 @@ def reset_database():
 
     # 3. 바닥 QR 격자 재생성
     print("3.1 바닥 1,813개 QR 공간 맵 재생성 시작...")
-    from scratch.generate_all_qr_codes import main as generate_qr_main
+    import subprocess
+    ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    qr_script = os.path.join(ws_root, "scratch", "generate_all_qr_codes.py")
     try:
-        generate_qr_main()
+        result = subprocess.run(
+            [sys.executable, qr_script],
+            cwd=ws_root,
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode != 0:
+            print(f"[ERROR] 바닥 QR 재생성 실패:\n{result.stderr}")
+            sys.exit(1)
+        print(result.stdout)
         print("바닥 QR 공간 맵 복구 완료.")
     except Exception as e:
         print(f"[ERROR] 바닥 QR 재생성 실패: {e}")
