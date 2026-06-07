@@ -29,7 +29,7 @@ scratch/qr_assets/
 
 # Large simulator assets
 *.usd
+src/cobot3/resource/floor_with_con,storage/
 
-
-
-
+# Log files
+*.log
