@@ -311,3 +311,20 @@
   - **재적재 및 검증**: `PHYSICAL_LAYOUT.md`와 `generate_all_qr_codes.py` 내의 coordinates 정의 수정 후, `generate_all_qr_codes.py`를 재기동하여 PostgreSQL `floor_qr_map`에 새로운 coordinates 매핑을 업데이트하고 마이그레이션 완료했습니다.
   - **실시간 주행 정상화**: `control_tower`와 `run_full_simulation_robot` 에뮬레이터가 새로운 Y 좌표에 맞춰 에러 없이 실시간 이송 및 스캐닝을 처리함을 확인했습니다.
 
+* **16:50** - **관제탑 노드 엔트리포인트 수정 및 레거시 코드 제거**
+  - **setup.py 엔트리포인트 수정**: `control_tower` 실행 시작점이 삭제된 백업 파일(`control_tower_node_00.py`)을 가리키고 있어 `ModuleNotFoundError` 에러가 발생하는 문제를 해결. `setup.py`의 `console_scripts`를 프로덕션 노드 `control_tower_node:main`으로 수정.
+  - **pg_lock 참조 제거**: `control_tower_node.py`의 일일 완료 검사(Day Finished Check) 타이머 콜백에서 더 이상 존재하지 않는 `self.pg_lock` 참조를 제거하여 `AttributeError` 해결.
+  - **포트 충돌 정리**: Omniverse Nucleus 인증 서버가 점유 중인 포트 8000과의 충돌을 해소하고, 대시보드 서버 포트를 `8009`로 통일.
+
+* **17:00** - **원클릭 통합 테스트 환경 구축 및 데이터베이스 초기화 스크립트 개발**
+  - **`scratch/reset_db.py` 신규 생성**: PostgreSQL 테이블 초기화(packages TRUNCATE, workstations 상태 리셋, warehouse_locations 재배치), Redis 전체 플러시, 바닥 QR 격자 맵 재생성을 자동 수행하는 데이터베이스 완전 초기화 스크립트.
+  - **`start_test_env.sh` 신규 생성**: Docker 컨테이너 점검 → DB 초기화 → ROS 2 빌드 확인 → 대시보드/관제탑/로봇 시뮬레이터 3개 노드를 선택적으로 구동하는 통합 테스트 런처 스크립트.
+
+* **17:10** - **NVIDIA Isaac Sim 3D 시뮬레이터 실시간 연동 커넥터 개발**
+  - **`scratch/isaac_amr_connector.py` 신규 생성**: Isaac Sim 3D 환경(`floor_with_con,storage.usd` 맵)과 관제 시스템(Redis/PostgreSQL)을 실시간으로 브리지하는 커넥터 스크립트.
+  - **사용 맵**: `src/cobot3/resource/floor_with_con,storage.usd` (바닥 QR 격자, 입출고 컨베이어, 메인/출고 스토리지, 작업대 선반 기설치 완료).
+  - **3D 모델**: AMR 5대(Cyan색 실린더, `/World/AMRs/`) 및 이동식 작업대 10대(Orange색 큐브, `/World/Workstations/`)를 맵 위에 동적 생성.
+  - **동기화**: 매 프레임(30Hz)마다 Redis의 AMR 좌표 및 PostgreSQL의 작업대 주차 위치를 읽어 Isaac Sim 3D 공간에 텔레포트 반영.
+  - **실행 방법**: `isaac-python scratch/isaac_amr_connector.py` (`~/.bashrc`에 정의된 alias 사용).
+  - **문서 업데이트**: `SYSTEM_IMPROVEMENT_PLAN.md` 섹션 13.5 및 `README.md` 섹션 4~5 신규 추가.
+
