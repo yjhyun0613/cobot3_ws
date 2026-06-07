@@ -448,6 +448,19 @@ export ROS_LOCALHOST_ONLY=0
   * `bind 0.0.0.0` 및 `protected-mode no` 설정
 * **노트북 A의 로봇 에뮬레이터 코드 수정**:
   * DB 및 Redis 접속 IP 주소를 `localhost`에서 노트북 B의 썬더볼트 IP인 `192.168.100.20`으로 수정하여 접속합니다.
+### 13.5 NVIDIA Isaac Sim 3D 시뮬레이터 연동 및 실시간 3D 뷰 가이드
+실제 NVIDIA Isaac Sim 3D 물리 환경 상에서 5대의 AMR 로봇 및 10대의 작업대(Rack)의 물리적 움직임을 실시간으로 렌더링하고 시각화할 수 있는 통합 커넥터 시스템이 구축되었습니다.
 
+* **연동 스크립트**: [scratch/isaac_amr_connector.py](file:///home/rokey/cobot3_ws/scratch/isaac_amr_connector.py)
+* **작동 메커니즘**:
+  1. Isaac Sim의 `SimulationApp`을 3D GUI 모드로 가동하여 지정된 `src/cobot3/resource/map.usd` 맵 스테이지를 로드합니다.
+  2. PostgreSQL 데이터베이스에서 1,813개 바닥 QR 코드 위치 정보를 로드하여 맵 상의 물리적 좌표 체계를 동적으로 파악합니다.
+  3. 시뮬레이션 동작에 필요한 5대의 AMR 모델(Cyan색 실린더)과 10대의 작업대 모델(Orange색 큐브)을 USD 씬에 동적으로 정의하고 스케일링하여 인스턴스를 생성합니다.
+  4. 매 프레임(30Hz)마다 Redis에 적재되는 각 AMR의 실시간 위치 `(x, y)` 및 작업대 리프팅 상태(`carrying_workstation`) 정보와 PostgreSQL의 작업대 주차 정보(`current_location`)를 동기화하여 Isaac Sim의 3D 공간 상으로 텔레포트(SetTranslate) 이동시킵니다.
+  5. 이를 통해 대시보드 및 ROS 2 관제 서버의 모든 물류 이송 태스크 상태가 3D 가상 창고 뷰어(Isaac Sim)에 고속으로 동기화 렌더링됩니다.
 
-
+* **실행 방법**:
+  ```bash
+  # 데이터베이스, 관제탑, 로봇 시뮬레이터가 구동 중인 상태에서 별도의 터미널 창을 열어 실행
+  python3 scratch/isaac_amr_connector.py
+  ```
