@@ -170,57 +170,60 @@ def main():
                 # 논리 스팟 정의
                 logical_spots = {}
                 
-                # 1) 주차 구역 (spot_01 ~ spot_10)
-                # Y = -29.025
-                parking_xs = [-15.275, -13.775, -12.275, -10.775, -9.275, -7.775, -6.275, -4.775, -3.275, -1.775]
-                for idx, px in enumerate(parking_xs, 1):
+                # 1) 주차 구역 (spot_01 ~ spot_12)
+                parking_coords = [
+                    (-10.775, -9.525), (-9.275, -9.525),
+                    (-10.775, -6.525), (-9.275, -6.525),
+                    (-10.775, -3.525), (-9.275, -3.525),
+                    (-10.775, -0.525), (-9.275, -0.525),
+                    (-10.775, 2.475),  (-9.275, 2.475),
+                    (-10.775, 5.475),  (-9.275, 5.475)
+                ]
+                for idx, (px, py) in enumerate(parking_coords, 1):
                     spot_name = f"spot_{idx:02d}"
-                    logical_spots[(px, -29.025)] = {
+                    logical_spots[(px, py)] = {
                         "name": spot_name,
                         "type": "PARKING_SPOT",
                         "desc": f"Warehouse workstation parking slot {idx:02d}"
                     }
                 
                 # 2) 입고 로봇 구역 (sg2_in_01_A/B ~ sg2_in_03_A/B)
-                # sg2_in_01: X = -25.775
-                # sg2_in_02: X = -21.275
-                # sg2_in_03: X = -16.775
-                # A: Y = 15.975, B: Y = 14.475
-                inbound_xs = [-25.775, -21.275, -16.775]
-                for robot_idx, ix in enumerate(inbound_xs, 1):
+                inbound_coords = [
+                    ((-24.275, -11.025), (-25.775, -11.025)),  # Line 1 (오늘)
+                    ((-24.275, -6.525), (-25.775, -6.525)),  # Line 2 (내일)
+                    ((-24.275, -2.025), (-25.775, -2.025)) # Line 3 (모레)
+                ]
+                for robot_idx, (a_coord, b_coord) in enumerate(inbound_coords, 1):
                     # A구역 (Loading)
-                    logical_spots[(ix, 15.975)] = {
+                    logical_spots[a_coord] = {
                         "name": f"sg2_in_{robot_idx:02d}_A",
                         "type": "LOADING_SPOT",
                         "desc": f"Inbound {robot_idx:02d} A-buffer (Loading)"
                     }
                     # B구역 (Standby)
-                    logical_spots[(ix, 14.475)] = {
+                    logical_spots[b_coord] = {
                         "name": f"sg2_in_{robot_idx:02d}_B",
                         "type": "STANDBY_SPOT",
                         "desc": f"Inbound {robot_idx:02d} B-buffer (Standby)"
                     }
                 
                 # 3) 출고 포장 구역 (sg2_out_00_A/B)
-                # X = 20.725
-                # A: Y = -15.525, B: Y = -17.025
-                logical_spots[(20.725, -15.525)] = {
+                logical_spots[(-3.275, -23.025)] = {
                     "name": "sg2_out_00_A",
                     "type": "PACKAGING_SPOT",
                     "desc": "Outbound packing zone A (Active)"
                 }
-                logical_spots[(20.725, -17.025)] = {
+                logical_spots[(-3.275, -24.525)] = {
                     "name": "sg2_out_00_B",
                     "type": "PACKAGING_SPOT",
                     "desc": "Outbound packing zone B (Standby)"
                 }
 
                 # 4) 출고 대기 구역 (stage_01 ~ stage_06)
-                # 위치는 나중에 맵을 만들고 수정할 수 있도록 여기에 기입해 둡니다.
-                # 임시로 왼쪽 하단 영역(Y = -24.525) 근처의 좌표를 배정합니다.
                 staging_coords = [
-                    (-25.775, -24.525), (-24.275, -24.525), (-22.775, -24.525),
-                    (-21.275, -24.525), (-19.775, -24.525), (-18.275, -24.525)
+                    (18.275, 23.025), (18.275, 21.525),
+                    (21.275, 23.025), (21.275, 21.525),
+                    (24.275, 23.025), (24.275, 21.525)
                 ]
                 for idx, (sx, sy) in enumerate(staging_coords, 1):
                     spot_name = f"stage_{idx:02d}"
@@ -233,6 +236,8 @@ def main():
 
                 # 대량 삽입용 쿼리 리스트
                 insert_data = []
+                inserted_logical_spots = set()
+                
                 for xc in x_coords:
                     for yc in y_coords:
                         qr_id = f"FLOOR_X_{xc}_Y_{yc}"
@@ -241,12 +246,22 @@ def main():
                             loc_name = spot_info["name"]
                             loc_type = spot_info["type"]
                             desc = spot_info["desc"]
+                            inserted_logical_spots.add((xc, yc))
                         else:
                             loc_name = None
                             loc_type = "PATHWAY"
                             desc = "Warehouse floor grid pathway"
                         
                         insert_data.append((qr_id, xc, yc, 0.0, loc_name, loc_type, desc))
+
+                # 격자에 포함되지 않은 논리 스팟 추가 삽입 (예: offset 배치된 출고 대기 창고 등)
+                for (l_x, l_y), spot_info in logical_spots.items():
+                    if (l_x, l_y) not in inserted_logical_spots:
+                        qr_id = f"FLOOR_X_{l_x}_Y_{l_y}"
+                        loc_name = spot_info["name"]
+                        loc_type = spot_info["type"]
+                        desc = spot_info["desc"]
+                        insert_data.append((qr_id, l_x, l_y, 0.0, loc_name, loc_type, desc))
 
                 # Bulk insert using executemany
                 cursor.executemany(

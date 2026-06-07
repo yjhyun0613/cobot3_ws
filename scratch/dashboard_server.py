@@ -1865,9 +1865,9 @@ def index():
                     <!-- Warehouse (Right side) -->
                     <div style="position: absolute; right: 50px; top: 150px; display: flex; flex-direction: column; align-items: center;">
                         <div style="font-weight: 800; font-size: 1.1rem; color: var(--primary); margin-bottom: 8px; letter-spacing: 2px; text-shadow: 0 0 10px rgba(0, 242, 254, 0.35);">창고</div>
-                        <!-- 5x2 slots with horizontal aisles in between -->
-                        <div id="warehouse-grid-container" style="display: grid; grid-template-columns: 24px 24px; grid-template-rows: 24px 20px 24px 20px 24px 20px 24px 20px 24px; gap: 2px; border: 1.5px solid rgba(0, 242, 254, 0.25); background: rgba(8, 12, 24, 0.8); padding: 3px; border-radius: 6px;">
-                            <!-- Populated dynamically: 5 rows of 2 slots -->
+                        <!-- 6x2 slots with horizontal aisles in between -->
+                        <div id="warehouse-grid-container" style="display: grid; grid-template-columns: 24px 24px; grid-template-rows: 24px 20px 24px 20px 24px 20px 24px 20px 24px 20px 24px; gap: 2px; border: 1.5px solid rgba(0, 242, 254, 0.25); background: rgba(8, 12, 24, 0.8); padding: 3px; border-radius: 6px;">
+                            <!-- Populated dynamically: 6 rows of 2 slots -->
                         </div>
                     </div>
 
@@ -1909,7 +1909,7 @@ def index():
         <div class="dashboard-grid">
             <!-- Left: Warehouse Parking spots -->
             <div class="panel-card">
-                <h2>Warehouse Parking Spots (10 Slots) <span style="font-size: 0.8rem; color: rgba(0, 242, 254, 0.7); font-weight: normal; margin-left: 10px;">spot_01 ~ spot_10 (보관 영역)</span></h2>
+                <h2>Warehouse Parking Spots (12 Slots) <span style="font-size: 0.8rem; color: rgba(0, 242, 254, 0.7); font-weight: normal; margin-left: 10px;">spot_01 ~ spot_12 (보관 영역)</span></h2>
                 <div class="spots-container" id="spots-list">
                     <!-- Dynamic spots go here -->
                 </div>
@@ -1995,8 +1995,8 @@ def index():
             'sg2_out_00_b': { x: 607, y: 697 }
         };
 
-        // Populate Warehouse spot coordinates (5 rows, 2 columns with horizontal aisles)
-        for (let r = 0; r < 5; r++) {
+        // Populate Warehouse spot coordinates (6 rows, 2 columns with horizontal aisles)
+        for (let r = 0; r < 6; r++) {
             const y = 192 + r * 48; // base top + row offset (slot 24px + aisle 20px + gap 4px = 48px)
             const pad2 = (n) => String(n).padStart(2, '0');
             locationCoords[`spot_${pad2(2*r+1)}`] = { x: 636, y: y };
@@ -2070,11 +2070,11 @@ def index():
                     data.spots.forEach(s => { spotMap[s.spot_id] = s; });
                     const pad2 = (n) => String(n).padStart(2, '0');
                     
-                    for (let r = 0; r < 5; r++) {
+                    for (let r = 0; r < 6; r++) {
                         whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(2*r + 1)}`], false));
                         whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(2*r + 2)}`], false));
                         
-                        if (r < 4) {
+                        if (r < 5) {
                             const aisle = document.createElement('div');
                             aisle.style.gridColumn = 'span 2';
                             aisle.style.background = 'rgba(0, 242, 254, 0.25)';

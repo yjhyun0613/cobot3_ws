@@ -29,8 +29,8 @@ def main():
             # We want to clear the old table completely
             cursor.execute("TRUNCATE TABLE warehouse_locations CASCADE;")
             
-            # Insert spot_01 ~ spot_10
-            for i in range(1, 11):
+            # Insert spot_01 ~ spot_12
+            for i in range(1, 13):
                 spot_id = f"spot_{i:02d}"
                 occupied_by = occupancy.get(spot_id, None)
                 status = "OCCUPIED" if occupied_by else "EMPTY"
@@ -49,7 +49,7 @@ def main():
                     (stage_id, occupied_by, status)
                 )
                 
-            print("Successfully migrated warehouse_locations to 10 spots and 6 staging areas!")
+            print("Successfully migrated warehouse_locations to 12 spots and 6 staging areas!")
             
             # Verify
             cursor.execute("SELECT COUNT(*) FROM warehouse_locations;")

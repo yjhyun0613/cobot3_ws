@@ -187,7 +187,7 @@ AMR 이송 속도가 로봇의 적재 및 포장 속도보다 느려 발생하�
 > - `'warehouse'` 출발지의 추상적 표기를 데이터베이스 실시간 주차 스팟 ID로 역추적 분석하는 동적 리졸버 탑재.
 
 ### 7.1 문제 배경
-* 관제탑이 창고에 주차되어 있던 작업대를 출고하는 이송 액션(`ManageWorkstation.action`)을 AMR에게 전달할 때, 출발지가 단순히 `'warehouse'`로 기록되면 실제 해당 작업대가 물리적으로 점유하고 있던 개별 주차 스팟(`spot_01` ~ `spot_10`)을 식별할 수 없었습니다.
+* 관제탑이 창고에 주차되어 있던 작업대를 출고하는 이송 액션(`ManageWorkstation.action`)을 AMR에게 전달할 때, 출발지가 단순히 `'warehouse'`로 기록되면 실제 해당 작업대가 물리적으로 점유하고 있던 개별 주차 스팟(`spot_01` ~ `spot_12`)을 식별할 수 없었습니다.
 * 이로 인해 이송이 시작되었음에도 해당 스팟이 계속 `OCCUPIED`로 남아 있어, 다른 작업대가 진입할 수 없는 **자원 점유 누수**가 발생하였습니다.
 
 ### 7.2 개선 및 구현 방안
@@ -229,14 +229,14 @@ AMR 이송 속도가 로봇의 적재 및 포장 속도보다 느려 발생하�
 ## 🗺️ 9. 바닥 QR코드 공간 격자 맵 데이터베이스(Spatial Floor QR Map DB) 연동 설계 - [완료]
 
 > [!NOTE]
-> **적용 완료**: 2026년 6월 5일 구현 완료.
+> **적용 완료**: 2026년 6월 5일 구현 완료 (2026년 6월 7일 신규 물리 좌표 및 Offset 1,819개 노드 적재 추가).
 > - PostgreSQL 데이터베이스 초기화 스크립트(`docker/init.sql`)에 `floor_qr_map` 테이블 정의 추가.
-> - 격자 생성기(`scratch/generate_all_qr_codes.py`) 실행 시 1,813개의 물리 격자 좌표 및 논리 스팟(`spot_XX`, `sg2_in_XX_A/B`, `sg2_out_00_A/B`) 정보를 PostgreSQL DB로 자동 적재 연동 완료.
+> - 격자 생성기(`scratch/generate_all_qr_codes.py`) 실행 시 1,819개의 물리 격자 좌표 및 논리 스팟(`spot_XX`, `sg2_in_XX_A/B`, `sg2_out_00_A/B`) 정보를 PostgreSQL DB로 자동 적재 연동 완료.
 > - 관제탑(`control_tower_node.py`) 및 모의 로봇 에뮬레이터(`run_full_simulation_robot.py`) 기동 시 하드코딩된 목적지 명칭 대신 `floor_qr_map` 데이터베이스를 실시간으로 쿼리하여 물리 coordinates와 바닥 QR 마커 식별자를 해석(Resolution)하는 구조 구현 및 검증 완료.
 
 ### 9.1 배경 및 필요성
-* 바닥에 배치된 격자형 QR코드(예: 1,813개의 바닥 QR)는 AMR이 이동 및 로컬라이제이션(Localization)을 수행하는 물리적 기준 역할을 합니다.
-* 창고 내 보관 위치(`spot_01` ~ `spot_10`), 인바운드 대기/작업 위치(`sg2_in_01_A`, `sg2_in_01_B`), 아웃바운드 포장 위치(`sg2_out_00_A`, `sg2_out_00_B`) 등의 논리적 위치가 AMR의 물리적 목적지 좌표와 매핑되어야 합니다.
+* 바닥에 배치된 격자형 QR코드(예: 1,819개의 바닥 QR)는 AMR이 이동 및 로컬라이제이션(Localization)을 수행하는 물리적 기준 역할을 합니다.
+* 창고 내 보관 위치(`spot_01` ~ `spot_12`), 인바운드 대기/작업 위치(`sg2_in_01_A`, `sg2_in_01_B`), 아웃바운드 포장 위치(`sg2_out_00_A`, `sg2_out_00_B`) 등의 논리적 위치가 AMR의 물리적 목적지 좌표와 매핑되어야 합니다.
 * 이러한 매핑과 좌표 정보를 소스코드 내부에 하드코딩할 경우, 레이아웃 변경 시 소스코드를 전면 재수정해야 하는 심각한 유지보수 문제가 발생합니다. 따라서 이를 관계형 데이터베이스(PostgreSQL)의 전용 공간 매핑 테이블에서 관리하여 **단일 진실 공급원(Single Source of Truth)**을 구축해야 합니다.
 
 ### 9.2 데이터베이스 테이블 설계 (`floor_qr_map`)
@@ -353,4 +353,53 @@ PostgreSQL에 다음과 같은 공간 격자 맵 정보 관리 테이블을 정�
      }
      ```
 
+---
+
+## 🚀 11. 향후 개선 및 확장 제안 (Future Improvements & Extensions) - [대기]
+
+시스템의 안정성, 성능 및 확장성을 한 단계 더 끌어올리기 위해 도입을 고려해볼 수 있는 추가 개선 항목들입니다.
+
+### 11.1 DB 커넥션 풀 (Connection Pool) 도입
+* **현재 구성**: `control_tower_node_00.py` 내 단일 DB 커넥션을 다중 스레드 콜백이 `threading.RLock()`으로 동기화하여 사용 중.
+* **한계**: 로봇 통신 및 스케줄링 주기가 극도로 짧아지거나 로봇 대수가 늘어날 때 락 경합(Lock Contention)에 의해 ROS2 콜백이 지연되는 병목이 발생할 수 있음.
+* **개선 방향**: `psycopg2.pool.ThreadedConnectionPool`을 도입하여 각 스레드가 필요할 때 풀에서 독립적인 커넥션을 획득하여 SQL 쿼리를 수행하게 함으로써 병목 해소 및 DB 동시 처리 능력 개선.
+
+### 11.2 실시간 양방향 모니터링을 위한 WebSockets 전환
+* **현재 구성**: FastAPI 대시보드가 1초 주기 HTTP GET API Polling 방식으로 데이터를 요청함.
+* **한계**: 브라우저와 서버 양측의 HTTP 오버헤드가 발생하며, 데이터 변화가 없는 경우에도 지속적으로 트래픽이 유발됨.
+* **개선 방향**: FastAPI의 WebSocket 모듈을 활용하여 `/fleet/*` 토픽 등 데이터 변경 이벤트 발생 시 브라우저로 실시간 Push 해주는 Event-driven 방식으로 개선하여 응답 속도를 높이고 트래픽 최적화.
+
+### 11.3 배터리 잔량 기반 AMR 스케줄링 고도화 (Battery-aware Dispatching)
+* **현재 구성**: `/fleet/amr_states` 토픽으로 배터리 정보를 발행하고 있으나, Redis 큐에서 작업을 분배할 때 배터리 상태는 반영되지 않음.
+* **개선 방향**: 
+  * AMR 배터리가 일정 수준 이하(예: 20%)로 내려가면 스케줄러가 해당 AMR을 가용 목록에서 임시 제외.
+  * 최우선 순위로 충전소(`GO_TO_CHARGING`) 이송 태스크를 예약 및 할당하여 충전 구역으로 이동시키고, 충전 완료(예: 80% 이상) 시에만 작업 대기 상태로 복귀시키는 자동 스케줄링 구현.
+
+### 11.4 물리적 창고 포화(Full) 및 교착 상태(Deadlock) 제어 (Throttling)
+* **현재 구성**: 창고 스팟(10개) 및 대기 구역(6개)이 포화된 경우에 대한 인바운드 분류 속도 제어 로직이 없음.
+* **개선 방향**: 
+  * 스팟 점유 상태를 상시 카운트하여 여유 공간이 임계치 이하(예: 1~2개)인 경우, 컨베이어 입고 분류 로봇(`bg2`)의 작동 속도를 낮추거나 일시 정지(Hold)시키는 **쓰로틀링(Throttling) 메커니즘** 구현.
+  * 과거 미처리 패키지를 오늘 날짜로 롤오버(Roll-over) 또는 강제 완료(Force-completed)하여 일자 전환 시의 데드락을 사전 차단.
+
+### 11.5 다중 AMR 경로/공간 점유 트래픽 제어 (Traffic Management)
+* **현재 구성**: 로컬 AMR 주행 시뮬레이터나 개별 회피에 경로 결정을 위임함. 좁은 통로(Aisle)나 교차로에서 다중 AMR이 마주치는 경우 정체 또는 교착이 발생할 수 있음.
+* **개선 방향**:
+  * 격자 맵(`floor_qr_map`) 상의 주요 병목 구간 및 교차로 마커를 **세마포어(Semaphore)** 또는 **공간 예약제(Space Reservation)** 방식으로 관리.
+  * 특정 구역에 AMR이 진입하기 전 관제탑에 해당 Node 점유 권한을 획득하게 함으로써 다중 로봇 간 교차 주행 및 병목을 중앙 제어.
+
+---
+
+## 🚚 12. AMR 플릿 주행 알고리즘 연동 설계 및 검증 (AMR Fleet Path Planner Integration) - [대기/보류]
+
+AMR 담당자가 작성한 `fleet_1000qr_50amr_20rack_time_astar_true8_clean_collision_demo.py` 코드의 시간 확장 A*(Time-Expanded A*) 알고리즘 및 예약 테이블(Reservation Table) 기반 다중 AMR 충돌 회피 제어 로직을 관제탑에 통합하기 위한 설계 방안입니다.
+
+### 12.1 연동 아키텍처 및 역할 정의
+* **관제탑 (Control Tower)**: 고차원의 비즈니스 스케줄러(Redis 작업 큐, PostgreSQL 데이터 무결성 보장)를 그대로 유지합니다.
+* **AMR 플릿 제어 노드 (AMR Fleet Node)**: ROS2 Action Server를 통해 관제탑의 이송 명령(`ManageWorkstation.action`)을 수신하여 50대 AMR 간의 충돌 없는 최적 경로를 실시간으로 계산하고 시뮬레이터와 동기화합니다.
+
+### 12.2 핵심 연동 방안
+1. **ROS2 Fleet Controller 노드화 (Wrapping)**: AMR 담당자 코드를 ROS2 Node로 상속 및 리팩토링하고, `SimulationApp`을 중복 실행하지 않고 기존 시뮬레이터 환경에 플러그인 또는 Action Callback 주기로 연동합니다.
+2. **Action Server 및 Redis 큐 연동**: `ManageWorkstation.action` 서버를 정의하여 관제탑의 target x, y, yaw 등을 수신하고, Redis의 `queue:amr_tasks` 우선순위를 A* 가중치(`Priority`)로 맵핑합니다.
+3. **공간 격자 맵 및 Static Obstacles 로드**: PostgreSQL `floor_qr_map`을 조회하여 맵의 장애물 정보를 주행 코드의 `static_obstacles` 세트로 자동 초기화합니다.
+4. **상태 퍼블리시 및 모니터링**: 50대 AMR의 동적 좌표를 `/fleet/amr_states` 및 `/fleet/workstation_states` JSON 토픽으로 1Hz 이상 발행하여 FastAPI 웹 대시보드에서 실시간 모니터링이 가능하도록 지원합니다.
 
