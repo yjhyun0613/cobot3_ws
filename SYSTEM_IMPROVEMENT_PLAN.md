@@ -389,17 +389,59 @@ PostgreSQL에 다음과 같은 공간 격자 맵 정보 관리 테이블을 정�
 
 ---
 
-## 🚚 12. AMR 플릿 주행 알고리즘 연동 설계 및 검증 (AMR Fleet Path Planner Integration) - [대기/보류]
+## 🚚 12. AMR 플릿 주행 알고리즘 연동 설계 및 검증 (AMR Fleet Path Planner Integration) - [완료]
 
-AMR 담당자가 작성한 `fleet_1000qr_50amr_20rack_time_astar_true8_clean_collision_demo.py` 코드의 시간 확장 A*(Time-Expanded A*) 알고리즘 및 예약 테이블(Reservation Table) 기반 다중 AMR 충돌 회피 제어 로직을 관제탑에 통합하기 위한 설계 방안입니다.
+> [!NOTE]
+> **적용 완료**: 2026년 6월 7일 구현 완료.
+> - 시간 확장 A* 알고리즘(`TimeAStarPlanner`), 예약 테이블(`ReservationTable`) 및 틱 타이머 루틴(0.45s 틱)을 `scratch/run_full_simulation_robot.py`에 물리 시뮬레이터 동작으로서 완벽히 리팩토링 및 이식 완료했습니다.
+> - 관제탑의 `ManageWorkstation` 액션 서버 이송 태스크와 연동하여 무충돌 주행 테스트를 최종 완료했습니다.
 
-### 12.1 연동 아키텍처 및 역할 정의
-* **관제탑 (Control Tower)**: 고차원의 비즈니스 스케줄러(Redis 작업 큐, PostgreSQL 데이터 무결성 보장)를 그대로 유지합니다.
-* **AMR 플릿 제어 노드 (AMR Fleet Node)**: ROS2 Action Server를 통해 관제탑의 이송 명령(`ManageWorkstation.action`)을 수신하여 50대 AMR 간의 충돌 없는 최적 경로를 실시간으로 계산하고 시뮬레이터와 동기화합니다.
+---
 
-### 12.2 핵심 연동 방안
-1. **ROS2 Fleet Controller 노드화 (Wrapping)**: AMR 담당자 코드를 ROS2 Node로 상속 및 리팩토링하고, `SimulationApp`을 중복 실행하지 않고 기존 시뮬레이터 환경에 플러그인 또는 Action Callback 주기로 연동합니다.
-2. **Action Server 및 Redis 큐 연동**: `ManageWorkstation.action` 서버를 정의하여 관제탑의 target x, y, yaw 등을 수신하고, Redis의 `queue:amr_tasks` 우선순위를 A* 가중치(`Priority`)로 맵핑합니다.
-3. **공간 격자 맵 및 Static Obstacles 로드**: PostgreSQL `floor_qr_map`을 조회하여 맵의 장애물 정보를 주행 코드의 `static_obstacles` 세트로 자동 초기화합니다.
-4. **상태 퍼블리시 및 모니터링**: 50대 AMR의 동적 좌표를 `/fleet/amr_states` 및 `/fleet/workstation_states` JSON 토픽으로 1Hz 이상 발행하여 FastAPI 웹 대시보드에서 실시간 모니터링이 가능하도록 지원합니다.
+## 🔌 13. 2대 노트북 분산 환경 및 썬더볼트 C-to-C 다이렉트 고속 네트워킹 가이드 (Distributed Multi-Machine Setup)
+
+하드웨어 오버헤드가 큰 3D 물리 시뮬레이터(Isaac Sim)와 실시간 스케줄러/데이터베이스 서버를 분리하여 하드웨어 성능을 최대로 활용하기 위한 분산 네트워킹 가이드입니다.
+
+### 13.1 하드웨어 물리 배정 및 케이블 스펙
+* **노트북 A (시뮬레이션 머신)**: NVIDIA Isaac Sim, 로봇 주행(A*) 제어 노드 구동.
+* **노트북 B (관제 및 DB 머신)**: 관제탑 노드(Control Tower), PostgreSQL, Redis, FastAPI 대시보드 서버 구동.
+* **연결 케이블**: **Thunderbolt 4 / USB4 40Gbps (240W EPR 지원) C to C 케이블**을 양측 노트북의 썬더볼트(번개 마크 ⚡) 포트에 직결합니다. 
+  *(이 규격은 일반 랜선보다 약 10배 이상 빠르고 10Gbps~20Gbps의 대역폭과 0ms에 가까운 지연 시간을 보장합니다.)*
+
+### 13.2 네트워크 환경 설정 (고정 IP 구성)
+공유기(DHCP) 없이 1대1로 연결되므로 유선 가상 어댑터에 수동으로 고정 IP를 지정해야 합니다.
+
+1. **물리 장치 승인 (우분투)**:
+   * 각 노트북의 **설정 ➡️ 썬더볼트(Thunderbolt)** 메뉴에서 연결된 상대 노트북 장치를 **Authorize(승인)** 또는 **Trust(신뢰)** 등록합니다.
+2. **노트북 A (시뮬레이터) 가상 IP 세팅**:
+   * IPv4 설정: **Manual (수동)**
+   * IP Address: `192.168.100.10`
+   * Subnet Mask: `255.255.255.0`
+3. **노트북 B (관제 및 DB) 가상 IP 세팅**:
+   * IPv4 설정: **Manual (수동)**
+   * IP Address: `192.168.100.20`
+   * Subnet Mask: `255.255.255.0`
+4. **연결 및 방화벽 확인**:
+   * 노트북 A에서 `ping 192.168.100.20` 실행 시 지연 시간 0.5ms 미만으로 응답이 와야 합니다.
+   * 통신 차단 발생 시 양쪽 노트북에서 방화벽 해제: `sudo ufw disable`
+
+### 13.3 ROS 2 멀티머신 환경변수 동기화
+DDS 프로토콜이 유선 연결 네트워크망을 타게 만들기 위해 두 컴퓨터의 `~/.bashrc`에 아래 환경변수를 등록합니다.
+```bash
+# 양쪽 노트북 동일한 ID 지정 (예: 30)
+export ROS_DOMAIN_ID=30
+# 외부 멀티머신 통신 허용 (반드시 0으로 지정)
+export ROS_LOCALHOST_ONLY=0
+```
+
+### 13.4 원격 데이터베이스 연결 구성 (노트북 B ➡️ A 개방)
+노트북 B에서 실행되는 DB 컨테이너/인스턴스가 외부 접속을 허용하도록 설정합니다.
+* **PostgreSQL (`/etc/postgresql/.../main/postgresql.conf` 및 `pg_hba.conf`)**:
+  * `listen_addresses = '*'` 설정
+  * `pg_hba.conf` 파일 하단에 `host warehouse_db rokey 192.168.100.0/24 md5` 추가
+* **Redis (`/etc/redis/redis.conf`)**:
+  * `bind 0.0.0.0` 및 `protected-mode no` 설정
+* **노트북 A의 로봇 에뮬레이터 코드 수정**:
+  * DB 및 Redis 접속 IP 주소를 `localhost`에서 노트북 B의 썬더볼트 IP인 `192.168.100.20`으로 수정하여 접속합니다.
+
 
