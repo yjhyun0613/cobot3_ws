@@ -1451,24 +1451,23 @@ class ControlTowerNode(Node):
             try:
                 day_status = self.redis_client.get('system:day_status')
                 if day_status != 'PENDING_TRANSITION':
-                    with self.pg_lock:
-                        with self.pg_conn.cursor() as cursor:
-                            today_date = self.redis_client.get('system:today_date') if self.redis_client else '2026-06-06'
-                            if not today_date:
-                                today_date = '2026-06-06'
-                            
-                            if today_date:
-                                cursor.execute(
-                                    "SELECT COUNT(*), COUNT(CASE WHEN status != 'COMPLETED' THEN 1 END) "
-                                    "FROM packages WHERE route_zone = %s;",
-                                    (today_date,)
-                                )
-                                total_today, remaining_today = cursor.fetchone()
-                                if total_today > 0 and remaining_today == 0:
-                                    self.get_logger().info(f'=== 🎉 [Day Finished] 오늘({today_date})의 모든 물량 완료 감지! 일자 전환 모드 진입. ===')
-                                    self.write_daily_report(today_date, cursor)
-                                    self.redis_client.set('system:day_status', 'PENDING_TRANSITION')
-                                    self.redis_client.set('system:completed_day', today_date)
+                    with self.pg_conn.cursor() as cursor:
+                        today_date = self.redis_client.get('system:today_date') if self.redis_client else '2026-06-06'
+                        if not today_date:
+                            today_date = '2026-06-06'
+                        
+                        if today_date:
+                            cursor.execute(
+                                "SELECT COUNT(*), COUNT(CASE WHEN status != 'COMPLETED' THEN 1 END) "
+                                "FROM packages WHERE route_zone = %s;",
+                                (today_date,)
+                            )
+                            total_today, remaining_today = cursor.fetchone()
+                            if total_today > 0 and remaining_today == 0:
+                                self.get_logger().info(f'=== 🎉 [Day Finished] 오늘({today_date})의 모든 물량 완료 감지! 일자 전환 모드 진입. ===')
+                                self.write_daily_report(today_date, cursor)
+                                self.redis_client.set('system:day_status', 'PENDING_TRANSITION')
+                                self.redis_client.set('system:completed_day', today_date)
             except Exception as e:
                 self.get_logger().error(f'일일 완료 검사 중 에러: {str(e)}')
 
