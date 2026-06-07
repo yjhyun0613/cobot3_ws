@@ -221,9 +221,9 @@ def main():
 
                 # 4) 출고 대기 구역 (stage_01 ~ stage_06)
                 staging_coords = [
-                    (18.275, 23.025), (18.275, 21.525),
-                    (21.275, 23.025), (21.275, 21.525),
-                    (24.275, 23.025), (24.275, 21.525)
+                    (-18.275, -23.025), (-18.275, -21.525),
+                    (-21.275, -23.025), (-21.275, -21.525),
+                    (-24.275, -23.025), (-24.275, -21.525)
                 ]
                 for idx, (sx, sy) in enumerate(staging_coords, 1):
                     spot_name = f"stage_{idx:02d}"
@@ -231,6 +231,22 @@ def main():
                         "name": spot_name,
                         "type": "STAGING_SPOT",
                         "desc": f"Outbound staging slot {idx:02d}"
+                    }
+
+                # 5) AMR 충전 구역 (charging_01 ~ charging_05)
+                charging_coords = [
+                    (-10.775, 23.475),
+                    (-12.275, 23.475),
+                    (-13.775, 23.475),
+                    (-15.275, 23.475),
+                    (-16.775, 23.475)
+                ]
+                for idx, (cx, cy) in enumerate(charging_coords, 1):
+                    spot_name = f"charging_{idx:02d}"
+                    logical_spots[(cx, cy)] = {
+                        "name": spot_name,
+                        "type": "CHARGING_SPOT",
+                        "desc": f"AMR charging slot {idx:02d}"
                     }
 
 
