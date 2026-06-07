@@ -126,7 +126,7 @@ fi
 
 echo -e "\n${BLUE}================================================================${NC}"
 echo -e "${GREEN}💡 통합 테스트 준비 완료!${NC}"
-echo -e "1. 브라우저에서 ${YELLOW}http://localhost:8000${NC} 에 접속합니다."
+echo -e "1. 브라우저에서 ${YELLOW}http://localhost:8009${NC} 에 접속합니다."
 echo -e "2. 상단 우측의 [CSV 입고 명단 업로드] 버튼을 눌러"
 echo -e "   ${YELLOW}scratch/packages_2026-06-08.csv${NC} 파일을 업로드합니다."
 echo -e "3. CSV 업로드 즉시 시뮬레이션 동작 및 AMR 주행이 시작됩니다."
