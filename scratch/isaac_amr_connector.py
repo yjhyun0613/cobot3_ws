@@ -164,9 +164,17 @@ try:
                 continue
 
             try:
-                x = float(state_data.get("x", 0.0))
-                y = float(state_data.get("y", 0.0))
-                carrying = state_data.get("carrying_workstation", "")
+                # current_qr_id 형식: "FLOOR_X_-25.775_Y_-2.025"
+                qr_id = state_data.get("current_qr_id", "")
+                carrying = state_data.get("carrying_workstation_id", "")
+
+                # QR ID에서 X, Y 좌표 추출
+                x, y = 0.0, 0.0
+                if qr_id and qr_id.startswith("FLOOR_X_"):
+                    parts = qr_id.replace("FLOOR_X_", "").split("_Y_")
+                    if len(parts) == 2:
+                        x = float(parts[0])
+                        y = float(parts[1])
 
                 # AMR 위치 갱신 (지면 밀착 Z=0.125)
                 prim = stage.GetPrimAtPath(path_str)
