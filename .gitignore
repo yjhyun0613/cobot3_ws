@@ -33,3 +33,8 @@ src/cobot3/resource/floor_with_con,storage/
 
 # Log files
 *.log
+
+# Large Zip Archives
+*.zip
+src/cobot3/resource/floor_with_con,storage.zip
+src/cobot3_interfaces.zip

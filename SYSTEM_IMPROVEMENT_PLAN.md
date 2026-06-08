@@ -439,6 +439,8 @@ DDS 프로토콜이 유선 연결 네트워크망을 타게 만들기 위해 두
 export ROS_DOMAIN_ID=30
 # 외부 멀티머신 통신 허용 (반드시 0으로 지정)
 export ROS_LOCALHOST_ONLY=0
+# 기본 DDS 대신 성능이 우수한 Cyclone DDS로 통신 미들웨어 변경
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ```
 
 ### 13.4 원격 데이터베이스 연결 구성 (노트북 B ➡️ A 개방)
@@ -519,6 +521,7 @@ Isaac Sim의 풍부한 물리 모델을 완전히 사용하면서 제어 오버�
   ```bash
   export ROS_DOMAIN_ID=119
   export ROS_LOCALHOST_ONLY=0  # 외부 기기와의 통신을 위해 반드시 0으로 설정
+  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp  # Cyclone DDS 활성화
   ```
 
 #### ② PC A의 연결 코드 수정 (DB 호스트 변경)

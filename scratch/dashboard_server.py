@@ -40,6 +40,9 @@ from datetime import datetime, timedelta
 import asyncio
 from typing import List
 
+# grid_cells DB 캐시 (서버 시작 후 1회만 쿼리)
+_grid_cells_cache = None
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -147,10 +150,12 @@ async def status_broadcast_loop():
             try:
                 loop = asyncio.get_event_loop()
                 status_data = await loop.run_in_executor(None, get_status)
-                await manager.broadcast(status_data)
+                # grid_cells는 초기 연결 시에만 전송하고 주기적 브로드캐스트에서는 제외 (대역폭 절약)
+                broadcast_data = {k: v for k, v in status_data.items() if k != 'grid_cells'}
+                await manager.broadcast(broadcast_data)
             except Exception as e:
                 print(f"Broadcast loop error: {e}")
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1.5)  # 0.5s → 1.5s: 브라우저 DOM 부하 경감
 
 @app.on_event("startup")
 async def startup_event():
@@ -243,13 +248,13 @@ def get_status():
 
             # 3.5. Fetch floor QR location mappings
             cursor.execute("""
-                SELECT location_name, x_coord, y_coord, location_type 
+                SELECT qr_id, location_name, x_coord, y_coord, location_type 
                 FROM floor_qr_map 
                 WHERE location_name IS NOT NULL;
             """)
             locations = {}
-            for loc_name, x, y, loc_type in cursor.fetchall():
-                locations[loc_name] = {"x": x, "y": y, "type": loc_type}
+            for qr, loc_name, x, y, loc_type in cursor.fetchall():
+                locations[loc_name] = {"x": x, "y": y, "type": loc_type, "qr_id": qr}
                 
         # 4. Redis Active Queue Tasks (Sorted Set, 내림차순 조회)
         redis_tasks = []
@@ -332,6 +337,30 @@ def get_status():
                     "battery": "91"
                 }
 
+        # 3.6. grid_cells는 캐시 사용 (DB를 매번 치지 않음 — 성능 최적화)
+        global _grid_cells_cache
+        if _grid_cells_cache is None:
+            try:
+                with pg_conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT qr_id, x_coord, y_coord, location_name, location_type 
+                        FROM floor_qr_map;
+                    """)
+                    _grid_cells_cache = []
+                    for qr, x, y, loc_name, loc_type in cursor.fetchall():
+                        _grid_cells_cache.append({
+                            "qr_id": qr,
+                            "x": x,
+                            "y": y,
+                            "location_name": loc_name or "",
+                            "location_type": loc_type or ""
+                        })
+                    print(f"Grid cells cached: {len(_grid_cells_cache)} cells")
+            except Exception as ge:
+                print(f"Grid query error: {ge}")
+                _grid_cells_cache = []
+        grid_cells = _grid_cells_cache
+
         pg_conn.close()
         return {
             "workstations": workstations,
@@ -341,7 +370,8 @@ def get_status():
             "locations": locations,
             "day_status": day_status,
             "completed_day": completed_day,
-            "amr_states": amr_states
+            "amr_states": amr_states,
+            "grid_cells": grid_cells
         }
     except Exception as e:
         if pg_conn:
@@ -1819,6 +1849,81 @@ def index():
             color: rgba(16, 185, 129, 0.5);
             font-size: 0.6rem;
         }
+
+        /* 경량 바둑판 맵: CSS 배경 패턴 + 데이터 있는 위치만 absolute div */
+        .grid-map-container {
+            position: relative;
+            width: 600px;
+            height: 1080px;
+            border: 2px solid rgba(255, 255, 255, 0.12);
+            background-color: rgba(10, 15, 30, 0.9);
+            background-image:
+                linear-gradient(45deg, rgba(255,255,255,0.018) 25%, transparent 25%),
+                linear-gradient(-45deg, rgba(255,255,255,0.018) 25%, transparent 25%),
+                linear-gradient(45deg, transparent 75%, rgba(255,255,255,0.018) 75%),
+                linear-gradient(-45deg, transparent 75%, rgba(255,255,255,0.018) 75%);
+            background-size: 60px 60px;
+            background-position: 0 0, 0 30px, 30px -30px, -30px 0px;
+            border-radius: 14px;
+            padding: 0;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+            margin: 0 auto;
+            user-select: none;
+            overflow: hidden;
+        }
+        .grid-loc {
+            position: absolute;
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 5px;
+            font-size: 0.6rem;
+            font-weight: 700;
+            color: rgba(255, 255, 255, 0.8);
+            text-align: center;
+            line-height: 1;
+            transition: all 0.3s ease;
+            z-index: 2;
+        }
+        .grid-loc.spot     { border: 1.5px solid rgba(59, 130, 246, 0.6); background: rgba(59, 130, 246, 0.15); }
+        .grid-loc.stage    { border: 1.5px solid rgba(245, 158, 11, 0.6); background: rgba(245, 158, 11, 0.15); }
+        .grid-loc.charging { border: 1.5px solid rgba(168, 85, 247, 0.6); background: rgba(168, 85, 247, 0.15); }
+        .grid-loc.conveyor { border: 1.5px solid rgba(16, 185, 129, 0.6); background: rgba(16, 185, 129, 0.15); }
+        .grid-loc.has-ws {
+            background: #1e1b4b;
+            border: 2px solid #eab308;
+            color: #fde047;
+            font-weight: 900;
+            box-shadow: 0 0 10px rgba(234, 179, 8, 0.45);
+            font-size: 0.52rem;
+        }
+        .grid-loc.path-active {
+            box-shadow: inset 0 0 8px rgba(255, 0, 127, 0.35), 0 0 4px rgba(255, 0, 127, 0.15);
+            background: rgba(255, 0, 127, 0.05);
+        }
+        .amr-marker {
+            position: absolute;
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            border: 2px solid #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.65rem;
+            font-weight: 900;
+            color: #fff;
+            z-index: 20;
+            animation: pulse-marker 1.2s infinite;
+            pointer-events: auto;
+        }
+        @keyframes pulse-marker {
+            0%   { box-shadow: 0 0 5px currentColor; transform: translate(-50%, -50%) scale(1); }
+            50%  { box-shadow: 0 0 16px currentColor; transform: translate(-50%, -50%) scale(1.2); }
+            100% { box-shadow: 0 0 5px currentColor; transform: translate(-50%, -50%) scale(1); }
+        }
     </style>
 </head>
 <body>
@@ -1868,124 +1973,40 @@ def index():
 
         <!-- Warehouse 2D Live Grid Map -->
         <div class="panel-card" style="margin-bottom: 2rem;">
-            <h2>Warehouse 2D Live Floor Plan <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal; margin-left: 10px;">실시간 물류 창고 배치도</span></h2>
+            <h2>Warehouse 2D Live Grid Plan <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal; margin-left: 10px;">실시간 체스판 격자 배치도 (1.5m Grid)</span></h2>
             
-            <div id="floor-plan-container" style="display: flex; gap: 20px; background: rgba(15, 23, 42, 0.45); border-radius: 16px; border: 1px solid var(--border-color); padding: 25px; color: var(--text-color); justify-content: center; align-items: stretch; font-family: sans-serif; backdrop-filter: blur(12px); box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);">
-                
-                <!-- Left: Legend Column -->
-                <div style="width: 130px; display: flex; flex-direction: column; gap: 16px; border-right: 1px solid var(--border-color); padding-right: 15px; font-size: 0.85rem; font-weight: 600; color: var(--text-muted);">
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <span style="display: inline-block; width: 18px; height: 18px; background: rgba(59, 130, 246, 0.8); border-radius: 50%; border: 1.5px solid rgba(59, 130, 246, 1); box-shadow: 0 0 6px rgba(59, 130, 246, 0.4);"></span>
-                        <span>sg2</span>
+            <div id="floor-plan-container" style="display: flex; flex-direction: column; gap: 16px; background: rgba(15, 23, 42, 0.45); border-radius: 16px; border: 1px solid var(--border-color); padding: 20px; color: var(--text-color); align-items: center; justify-content: center; backdrop-filter: blur(12px); box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);">
+                <!-- Legend Row -->
+                <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-bottom: 5px;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(59, 130, 246, 0.1); border: 1.5px solid rgba(59, 130, 246, 0.5); border-radius: 2px;"></span>
+                        <span>보관스팟 (Warehouse spots)</span>
                     </div>
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <span style="display: inline-block; width: 18px; height: 18px; background: rgba(239, 68, 68, 0.8); border-radius: 50%; border: 1.5px solid rgba(239, 68, 68, 1); box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);"></span>
-                        <span>amr</span>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(245, 158, 11, 0.1); border: 1.5px solid rgba(245, 158, 11, 0.5); border-radius: 2px;"></span>
+                        <span>대기구역 (Staging area)</span>
                     </div>
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <span style="display: inline-block; width: 18px; height: 18px; background: rgba(255, 255, 255, 0.05); border: 1.5px dashed var(--text-muted); border-radius: 3px;"></span>
-                        <span>workstation</span>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(168, 85, 247, 0.1); border: 1.5px solid rgba(168, 85, 247, 0.5); border-radius: 2px;"></span>
+                        <span>충전소 (Charging stations)</span>
                     </div>
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <span style="display: inline-block; width: 22px; height: 18px; background: rgba(16, 185, 129, 0.2); border: 1.5px solid #10b981; border-radius: 3px;"></span>
-                        <span>conveyor</span>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(16, 185, 129, 0.1); border: 1.5px solid rgba(16, 185, 129, 0.5); border-radius: 2px;"></span>
+                        <span>입출고/컨베이어 (In/Out gates)</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(0, 242, 254, 0.3); border: 1px solid rgba(0, 242, 254, 0.6); box-shadow: inset 0 0 4px rgba(0, 242, 254, 0.5);"></span>
+                        <span>실시간 주행 흔적 (Neon traces)</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="display: inline-block; width: 12px; height: 12px; background: var(--danger); border-radius: 50%; border: 1px solid #fff;"></span>
+                        <span>AMR 위치</span>
                     </div>
                 </div>
 
-                <!-- Right: The actual floor plan grid with black borders -->
-                <div id="floor-map-border" style="position: relative; width: 800px; height: 800px; border: 1.5px solid var(--border-color); background: rgba(8, 12, 24, 0.6); overflow: hidden; border-radius: 8px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);">
-                    
-                    <!-- Conveyor 3 -->
-                    <div style="position: absolute; left: 10px; top: 120px; display: flex; align-items: center; gap: 5px;">
-                        <!-- Conveyor arrow -->
-                        <div style="position: relative; width: 140px; height: 32px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.1) 100%); border: 1.5px solid rgba(16, 185, 129, 0.6); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.1rem; color: #fff; border-radius: 4px;">
-                            3
-                            <div style="position: absolute; right: -12px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 16px solid transparent; border-bottom: 16px solid transparent; border-left: 12px solid rgba(16, 185, 129, 0.6);"></div>
-                            <div style="position: absolute; right: -9px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 13px solid transparent; border-bottom: 13px solid transparent; border-left: 10px solid rgba(8, 12, 24, 0.95); z-index: 2;"></div>
-                        </div>
-                        
-                        <!-- sg2 robot circle -->
-                        <div style="width: 20px; height: 20px; background: rgba(59, 130, 246, 0.8); border-radius: 50%; border: 1.5px solid rgba(59, 130, 246, 1); display: flex; align-items: center; justify-content: center; margin-left: 15px; box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);"></div>
-                    </div>
-
-                    <!-- Conveyor 2 -->
-                    <div style="position: absolute; left: 10px; top: 200px; display: flex; align-items: center; gap: 5px;">
-                        <div style="position: relative; width: 140px; height: 32px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.1) 100%); border: 1.5px solid rgba(16, 185, 129, 0.6); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.1rem; color: #fff; border-radius: 4px;">
-                            2
-                            <div style="position: absolute; right: -12px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 16px solid transparent; border-bottom: 16px solid transparent; border-left: 12px solid rgba(16, 185, 129, 0.6);"></div>
-                            <div style="position: absolute; right: -9px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 13px solid transparent; border-bottom: 13px solid transparent; border-left: 10px solid rgba(8, 12, 24, 0.95); z-index: 2;"></div>
-                        </div>
-                        <div style="width: 20px; height: 20px; background: rgba(59, 130, 246, 0.8); border-radius: 50%; border: 1.5px solid rgba(59, 130, 246, 1); display: flex; align-items: center; justify-content: center; margin-left: 15px; box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);"></div>
-                    </div>
-
-                    <!-- Conveyor 1 -->
-                    <div style="position: absolute; left: 10px; top: 280px; display: flex; align-items: center; gap: 5px;">
-                        <div style="position: relative; width: 140px; height: 32px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.1) 100%); border: 1.5px solid rgba(16, 185, 129, 0.6); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.1rem; color: #fff; border-radius: 4px;">
-                            1
-                            <div style="position: absolute; right: -12px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 16px solid transparent; border-bottom: 16px solid transparent; border-left: 12px solid rgba(16, 185, 129, 0.6);"></div>
-                            <div style="position: absolute; right: -9px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 13px solid transparent; border-bottom: 13px solid transparent; border-left: 10px solid rgba(8, 12, 24, 0.95); z-index: 2;"></div>
-                        </div>
-                        <div style="width: 20px; height: 20px; background: rgba(59, 130, 246, 0.8); border-radius: 50%; border: 1.5px solid rgba(59, 130, 246, 1); display: flex; align-items: center; justify-content: center; margin-left: 15px; box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);"></div>
-                    </div>
-
-                    <!-- Inbound Workstations Column (6 slots) -->
-                    <div style="position: absolute; left: 220px; top: 120px; display: flex; flex-direction: column; gap: 8px;">
-                        <!-- Line 3 slots -->
-                        <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px;">
-                            <div class="ws-slot-box" id="ws-slot-sg2_in_03_A" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
-                            <div class="ws-slot-box" id="ws-slot-sg2_in_03_B" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
-                        </div>
-                        <!-- Line 2 slots -->
-                        <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px;">
-                            <div class="ws-slot-box" id="ws-slot-sg2_in_02_A" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
-                            <div class="ws-slot-box" id="ws-slot-sg2_in_02_B" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
-                        </div>
-                        <!-- Line 1 slots -->
-                        <div style="display: flex; flex-direction: column; gap: 8px;">
-                            <div class="ws-slot-box" id="ws-slot-sg2_in_01_A" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
-                            <div class="ws-slot-box" id="ws-slot-sg2_in_01_B" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
-                        </div>
-                    </div>
-
-                    <!-- Warehouse (Right side) -->
-                    <div style="position: absolute; right: 50px; top: 150px; display: flex; flex-direction: column; align-items: center;">
-                        <div style="font-weight: 800; font-size: 1.1rem; color: var(--primary); margin-bottom: 8px; letter-spacing: 2px; text-shadow: 0 0 10px rgba(0, 242, 254, 0.35);">창고</div>
-                        <!-- 6x2 slots with horizontal aisles in between -->
-                        <div id="warehouse-grid-container" style="display: grid; grid-template-columns: 24px 24px; grid-template-rows: 24px 20px 24px 20px 24px 20px 24px 20px 24px 20px 24px; gap: 2px; border: 1.5px solid rgba(0, 242, 254, 0.25); background: rgba(8, 12, 24, 0.8); padding: 3px; border-radius: 6px;">
-                            <!-- Populated dynamically: 6 rows of 2 slots -->
-                        </div>
-                    </div>
-
-                    <!-- Staging Area (Middle Bottom) -->
-                    <div style="position: absolute; left: 150px; bottom: 120px; display: flex; flex-direction: column; align-items: center;">
-                        <div style="font-weight: 800; font-size: 1.1rem; color: var(--warning); margin-bottom: 8px; letter-spacing: 2px; text-shadow: 0 0 10px rgba(245, 158, 11, 0.35);">출고 대기 창고</div>
-                        <!-- 3x2 vertical slots with vertical aisles in between -->
-                        <div id="staging-grid-container" style="display: grid; grid-template-columns: 24px 20px 24px 20px 24px; grid-template-rows: 24px 24px; gap: 2px; border: 1.5px solid rgba(245, 158, 11, 0.25); background: rgba(8, 12, 24, 0.8); padding: 3px; border-radius: 6px;">
-                            <!-- Populated dynamically: 2 rows of 3 columns -->
-                        </div>
-                    </div>
-
-                    <!-- Packaging Line (Bottom Right) -->
-                    <div style="position: absolute; right: 80px; bottom: 80px; display: flex; flex-direction: column; align-items: center; gap: 10px;">
-                        <!-- Workstation slots (Side by side) -->
-                        <div style="display: flex; gap: 8px;">
-                            <div class="ws-slot-box" id="ws-slot-sg2_out_00_A" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
-                            <div class="ws-slot-box" id="ws-slot-sg2_out_00_B" style="width: 30px; height: 30px; background: rgba(255, 255, 255, 0.02); border: 1.5px dashed rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; color: var(--text-muted); border-radius: 6px; transition: all 0.3s ease;"></div>
-                        </div>
-                        <!-- sg2 robot circle -->
-                        <div style="width: 20px; height: 20px; background: rgba(59, 130, 246, 0.8); border-radius: 50%; border: 1.5px solid rgba(59, 130, 246, 1); box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);"></div>
-                        <!-- Downward arrow -->
-                        <div style="position: relative; width: 100px; height: 26px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.1) 100%); border: 1.5px solid rgba(16, 185, 129, 0.6); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.8rem; color: #fff; margin-top: 35px; transform: rotate(90deg); transform-origin: center; border-radius: 4px;">
-                            포장 라인
-                            <div style="position: absolute; right: -10px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 12px solid transparent; border-bottom: 12px solid transparent; border-left: 10px solid rgba(16, 185, 129, 0.6);"></div>
-                            <div style="position: absolute; right: -8px; top: 50%; transform: translateY(-50%); width: 0; height: 0; border-top: 10px solid transparent; border-bottom: 10px solid transparent; border-left: 8px solid rgba(8, 12, 24, 0.95); z-index: 2;"></div>
-                        </div>
-                    </div>
-
-                    <!-- Dynamic AMRs (Red circles floating) -->
-                    <div id="amr-map-layer" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;">
-                        <!-- AMRs drawn here dynamically -->
-                    </div>
+                <!-- Chess-like Grid Panel -->
+                <div id="grid-map-panel" class="grid-map-container">
+                    <!-- Javascript will dynamically build 49 x 37 cells here -->
                 </div>
             </div>
         </div>
@@ -2067,266 +2088,203 @@ def index():
         let locationsData = null;
         let workstationsData = [];
 
-        // Define coordinates mapping for dynamic AMR positioning
-        const locationCoords = {
-            'sg2_in_03_a': { x: 235, y: 135 },
-            'sg2_in_03_b': { x: 235, y: 173 },
-            'sg2_in_02_a': { x: 235, y: 213 },
-            'sg2_in_02_b': { x: 235, y: 251 },
-            'sg2_in_01_a': { x: 235, y: 291 },
-            'sg2_in_01_b': { x: 235, y: 329 },
-            
-            'sg2_out_00_a': { x: 575, y: 697 },
-            'sg2_out_00_b': { x: 607, y: 697 }
-        };
+        // 경량 바둑판 맵: 데이터 있는 주요 위치만 렌더링
+        let gridInitialized = false;
+        let pathTraceQueue = []; // AMR 주행 잔상 큐 (최대 15개)
+        let locCellMap = {};     // location_name 또는 qr_id -> DOM element 매핑
 
-        // Populate Warehouse spot coordinates (6 rows, 2 columns with horizontal aisles)
-        for (let r = 0; r < 6; r++) {
-            const y = 192 + r * 48; // base top + row offset (slot 24px + aisle 20px + gap 4px = 48px)
-            const pad2 = (n) => String(n).padStart(2, '0');
-            locationCoords[`spot_${pad2(2*r+1)}`] = { x: 636, y: y };
-            locationCoords[`spot_${pad2(2*r+2)}`] = { x: 662, y: y };
+        // 좌표 -> 픽셀 변환 상수 (20col * 30px = 600px, 36row * 30px = 1080px)
+        const X_MIN = -28.775;
+        const Y_MAX = 24.975;
+        const GRID_STEP = 1.5;
+        const CELL_PX = 30; // 1칸 = 30px (28px 크기 + 2px 마진 간격 효과)
+
+        function xToPx(x) {
+            const col = Math.round((x - X_MIN) / GRID_STEP);
+            return col * CELL_PX + 1; // 테두리 간격 보정
         }
 
-        // Populate Staging spot coordinates (3 columns of 1x2 slots with vertical aisles)
-        // Col 1 (stage_01, stage_02)
-        locationCoords['stage_01'] = { x: 212, y: 604 };
-        locationCoords['stage_02'] = { x: 212, y: 630 };
-        // Col 2 (stage_03, stage_04)
-        locationCoords['stage_03'] = { x: 260, y: 604 };
-        locationCoords['stage_04'] = { x: 260, y: 630 };
-        // Col 3 (stage_05, stage_06)
-        locationCoords['stage_05'] = { x: 308, y: 604 };
-        locationCoords['stage_06'] = { x: 308, y: 630 };
-
-        function createSpotCell(spot, isStaging) {
-            const cell = document.createElement('div');
-            cell.style.width = '24px';
-            cell.style.height = '24px';
-            cell.style.border = '1px solid rgba(255, 255, 255, 0.06)';
-            cell.style.display = 'flex';
-            cell.style.alignItems = 'center';
-            cell.style.justifyContent = 'center';
-            cell.style.fontSize = '0.55rem';
-            cell.style.fontWeight = 'bold';
-            cell.style.background = 'rgba(255, 255, 255, 0.01)';
-            cell.style.borderRadius = '3px';
-            
-            if (spot) {
-                cell.title = `${spot.spot_id.toUpperCase()}: ${spot.workstation_id || 'EMPTY'}`;
-                if (spot.status === 'OCCUPIED' && spot.workstation_id) {
-                    const wsBox = document.createElement('div');
-                    wsBox.style.width = '18px';
-                    wsBox.style.height = '18px';
-                    wsBox.style.display = 'flex';
-                    wsBox.style.alignItems = 'center';
-                    wsBox.style.justifyContent = 'center';
-                    wsBox.style.borderRadius = '3px';
-                    wsBox.style.fontSize = '0.7rem';
-                    wsBox.style.fontWeight = '800';
-                    wsBox.textContent = spot.workstation_id.replace('WS', '');
-                    
-                    if (isStaging) {
-                        wsBox.style.background = 'rgba(245, 158, 11, 0.18)';
-                        wsBox.style.border = '1px solid var(--warning)';
-                        wsBox.style.color = 'var(--warning)';
-                        wsBox.style.boxShadow = '0 0 8px rgba(245, 158, 11, 0.4)';
-                    } else {
-                        wsBox.style.background = 'rgba(0, 242, 254, 0.18)';
-                        wsBox.style.border = '1px solid var(--primary)';
-                        wsBox.style.color = 'var(--primary)';
-                        wsBox.style.boxShadow = '0 0 8px rgba(0, 242, 254, 0.4)';
-                    }
-                    cell.appendChild(wsBox);
-                }
-            } else {
-                cell.style.background = 'rgba(255, 255, 255, 0.05)';
-            }
-            return cell;
+        function yToPx(y) {
+            const row = Math.round((Y_MAX - y) / GRID_STEP);
+            return row * CELL_PX + 1; // 테두리 간격 보정
         }
 
-        function updateFloorPlan(data) {
-            // 1. Render warehouse grid
-            if (data.spots) {
-                const whContainer = document.getElementById('warehouse-grid-container');
-                if (whContainer) {
-                    whContainer.innerHTML = '';
-                    const spotMap = {};
-                    data.spots.forEach(s => { spotMap[s.spot_id] = s; });
-                    const pad2 = (n) => String(n).padStart(2, '0');
+        // 1회 초기화: 특수 위치(named locations)만 absolute div로 생성 (~31개)
+        function initGridMap(gridCells) {
+            if (gridInitialized) return;
+            const container = document.getElementById('grid-map-panel');
+            if (!container) return;
+            container.innerHTML = '';
+
+            if (gridCells) {
+                const namedLocations = gridCells.filter(cell => cell.location_name);
+                namedLocations.forEach(cell => {
+                    const name = cell.location_name.toLowerCase();
+                    const type = cell.location_type;
                     
-                    for (let r = 0; r < 6; r++) {
-                        whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(2*r + 1)}`], false));
-                        whContainer.appendChild(createSpotCell(spotMap[`spot_${pad2(2*r + 2)}`], false));
-                        
-                        if (r < 5) {
-                            const aisle = document.createElement('div');
-                            aisle.style.gridColumn = 'span 2';
-                            aisle.style.background = 'rgba(0, 242, 254, 0.25)';
-                            aisle.style.height = '20px';
-                            aisle.style.boxShadow = 'inset 0 0 6px rgba(0, 242, 254, 0.4)';
-                            whContainer.appendChild(aisle);
+                    const el = document.createElement('div');
+                    el.id = `loc-${name}`;
+                    el.className = 'grid-loc';
+                    
+                    let labelText = '';
+                    if (name.startsWith('spot_')) {
+                        el.classList.add('spot');
+                        labelText = 'S' + name.replace('spot_', '');
+                    } else if (name.startsWith('stage_')) {
+                        el.classList.add('stage');
+                        labelText = 'ST' + name.replace('stage_', '');
+                    } else if (name.startsWith('charging_')) {
+                        el.classList.add('charging');
+                        labelText = 'C' + name.replace('charging_', '');
+                    } else if (name.startsWith('sg2_in_') || name.startsWith('sg2_out_')) {
+                        el.classList.add('conveyor');
+                        if (name.startsWith('sg2_in_')) {
+                            labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','A').replace('_b','B').toUpperCase();
+                        } else {
+                            labelText = 'O' + name.replace('sg2_out_0', '').replace('_a','A').replace('_b','B').toUpperCase();
                         }
                     }
-                }
-                
-                // 2. Render staging grid (3 columns of 1x2 vertical slots, separated by vertical aisles)
-                const stContainer = document.getElementById('staging-grid-container');
-                if (stContainer) {
-                    stContainer.innerHTML = '';
-                    const spotMap = {};
-                    data.spots.forEach(s => { spotMap[s.spot_id] = s; });
-                    
-                    const createAisle = () => {
-                        const aisle = document.createElement('div');
-                        aisle.style.background = 'rgba(245, 158, 11, 0.25)';
-                        aisle.style.width = '20px';
-                        aisle.style.height = '24px';
-                        aisle.style.boxShadow = 'inset 0 0 6px rgba(245, 158, 11, 0.4)';
-                        return aisle;
-                    };
 
-                    // Row 0
-                    stContainer.appendChild(createSpotCell(spotMap[`stage_01`], true));
-                    stContainer.appendChild(createAisle());
-                    stContainer.appendChild(createSpotCell(spotMap[`stage_03`], true));
-                    stContainer.appendChild(createAisle());
-                    stContainer.appendChild(createSpotCell(spotMap[`stage_05`], true));
+                    el.textContent = labelText;
                     
-                    // Row 1
-                    stContainer.appendChild(createSpotCell(spotMap[`stage_02`], true));
-                    stContainer.appendChild(createAisle());
-                    stContainer.appendChild(createSpotCell(spotMap[`stage_04`], true));
-                    stContainer.appendChild(createAisle());
-                    stContainer.appendChild(createSpotCell(spotMap[`stage_06`], true));
-                }
+                    // absolute positioning 설정
+                    el.style.left = `${xToPx(cell.x)}px`;
+                    el.style.top = `${yToPx(cell.y)}px`;
+                    el.style.width = '28px';
+                    el.style.height = '28px';
+                    
+                    el.title = `${cell.location_name} (${type})\nQR: ${cell.qr_id}\nCoordinates: X=${cell.x.toFixed(3)}, Y=${cell.y.toFixed(3)}`;
+                    
+                    container.appendChild(el);
+                    
+                    // 매핑 테이블 등록
+                    locCellMap[name] = el;
+                    locCellMap[cell.qr_id] = el;
+                });
             }
+            gridInitialized = true;
+            console.log("Lightweight Grid Map Initialized.");
+        }
 
-            // 3. Update workstation A/B slots
+        // 대시보드 데이터 수신 시 그리드 업데이트
+        function updateFloorPlan(data) {
+            // 1. 그리드가 아직 초기화 안 되었다면 초기화
+            if (data.grid_cells && !gridInitialized) {
+                initGridMap(data.grid_cells);
+            }
+            if (!gridInitialized) return;
+
+            // 2. 모든 특수 위치의 has-ws 스타일 및 텍스트 초기화
+            Object.keys(locCellMap).forEach(key => {
+                const el = locCellMap[key];
+                if (el) {
+                    el.classList.remove('has-ws');
+                    // 기본 라벨 복구
+                    const name = el.id.replace('loc-', '');
+                    let labelText = '';
+                    if (name.startsWith('spot_')) {
+                        labelText = 'S' + name.replace('spot_', '');
+                    } else if (name.startsWith('stage_')) {
+                        labelText = 'ST' + name.replace('stage_', '');
+                    } else if (name.startsWith('charging_')) {
+                        labelText = 'C' + name.replace('charging_', '');
+                    } else if (name.startsWith('sg2_in_')) {
+                        labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','A').replace('_b','B').toUpperCase();
+                    } else if (name.startsWith('sg2_out_')) {
+                        labelText = 'O' + name.replace('sg2_out_0', '').replace('_a','A').replace('_b','B').toUpperCase();
+                    }
+                    el.textContent = labelText;
+                }
+            });
+
+            // 3. 기존 AMR 마커 삭제
+            document.querySelectorAll('.amr-marker').forEach(el => el.remove());
+
+            // 4. 워크스테이션(선반) 위치에 WS 배지 스타일링 반영 (has-ws 클래스 추가)
             if (data.workstations) {
-                const locWsMap = {};
                 data.workstations.forEach(ws => {
                     const loc = ws.current_location.toLowerCase();
-                    locWsMap[loc] = ws;
-                    if (loc.startsWith('moving_to_')) {
-                        const target = loc.replace('moving_to_', '');
-                        if (!locWsMap[target]) locWsMap[target] = ws;
+                    let cellEl = locCellMap[loc];
+                    if (!cellEl && data.locations && data.locations[loc]) {
+                        cellEl = locCellMap[data.locations[loc].qr_id];
                     }
-                    if (loc.endsWith('_rotating')) {
-                        const target = loc.replace('_rotating', '');
-                        if (!locWsMap[target]) locWsMap[target] = ws;
-                    }
-                });
-
-                const inboundSlots = [
-                    'sg2_in_01_a', 'sg2_in_01_b',
-                    'sg2_in_02_a', 'sg2_in_02_b',
-                    'sg2_in_03_a', 'sg2_in_03_b',
-                ];
-                inboundSlots.forEach(slotKey => {
-                    const el = document.getElementById(`ws-slot-${slotKey.replace(/_a$/, '_A').replace(/_b$/, '_B')}`);
-                    if (!el) return;
-                    const ws = locWsMap[slotKey];
-                    if (ws) {
-                        el.style.background = 'rgba(0, 242, 254, 0.15)';
-                        el.style.border = '1.5px solid var(--primary)';
-                        el.style.color = 'var(--primary)';
-                        el.style.boxShadow = '0 0 10px rgba(0, 242, 254, 0.45)';
-                        el.title = `${ws.workstation_id} @ ${ws.current_location}`;
-                        el.textContent = `${ws.workstation_id.replace('WS','')}`;
-                    } else {
-                        el.style.background = 'rgba(255, 255, 255, 0.02)';
-                        el.style.border = '1.5px dashed rgba(255, 255, 255, 0.15)';
-                        el.style.color = 'var(--text-muted)';
-                        el.style.boxShadow = 'none';
-                        el.title = slotKey.includes('_b') ? 'B구역 (대기)' : 'A구역 (활성)';
-                        el.textContent = '';
-                    }
-                });
-
-                const outboundSlots = ['sg2_out_00_a', 'sg2_out_00_b'];
-                outboundSlots.forEach(slotKey => {
-                    const el = document.getElementById(`ws-slot-${slotKey.replace(/_a$/, '_A').replace(/_b$/, '_B')}`);
-                    if (!el) return;
-                    const ws = locWsMap[slotKey];
-                    if (ws) {
-                        el.style.background = 'rgba(245, 158, 11, 0.15)';
-                        el.style.border = '1.5px solid var(--warning)';
-                        el.style.color = 'var(--warning)';
-                        el.style.boxShadow = '0 0 10px rgba(245, 158, 11, 0.45)';
-                        el.title = `${ws.workstation_id} @ ${ws.current_location}`;
-                        el.textContent = `${ws.workstation_id.replace('WS','')}`;
-                    } else {
-                        el.style.background = 'rgba(255, 255, 255, 0.02)';
-                        el.style.border = '1.5px dashed rgba(255, 255, 255, 0.15)';
-                        el.style.color = 'var(--text-muted)';
-                        el.style.boxShadow = 'none';
-                        el.title = slotKey.includes('_b') ? 'B구역 (대기)' : 'A구역 (활성)';
-                        el.textContent = '';
+                    if (cellEl) {
+                        cellEl.classList.add('has-ws');
+                        // 28px 크기에 맞게 WS01 대신 W1, WS10 대신 W10 형태로 표기해 S1, S2 보관함명과 확연히 구분시킴
+                        cellEl.textContent = ws.workstation_id.replace('WS0', 'W').replace('WS', 'W');
                     }
                 });
             }
 
-            // 4. Update AMR positions dynamically on the layer
-            const amrLayer = document.getElementById('amr-map-layer');
-            if (amrLayer && data.amr_states) {
-                amrLayer.innerHTML = '';
+            // 5. 실시간 AMR 위치 매핑 및 주행 잔상 렌더링
+            if (data.amr_states) {
+                const panel = document.getElementById('grid-map-panel');
+                if (!panel) return;
                 
-                const amrKeys = Object.keys(data.amr_states).sort();
-                amrKeys.forEach((amrId, index) => {
+                Object.keys(data.amr_states).forEach(amrId => {
                     const amr = data.amr_states[amrId];
-                    let x = 360 + index * 32; // Default idle X
-                    let y = 460;              // Default idle Y
-                    
-                    // Match AMR location to screen coords if possible
-                    if (amr.carrying_workstation_id && data.workstations) {
-                        // If carrying a workstation, find its workstation's current_location coordinate
-                        const ws = data.workstations.find(w => w.workstation_id === amr.carrying_workstation_id);
-                        if (ws) {
-                            const loc = ws.current_location.toLowerCase();
-                            if (locationCoords[loc]) {
-                                x = locationCoords[loc].x;
-                                y = locationCoords[loc].y;
+                    let qrId = null;
+
+                    if (amr.current_qr_id) {
+                        if (amr.current_qr_id.startsWith('FLOOR_X_')) {
+                            qrId = amr.current_qr_id;
+                        } else {
+                            const locName = amr.current_qr_id.toLowerCase();
+                            if (data.locations) {
+                                Object.keys(data.locations).forEach(k => {
+                                    if (k.toLowerCase() === locName || (data.locations[k].qr_id && data.locations[k].qr_id.toLowerCase() === locName)) {
+                                        qrId = data.locations[k].qr_id;
+                                    }
+                                });
                             }
-                        }
-                    } else if (amr.current_qr_id) {
-                        // Find matching location using locations metadata
-                        let matchedLoc = null;
-                        if (data.locations) {
-                            Object.keys(data.locations).forEach(locName => {
-                                if (locName.toLowerCase() === amr.current_qr_id.toLowerCase()) {
-                                    matchedLoc = locName.toLowerCase();
-                                }
-                            });
-                        }
-                        if (matchedLoc && locationCoords[matchedLoc]) {
-                            x = locationCoords[matchedLoc].x;
-                            y = locationCoords[matchedLoc].y;
                         }
                     }
 
-                    // Create the red AMR circle
-                    const amrEl = document.createElement('div');
-                    amrEl.style.position = 'absolute';
-                    amrEl.style.width = '20px';
-                    amrEl.style.height = '20px';
-                    amrEl.style.background = 'rgba(239, 68, 68, 0.8)';
-                    amrEl.style.borderRadius = '50%';
-                    amrEl.style.border = '1.5px solid rgba(239, 68, 68, 1)';
-                    amrEl.style.display = 'flex';
-                    amrEl.style.alignItems = 'center';
-                    amrEl.style.justifyContent = 'center';
-                    amrEl.style.color = '#ffffff';
-                    amrEl.style.fontSize = '0.55rem';
-                    amrEl.style.fontWeight = 'bold';
-                    amrEl.style.boxShadow = '0 0 10px rgba(239, 68, 68, 0.6)';
-                    amrEl.style.transition = 'left 1.2s linear, top 1.2s linear';
-                    amrEl.style.left = `${x - 10}px`;
-                    amrEl.style.top = `${y - 10}px`;
-                    amrEl.textContent = amrId.replace('AMR_','');
-                    amrEl.title = `${amrId}: State=${amr.state}, Battery=${amr.battery}%`;
-                    
-                    amrLayer.appendChild(amrEl);
+                    if (qrId) {
+                        // QR ID에 해당하는 셀 요소를 찾음
+                        const cellEl = locCellMap[qrId];
+                        if (cellEl) {
+                            // AMR 마커 동적 생성 및 panel에 absolute positioning으로 얹음
+                            const amrEl = document.createElement('div');
+                            amrEl.className = 'amr-marker';
+                            amrEl.textContent = amrId.replace('AMR_', '');
+                            amrEl.title = `${amrId}\nState: ${amr.state}\nBattery: ${amr.battery}%\nCarrying: ${amr.carrying_workstation_id || 'None'}`;
+                            
+                            // 셀의 absolute 위치를 그대로 가져오고 정중앙 오프셋을 맞추기 위해 translate(-50%, -50%)를 고려하여 style 탑/레프트 배정
+                            // 셀의 top, left는 28px 셀의 top-left이므로, 마커는 26px 크기에 transform translate로 중앙 보정
+                            amrEl.style.left = `${parseFloat(cellEl.style.left) + 14}px`;
+                            amrEl.style.top = `${parseFloat(cellEl.style.top) + 14}px`;
+                            
+                            // AMR 기본 색상을 핫핑크(#ff007f)로 지정하여 초록색 컨베이어 벨트 등과 겹치는 가시성 문제 해결
+                            const bat = parseFloat(amr.battery);
+                            let color = '#ff007f'; 
+                            if (bat <= 20) {
+                                color = '#ef4444'; // 배터리 경고 (빨강)
+                            } else if (bat <= 50) {
+                                color = '#f59e0b'; // 배터리 주의 (주황)
+                            }
+                            
+                            amrEl.style.backgroundColor = color;
+                            amrEl.style.color = color === '#f59e0b' ? '#000' : '#fff';
+                            amrEl.style.boxShadow = `0 0 10px ${color}`;
+                            
+                            panel.appendChild(amrEl);
+
+                            // 주행 흔적(Trace fading trail) 활성화
+                            if (!cellEl.classList.contains('path-active')) {
+                                cellEl.classList.add('path-active');
+                                pathTraceQueue.push(cellEl);
+
+                                // 잔상 꼬리 15개로 제한
+                                if (pathTraceQueue.length > 15) {
+                                    const oldCell = pathTraceQueue.shift();
+                                    if (oldCell) {
+                                        oldCell.classList.remove('path-active');
+                                    }
+                                }
+                            }
+                        }
+                    }
                 });
             }
         }

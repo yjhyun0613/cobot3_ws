@@ -1,0 +1,76 @@
+=== Top-level Prims (depth <=3) ===
+  /World  [Xform]
+  /World/floor  [Xform]
+  /World/floor/SM_Floor_A1_01  [Mesh]
+  /World/floor/Floor_01  [Material]
+  /World/floor/FloorQRs  [Xform]
+  /World/floor/Looks  [Scope]
+  /World/IN_conveyor  [Xform]
+  /World/IN_conveyor/IN_storage  [Xform]
+  /World/MAIN_storage  [Xform]
+  /World/MAIN_storage/MAIN_storage  [Xform]
+  /World/OUT_conveyor  [Xform]
+  /World/OUT_conveyor/OUT_conveyor  [Xform]
+  /World/OUT_storage  [Xform]
+  /World/OUT_storage/OUT_storage  [Xform]
+  /Environment  [Xform]
+  /Environment/defaultLight  [DistantLight]
+  /Render  []
+  /Render/OmniverseKit  []
+  /Render/OmniverseKit/HydraTextures  []
+  /Render/OmniverseGlobalRenderSettings  [RenderSettings]
+  /Render/Vars  []
+  /Render/Vars/LdrColor  [RenderVar]
+
+=== custom_rack prims (depth <=5) ===
+  /World/IN_conveyor/IN_storage/custom_rack  [Xform] pos=(0.00, 0.00, 0.00)
+  /World/IN_conveyor/IN_storage/custom_rack/Cube_001  [Mesh] pos=(0.00, 0.00, 0.00)
+  /World/IN_conveyor/IN_storage/custom_rack/Cube_02  [Mesh] pos=(0.00, 1.50, 0.00)
+  /World/IN_conveyor/IN_storage/custom_rack_01  [Xform] pos=(-4.50, -0.00, -0.00)
+  /World/IN_conveyor/IN_storage/custom_rack_01/Cube_001  [Mesh] pos=(0.00, 0.00, 0.00)
+  /World/IN_conveyor/IN_storage/custom_rack_01/Cube_02  [Mesh] pos=(0.00, 1.50, 0.00)
+  /World/IN_conveyor/IN_storage/custom_rack_02  [Xform] pos=(-9.00, -0.00, -0.00)
+  /World/IN_conveyor/IN_storage/custom_rack_02/Cube_001  [Mesh] pos=(0.00, 0.00, 0.00)
+  /World/IN_conveyor/IN_storage/custom_rack_02/Cube_02  [Mesh] pos=(0.00, 1.50, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack  [Xform] pos=(0.00, 0.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_001  [Mesh] pos=(0.00, 0.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_02  [Mesh] pos=(1.50, 0.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_03  [Mesh] pos=(0.00, 3.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_04  [Mesh] pos=(1.50, 3.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_05  [Mesh] pos=(0.00, 6.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_06  [Mesh] pos=(1.50, 6.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_07  [Mesh] pos=(0.00, 9.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_08  [Mesh] pos=(1.50, 9.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_09  [Mesh] pos=(0.00, 12.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_10  [Mesh] pos=(1.50, 12.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_11  [Mesh] pos=(0.00, 15.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_12  [Mesh] pos=(1.50, 15.00, 0.00)
+  /World/OUT_conveyor/OUT_conveyor/custom_rack  [Xform] pos=(0.00, 0.00, 0.00)
+  /World/OUT_conveyor/OUT_conveyor/custom_rack/Cube_001  [Mesh] pos=(0.00, 0.00, 0.00)
+  /World/OUT_conveyor/OUT_conveyor/custom_rack/Cube_02  [Mesh] pos=(0.00, 1.50, 0.00)
+  /World/OUT_storage/OUT_storage/custom_rack  [Xform] pos=(0.00, 0.00, 0.00)
+  /World/OUT_storage/OUT_storage/custom_rack/Cube_001  [Mesh] pos=(0.00, 0.00, 0.00)
+  /World/OUT_storage/OUT_storage/custom_rack/Cube_02  [Mesh] pos=(1.50, 0.00, 0.00)
+  /World/OUT_storage/OUT_storage/custom_rack/Cube_03  [Mesh] pos=(0.00, 3.00, 0.00)
+  /World/OUT_storage/OUT_storage/custom_rack/Cube_04  [Mesh] pos=(1.50, 3.00, 0.00)
+  /World/OUT_storage/OUT_storage/custom_rack/Cube_05  [Mesh] pos=(0.00, 6.00, 0.00)
+  /World/OUT_storage/OUT_storage/custom_rack/Cube_06  [Mesh] pos=(1.50, 6.00, 0.00)
+
+=== MAIN_storage prims (depth <=5) ===
+  /World/MAIN_storage  [Xform] pos=(-10.78, -9.53, -0.00)
+  /World/MAIN_storage/MAIN_storage  [Xform] pos=(0.00, 0.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack  [Xform] pos=(0.00, 0.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_001  [Mesh] pos=(0.00, 0.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_02  [Mesh] pos=(1.50, 0.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_03  [Mesh] pos=(0.00, 3.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_04  [Mesh] pos=(1.50, 3.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_05  [Mesh] pos=(0.00, 6.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_06  [Mesh] pos=(1.50, 6.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_07  [Mesh] pos=(0.00, 9.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_08  [Mesh] pos=(1.50, 9.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_09  [Mesh] pos=(0.00, 12.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_10  [Mesh] pos=(1.50, 12.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_11  [Mesh] pos=(0.00, 15.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/custom_rack/Cube_12  [Mesh] pos=(1.50, 15.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/Looks  [Scope] pos=(0.00, 0.00, 0.00)
+  /World/MAIN_storage/MAIN_storage/Looks/OmniPBR  [Material] pos=(0.00, 0.00, 0.00)

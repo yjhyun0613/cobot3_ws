@@ -340,5 +340,20 @@
   - **분산 환경 매핑**: PC A(시뮬레이터/AMR 제어 노드/소켓 브릿지)와 PC B(관제탑/PostgreSQL/Redis/FastAPI 대시보드)로 역할을 나누어 가동하는 상세 인프라 세팅 구축 및 가이드 문서화 완료.
   - **문서 업데이트**: `SYSTEM_IMPROVEMENT_PLAN.md`에 섹션 14 신규 생성 및 수록 완료.
 
+* **12:00** - **설비 로봇 및 AMR 연동 명세서 신규 작성**
+  - AMR 개발자 및 컨베이어, 포장 로봇 개발자 간의 원활한 협업을 위해 `AMR_INTEGRATION_BRIEF.md` 및 `ROBOT_INTEGRATION_BRIEF.md` 신규 배포 완료.
+  - Action Goal, Redis 상태 해시 스펙, 그리고 각 설비별 호출 API를 상세화.
+* **13:00** - **DB 및 스크립트 대소문자 정합성 통일**
+  - 시스템 설계 명세와 실제 코드 구동 방식의 통일을 위해 `DATABASE_SCHEMA.md`와 `scratch/generate_all_qr_codes.py` 내의 AMR 식별자를 소문자(`amr_01`)에서 대문자 규격(`AMR_01`)으로 일괄 갱신 완료.
+* **13:10** - **통신 미들웨어 Cyclone DDS 전환**
+  - 분산 환경에서의 통신 안정성 강화를 위해 ROS 2 기본 미들웨어인 Fast DDS를 **Cyclone DDS**로 전면 전환.
+  - `AMR_INTEGRATION_BRIEF.md` 및 `SYSTEM_IMPROVEMENT_PLAN.md` 문서 내 DDS 환경 변수 설정 스펙에 `export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` 추가 반영.
+* **13:20** - **중복 및 레거시 마크다운 문서 통합 및 정리**
+  - 프로젝트 내 마크다운 파일들의 중복과 과도한 개수를 줄이기 위한 전면 리팩토링 진행.
+  - 외부 개발자용 브리핑 문서(`AMR_INTEGRATION_BRIEF.md`, `ROBOT_INTEGRATION_BRIEF.md`) 및 인터페이스 명세(`INTERFACE_CHANGES.md`)를 단일 고도화 문서인 **`ROBOT_AMR_INTEGRATION_GUIDE.md`**로 병합 완료.
+  - 레거시 마커 문서(`ARUCO_INTEGRATION_GUIDE.md`) 및 구형 DB 계획서(`WAREHOUSE_DB_INTEGRATION_PLAN.md`) 삭제.
+  - AI 에이전트 전용 가이드(`AI_AGENT_GUIDE.md`) 내의 아키텍처 다이어그램, QR 규격, 예외 시 시나리오, 에이전트 문서 규칙을 **`README.md`** 하단으로 완전히 이식 및 통합 완료.
+* **13:40** - **AMR Redis 실시간 상태 연동 테스트 스크립트 작성**
+  - **`scratch/amr_redis_test_publisher.py` 신규 생성**: AMR 담당자 가이드 전달 및 실제 위치 연동 모니터링 사전 검증을 위한 가상 주행 Redis HSET 송신 스크립트 배포 완료.
 
 

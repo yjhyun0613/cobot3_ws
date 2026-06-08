@@ -9,27 +9,20 @@
 
 ## 📂 프로젝트 문서 지도 (Documentation Map)
 
-프로젝트 루트에 생성된 다양한 마크다운(`.md`) 문서들의 성격에 따라 다음과 같이 5가지 카테고리로 정리하였습니다. 필요한 내용을 찾을 때 참고하시기 바랍니다.
+프로젝트 루트의 문서를 효율적으로 찾아볼 수 있도록 다음과 같이 4가지 카테고리로 통합 및 정리하였습니다.
 
 ### 1. 📖 시스템 가이드 및 종합 보고서
-* **[README.md](file:///home/rokey/cobot3_ws/README.md)**: 전체 시스템의 사전 요구사항, 데이터베이스 및 관제 노드 구동, 시뮬레이터 연동 및 백업 방법 가이드.
+* **[README.md](file:///home/rokey/cobot3_ws/README.md)**: 전체 시스템의 아키텍처, QR 규격, 기동 프로세스, 운영 시 잠재적 대책 및 에이전트 가이드 수록.
 * **[PROJECT_REPORT.md](file:///home/rokey/cobot3_ws/PROJECT_REPORT.md)**: NVIDIA Isaac Sim 시뮬레이터 연동 결과 및 핵심 비즈니스 시나리오, 설계 결정 사항을 총망라한 최종 요약 보고서.
 
-### 2. 📐 시스템 설계 및 명세서
+### 2. 📐 시스템 설계 및 연동 규격서
 * **[DATABASE_SCHEMA.md](file:///home/rokey/cobot3_ws/DATABASE_SCHEMA.md)**: PostgreSQL 및 Redis의 테이블 스키마 정의, ERD 관계도 및 캐싱 매핑 상세 설명서.
-* **[INTERFACE_CHANGES.md](file:///home/rokey/cobot3_ws/INTERFACE_CHANGES.md)**: ROS2 Custom Service/Action 인터페이스 및 Fleet 실시간 모니터링을 위한 JSON 토픽 사양서.
+* **[ROBOT_AMR_INTEGRATION_GUIDE.md](file:///home/rokey/cobot3_ws/ROBOT_AMR_INTEGRATION_GUIDE.md)**: ROS 2 서비스/액션, Redis 캐시 규격, 1Hz JSON 상태 토픽 및 분산 DDS 통신(Cyclone DDS)을 포괄하는 로봇/AMR 연동 가이드.
+* **[PHYSICAL_LAYOUT.md](file:///home/rokey/cobot3_ws/PHYSICAL_LAYOUT.md)**: 주차 구역, 입고 라인 A/B, 출고 대기 창고, 포장 라인 등의 물리적 X, Y 좌표 매핑 테이블.
 * **[SYSTEM_IMPROVEMENT_PLAN.md](file:///home/rokey/cobot3_ws/SYSTEM_IMPROVEMENT_PLAN.md)**: 데이터베이스 정규화, QR코드 도입, 이중 버퍼, 우선순위 큐, Fail-safe 등 개선 계획 및 진행 상황 보고서.
 
-### 3. 🔩 개별 기능 연동 계획서
-* **[WAREHOUSE_DB_INTEGRATION_PLAN.md](file:///home/rokey/cobot3_ws/WAREHOUSE_DB_INTEGRATION_PLAN.md)**: 창고 주차 스팟(`spot_01` ~ `spot_10`)의 실시간 자원 관리 및 데이터베이스 연동 시나리오 계획서.
-* **[ARUCO_INTEGRATION_GUIDE.md](file:///home/rokey/cobot3_ws/ARUCO_INTEGRATION_GUIDE.md)**: (레거시) ArUco 마커 기반 식별 기능 설계 및 비전 센서 연동 매뉴얼.
-
-### 4. 📈 개발 이력 및 수정 내역
+### 3. 📈 개발 이력 및 수정 내역
 * **[CHANGELOG.md](file:///home/rokey/cobot3_ws/CHANGELOG.md)**: 프로젝트 시작(2026-06-01)부터 현재까지 날짜 및 시간별 상세 개발 이력.
-* **[RECENT_UPDATES.md](file:///home/rokey/cobot3_ws/RECENT_UPDATES.md)**: 최근 배포된 일자 전환 워크플로우, 2D 맵 격자 UI, 중복 입고 검사 및 180도 회전 중복 트리거 버그 수정 내역 요약.
-
-### 5. 🤖 AI 에이전트 인수인계
-* **[AI_AGENT_GUIDE.md](file:///home/rokey/cobot3_ws/AI_AGENT_GUIDE.md)**: 후속 개발을 담당할 AI 에이전트를 위한 시스템 아키텍처, 핵심 DB 쿼리, 시나리오 분석 및 실행 커맨드 가이드.
 
 ---
 
@@ -192,3 +185,59 @@ sudo docker exec -t warehouse_postgres pg_dumpall -U rokey > ~/cobot3_ws/docker/
 ```bash
 cat ~/cobot3_ws/docker/warehouse_backup.sql | sudo docker exec -i warehouse_postgres psql -U rokey -d warehouse_db
 ```
+
+---
+
+## 🤖 7. AI 에이전트 개발 정보 및 아키텍처
+
+본 관제탑 프로젝트를 이어 개발하는 후속 AI 에이전트를 위해 시스템의 데이터 흐름과 QR코드 매핑 규격을 아래에 명시합니다.
+
+### ① 시스템 아키텍처 구조
+```mermaid
+graph TD
+    Sorter[bg2: 컨베이어 분류 로봇] -->|GetPackageRoute| CT[Control Tower Node]
+    Inbound[sg2_in_XX: 적재 로봇] -->|CheckWarehouseStatus / ReportInbound| CT
+    Outbound[sg2_out_00_A: 포장 로봇] -->|StartPackaging| CT
+    CT <-->|SQL / Real-time Query| DB[(PostgreSQL)]
+    CT <-->|ZADD / ZPOPMAX Priority Tasks| Redis[(Redis Command Queue)]
+    CT -->|1Hz JSON Broadcast / Event-driven| Fleet[/"/fleet/* Topics (amr_states, workstation_states, package_states, task_events)"/]
+```
+
+### ② QR코드 식별자 매핑 규격
+| 대상군 (Entities) | QR코드 ID 포맷 | 매핑 식별자 (DB) | 비고 |
+| :--- | :--- | :--- | :--- |
+| **로봇 (Robots)** | `ROBOT_{robot_id}` | `bg2`, `sg2_in_01~03`, `sg2_out_00` | 로봇 타입 및 역할 식별 |
+| **작업대 (Workstations)**| `WORKSTATION_{workstation_id}` | `WS01` ~ `WS10` | 2x8 적재 플레이트 (총 10대) |
+| **상자 (Packages)** | `PKG_RAND_XXX` | `PKG_RAND_XXX` (임의생성) | 개별 택배 박스 |
+| **작업대 슬롯 (Slots)** | `WORKSTATION_WSxx_SLOT_y` | `WS01_SLOT_1` ~ `WS10_SLOT_8` | 각 작업대의 2x4 슬롯 (총 80개) |
+| **바닥 격자 (Floor Grid)**| `FLOOR_X_{x}_Y_{y}` | `FLOOR_X_{x}_Y_{y}` | 미터법 절대 좌표 마커 (총 1,819개) |
+
+---
+
+## ⚠️ 8. 영업일 전환 및 이월 적재 운영 시 잠재적 대책
+
+실제 영업일 날짜 기반 전환 및 이월 적재 시나리오를 가동할 때 발생할 수 있는 잠재적 이슈와 대처 방식입니다.
+
+1. **작업대 공간 낭비 및 창고 포화**:
+   * **원인**: 전날 부분 적재되어 이월된 작업대가 있는데 오늘 날짜 물량을 새 작업대에 처음부터 쌓으면 자원이 조기 포화됩니다.
+   * **대책**: 입고 시뮬레이터가 현재 라인에 대기 중인 기존 이월 작업대를 조회하여, 남은 슬롯(1~8)에 순차적으로 상자를 이어서 누적 적재(Carry-over)하도록 스케줄링을 연동합니다.
+2. **창고 및 대기 구역 포화 데드락**:
+   * **원인**: 출고 속도가 입고를 따라가지 못해 창고 보관 공간(12개)과 대기 공간(6개)이 가득 차면 AMR 이송 경로가 막혀 시스템이 교착됩니다.
+   * **대책**: 창고 잔여 스팟을 모니터링하여 여유 스팟이 임계치(1~2개) 도달 시 입고 로봇(`bg2`)에 정지 명령을 주는 쓰로틀링(Throttling) 방식을 제어부에 탑재합니다.
+3. **미처리 누락 패키지로 인한 일자 전환 정체**:
+   * **원인**: 과거 패키지 중 처리가 누락되어 완료(`COMPLETED`)되지 못한 것이 1개라도 있으면 기준 영업일 승격이 불가합니다.
+   * **대책**: 전환 시점에 강제 완료 처리(Force-completed)하거나, 미처리 패키지를 다음 영업일 날짜로 일괄 수정하여 이월시키는 백오프 루틴을 구성합니다.
+
+---
+
+## 📝 9. AI 에이전트 문서 유지보수 규칙
+
+본 프로젝트의 관리 및 개발을 맡는 모든 AI 에이전트는 아래 규칙을 엄격하게 수행해야 합니다.
+
+1. **상시 동기화**: 소스코드, 데이터베이스 스펙, ROS 2 인터페이스 변경이 발생하면 관련 모든 마크다운 문서(`DATABASE_SCHEMA.md`, `ROBOT_AMR_INTEGRATION_GUIDE.md` 등)를 즉시 동시 수정해야 합니다.
+2. **이력 기록**: 작업 커밋 전 항상 `CHANGELOG.md` 문서 최상단에 수정 내역을 일자/시간별로 기록합니다.
+3. **경고 헤더 표준화**: 모든 마크다운 파일 최상단에는 반드시 아래 경고 안내문구가 포함되어 있어야 합니다.
+   ```markdown
+   > [!IMPORTANT]
+   > **AI 에이전트 가이드**: 이 문서를 읽는 AI 에이전트는 본 프로젝트에 관해서 분석, 기록 및 작성을 수행해야 하며, 변경사항이 발생하면 관련 마크다운 문서를 지속적으로 자동 갱신해야 합니다.
+   ```
