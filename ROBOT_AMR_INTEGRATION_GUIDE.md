@@ -48,7 +48,7 @@ string workstation_id       # 제어 대상 작업대 고유 ID (예: "WS01" ~ "
 string start_location       # 출발지 논리 위치 (예: "spot_01", "sg2_in_01_A")
 string target_location      # 도착지 논리 위치 (예: "sg2_out_00_A", "spot_02")
 string workstation_qr_id    # 작업대 물리 QR코드 식별자 (예: "WORKSTATION_WS01")
-string target_qr_id         # 목적지 바닥 격자 QR ID (예: "FLOOR_X_-10.775_Y_-9.525")
+string target_qr_id         # 목적지 바닥 격자 QR ID (예: "FLOOR_X_1.5_Y_3.0")
 float64 target_x            # 목적지 2D 물리 X 좌표 (meters)
 float64 target_y            # 목적지 2D 물리 Y 좌표 (meters)
 float64 target_yaw          # 목적지 2D 물리 회전각 (radians)
@@ -178,8 +178,8 @@ AMR의 고주파 주행 정보는 네트워크 대역폭과 DB 부하 절감을 
 | 필드명 (Field) | 데이터 타입 (Type) | 예시 값 (Example) | 설명 (Description) |
 | :--- | :--- | :--- | :--- |
 | `state` | `String` | `"MOVING"` | 현재 동작 상태 (`IDLE`, `MOVING`, `CHARGING`, `ERROR`) |
-| `current_qr_id` | `String` | `"FLOOR_X_-25.775_Y_-11.025"` | 현재 로봇 하부 센서가 인식 중인 바닥 QR ID |
-| `target_qr_id` | `String` | `"FLOOR_X_-10.775_Y_-9.525"` | 목표 목적지 바닥 QR ID |
+| `current_qr_id` | `String` | `"FLOOR_X_6.0_Y_1.5"` | 현재 로봇 하부 센서가 인식 중인 바닥 QR ID |
+| `target_qr_id` | `String` | `"FLOOR_X_1.5_Y_3.0"` | 목표 목적지 바닥 QR ID |
 | `carrying_workstation_id` | `String` | `"WS01"` | 리프트하고 있는 작업대 ID (없을 시 빈 문자열 `""`) |
 | `battery` | `String (Float)` | `"82.5"` | 배터리 잔량 백분율 (0.0 ~ 100.0) |
 
@@ -233,7 +233,7 @@ void publish_amr_status(const std::string& amr_id, double x, double y, double ba
 {
   "AMR_01": {
     "state": "IDLE",
-    "current_qr_id": "FLOOR_X_-25.775_Y_-11.025",
+    "current_qr_id": "FLOOR_X_6.0_Y_1.5",
     "target_qr_id": "",
     "carrying_workstation_id": null,
     "battery": 82.5,
