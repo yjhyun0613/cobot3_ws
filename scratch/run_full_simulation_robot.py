@@ -25,11 +25,11 @@ from scratch.qr_handler import generate_qr_code, decode_qr_code
 # ==========================================
 # 🗺️ 그리드 및 2D 맵 변환 유틸리티
 # ==========================================
-GRID_W = 49
-GRID_H = 37
+GRID_W = 9
+GRID_H = 13
 GRID_SPACING = 1.5
-X_ORIGIN = -34.775
-Y_ORIGIN = -29.025
+X_ORIGIN = -3.0
+Y_ORIGIN = -9.0
 
 GridCell = Tuple[int, int]
 TimedCell = Tuple[int, int, int]
@@ -574,6 +574,7 @@ class MockFullRobotNode(Node):
 
         try:
             with self.pg_conn.cursor() as cursor:
+                # 1) 주차된 워크스테이션을 장애물로 등록
                 cursor.execute("SELECT workstation_id, current_location FROM workstations;")
                 rows = cursor.fetchall()
                 for ws_id, loc in rows:
@@ -587,6 +588,12 @@ class MockFullRobotNode(Node):
                     row = cursor.fetchone()
                     if row:
                         obstacles.add(world_to_cell(row[0], row[1]))
+
+                # 2) DB에 등록된 정적 장애물 구역(SG2 로봇 및 컨베이어 구역 등)을 장애물로 등록
+                cursor.execute("SELECT x_coord, y_coord FROM floor_qr_map WHERE location_type = 'STATIC_OBSTACLE';")
+                rows = cursor.fetchall()
+                for row in rows:
+                    obstacles.add(world_to_cell(row[0], row[1]))
         except Exception as e:
             self.get_logger().error(f"Error fetching static obstacles from DB: {e}")
         return obstacles

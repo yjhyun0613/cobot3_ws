@@ -500,7 +500,7 @@ class ControlTowerNode(Node):
             goal_msg.package_qr_id = task.get('package_qr_id', '')
 
             self.get_logger().info(f'AMR에게 단일 택배({goal_msg.package_id}, QR: {goal_msg.package_qr_id}) 창고 직송 액션 전송 중...')
-            if not self.move_package_action_client.wait_for_server(timeout_sec=1.0):
+            if not self.move_package_action_client.wait_for_server(timeout_sec=5.0):
                 self.get_logger().error('AMR Action Server (move_package) is NOT available! Skipping DIRECT_WAREHOUSE.')
                 self.publish_task_event(
                     task_id=task_id,
@@ -927,7 +927,7 @@ class ControlTowerNode(Node):
             f'  - 출발지: {actual_start} [{start_coords_str}]\n'
             f'  - 목적지: {actual_target} [{target_coords_str}]'
         )
-        if not self.manage_workstation_action_client.wait_for_server(timeout_sec=1.0):
+        if not self.manage_workstation_action_client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error(f'AMR Action Server (manage_workstation) is NOT available! Skipping move for {workstation_id}.')
             self.publish_task_event(
                 task_id=task_id,
@@ -1107,7 +1107,7 @@ class ControlTowerNode(Node):
         goal_msg.workstation_qr_id = workstation_qr_id
 
         self.get_logger().info(f'포장 로봇 sg2_out_00에게 {workstation_id}(QR: {workstation_qr_id}) 포장 시작 명령 전송...')
-        if not self.start_packaging_action_client.wait_for_server(timeout_sec=1.0):
+        if not self.start_packaging_action_client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error('Packaging Action Server (start_packaging) is NOT available! Skipping packaging process.')
             with self.get_db_connection() as conn:
                 if conn:

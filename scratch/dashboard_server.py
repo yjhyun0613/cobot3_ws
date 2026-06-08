@@ -1853,8 +1853,8 @@ def index():
         /* 경량 바둑판 맵: CSS 배경 패턴 + 데이터 있는 위치만 absolute div */
         .grid-map-container {
             position: relative;
-            width: 600px;
-            height: 1080px;
+            width: 272px;
+            height: 392px;
             border: 2px solid rgba(255, 255, 255, 0.12);
             background-color: rgba(10, 15, 30, 0.9);
             background-image:
@@ -1887,10 +1887,13 @@ def index():
             transition: all 0.3s ease;
             z-index: 2;
         }
-        .grid-loc.spot     { border: 1.5px solid rgba(59, 130, 246, 0.6); background: rgba(59, 130, 246, 0.15); }
-        .grid-loc.stage    { border: 1.5px solid rgba(245, 158, 11, 0.6); background: rgba(245, 158, 11, 0.15); }
-        .grid-loc.charging { border: 1.5px solid rgba(168, 85, 247, 0.6); background: rgba(168, 85, 247, 0.15); }
-        .grid-loc.conveyor { border: 1.5px solid rgba(16, 185, 129, 0.6); background: rgba(16, 185, 129, 0.15); }
+        .grid-loc.spot      { border: 1.5px solid rgba(59, 130, 246, 0.6); background: rgba(59, 130, 246, 0.15); }
+        .grid-loc.stage     { border: 1.5px solid rgba(245, 158, 11, 0.6); background: rgba(245, 158, 11, 0.15); }
+        .grid-loc.charging  { border: 1.5px solid rgba(168, 85, 247, 0.6); background: rgba(168, 85, 247, 0.15); }
+        .grid-loc.conveyor  { border: 1.5px solid rgba(16, 185, 129, 0.6); background: rgba(16, 185, 129, 0.15); }
+        .grid-loc.conveyor-belt { border: 1.5px solid rgba(6, 182, 212, 0.7); background: rgba(6, 182, 212, 0.15); color: #cffafe; }
+        .grid-loc.packaging { border: 1.5px solid rgba(236, 72, 153, 0.75); background: rgba(236, 72, 153, 0.18); color: #fbcfe8; }
+        .grid-loc.sg2-robot { border: 1.5px solid rgba(239, 68, 68, 0.7); background: rgba(239, 68, 68, 0.18); color: #fca5a5; }
         .grid-loc.has-ws {
             background: #1e1b4b;
             border: 2px solid #eab308;
@@ -2015,7 +2018,7 @@ def index():
         <div class="dashboard-grid">
             <!-- Left: Warehouse Parking spots -->
             <div class="panel-card">
-                <h2>Warehouse Parking Spots (12 Slots) <span style="font-size: 0.8rem; color: rgba(0, 242, 254, 0.7); font-weight: normal; margin-left: 10px;">spot_01 ~ spot_12 (보관 영역)</span></h2>
+                <h2>Warehouse Parking Spots (10 Slots) <span style="font-size: 0.8rem; color: rgba(0, 242, 254, 0.7); font-weight: normal; margin-left: 10px;">spot_01 ~ spot_10 (보관 영역)</span></h2>
                 <div class="spots-container" id="spots-list">
                     <!-- Dynamic spots go here -->
                 </div>
@@ -2023,7 +2026,7 @@ def index():
 
             <!-- Left 2: Outbound Staging spots -->
             <div class="panel-card">
-                <h2>Outbound Staging Spots (6 Slots) <span style="font-size: 0.8rem; color: rgba(245, 158, 11, 0.7); font-weight: normal; margin-left: 10px;">stage_01 ~ stage_06 (출고 대기 영역)</span></h2>
+                <h2>Outbound Staging Spots (4 Slots) <span style="font-size: 0.8rem; color: rgba(245, 158, 11, 0.7); font-weight: normal; margin-left: 10px;">stage_01 ~ stage_04 (출고 대기 영역)</span></h2>
                 <div class="spots-container" id="staging-list">
                     <!-- Dynamic staging spots go here -->
                 </div>
@@ -2094,8 +2097,8 @@ def index():
         let locCellMap = {};     // location_name 또는 qr_id -> DOM element 매핑
 
         // 좌표 -> 픽셀 변환 상수 (20col * 30px = 600px, 36row * 30px = 1080px)
-        const X_MIN = -28.775;
-        const Y_MAX = 24.975;
+        const X_MIN = -3.0;
+        const Y_MAX = 9.0;
         const GRID_STEP = 1.5;
         const CELL_PX = 30; // 1칸 = 30px (28px 크기 + 2px 마진 간격 효과)
 
@@ -2109,7 +2112,7 @@ def index():
             return row * CELL_PX + 1; // 테두리 간격 보정
         }
 
-        // 1회 초기화: 특수 위치(named locations)만 absolute div로 생성 (~31개)
+        // 1회 초기화: 특수 위치(named locations) 및 정적 장애물 div로 생성
         function initGridMap(gridCells) {
             if (gridInitialized) return;
             const container = document.getElementById('grid-map-panel');
@@ -2117,16 +2120,32 @@ def index():
             container.innerHTML = '';
 
             if (gridCells) {
-                const namedLocations = gridCells.filter(cell => cell.location_name);
-                namedLocations.forEach(cell => {
-                    const name = cell.location_name.toLowerCase();
+                // 합쳐질 보조 장애물 격자들은 중복 및 겹침을 방지하기 위해 렌더링 스킵
+                const skipCoords = [
+                    '7.5,3.0', '7.5,-1.5', '7.5,-6.0',
+                    '-1.5,9.0', '-3.0,7.5', '-1.5,7.5'
+                ];
+
+                const renderLocations = gridCells.filter(cell => {
+                    const coordKey = `${cell.x.toFixed(1)},${cell.y.toFixed(1)}`;
+                    if (skipCoords.includes(coordKey)) {
+                        return false;
+                    }
+                    return cell.location_name || cell.location_type === 'STATIC_OBSTACLE';
+                });
+
+                renderLocations.forEach(cell => {
+                    const name = (cell.location_name || '').toLowerCase();
                     const type = cell.location_type;
                     
                     const el = document.createElement('div');
-                    el.id = `loc-${name}`;
+                    el.id = cell.location_name ? `loc-${name}` : `loc-obs-${cell.x}-${cell.y}`;
                     el.className = 'grid-loc';
                     
                     let labelText = '';
+                    let customWidth = '28px';
+                    let customHeight = '28px';
+
                     if (name.startsWith('spot_')) {
                         el.classList.add('spot');
                         labelText = 'S' + name.replace('spot_', '');
@@ -2136,12 +2155,26 @@ def index():
                     } else if (name.startsWith('charging_')) {
                         el.classList.add('charging');
                         labelText = 'C' + name.replace('charging_', '');
-                    } else if (name.startsWith('sg2_in_') || name.startsWith('sg2_out_')) {
+                    } else if (name.startsWith('sg2_in_0')) {
                         el.classList.add('conveyor');
-                        if (name.startsWith('sg2_in_')) {
-                            labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','A').replace('_b','B').toUpperCase();
+                        labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','A').replace('_b','B').toUpperCase();
+                    } else if (name.startsWith('sg2_out_0')) {
+                        el.classList.add('packaging');
+                        labelText = 'SG2_OUT_' + name.replace('sg2_out_00_', '').toUpperCase();
+                    } else if (name === 'sg2_out') {
+                        el.classList.add('sg2-robot');
+                        labelText = 'SG2_OUT';
+                        customWidth = '56px';
+                        customHeight = '56px';
+                    } else if (name.startsWith('sg2_in_') && !name.startsWith('sg2_in_0')) {
+                        el.classList.add('sg2-robot');
+                        labelText = cell.location_name; // 'SG2_IN_1', 'SG2_IN_2', 'SG2_IN_3'
+                        customWidth = '56px';
+                    } else if (type === 'STATIC_OBSTACLE') {
+                        if (cell.location_name === 'CONVEYOR_BELT') {
+                            el.classList.add('conveyor-belt');
                         } else {
-                            labelText = 'O' + name.replace('sg2_out_0', '').replace('_a','A').replace('_b','B').toUpperCase();
+                            el.classList.add('sg2-robot');
                         }
                     }
 
@@ -2150,15 +2183,17 @@ def index():
                     // absolute positioning 설정
                     el.style.left = `${xToPx(cell.x)}px`;
                     el.style.top = `${yToPx(cell.y)}px`;
-                    el.style.width = '28px';
-                    el.style.height = '28px';
+                    el.style.width = customWidth;
+                    el.style.height = customHeight;
                     
-                    el.title = `${cell.location_name} (${type})\nQR: ${cell.qr_id}\nCoordinates: X=${cell.x.toFixed(3)}, Y=${cell.y.toFixed(3)}`;
+                    el.title = `${cell.location_name || 'Obstacle'} (${type})\nQR: ${cell.qr_id}\nCoordinates: X=${cell.x.toFixed(3)}, Y=${cell.y.toFixed(3)}`;
                     
                     container.appendChild(el);
                     
                     // 매핑 테이블 등록
-                    locCellMap[name] = el;
+                    if (cell.location_name) {
+                        locCellMap[name] = el;
+                    }
                     locCellMap[cell.qr_id] = el;
                 });
             }
@@ -2188,10 +2223,14 @@ def index():
                         labelText = 'ST' + name.replace('stage_', '');
                     } else if (name.startsWith('charging_')) {
                         labelText = 'C' + name.replace('charging_', '');
-                    } else if (name.startsWith('sg2_in_')) {
+                    } else if (name.startsWith('sg2_in_0')) {
                         labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','A').replace('_b','B').toUpperCase();
-                    } else if (name.startsWith('sg2_out_')) {
-                        labelText = 'O' + name.replace('sg2_out_0', '').replace('_a','A').replace('_b','B').toUpperCase();
+                    } else if (name.startsWith('sg2_out_0')) {
+                        labelText = 'SG2_OUT_' + name.replace('sg2_out_00_', '').toUpperCase();
+                    } else if (name === 'sg2_out') {
+                        labelText = 'SG2_OUT';
+                    } else if (name.startsWith('sg2_in_') && !name.startsWith('sg2_in_0')) {
+                        labelText = name.toUpperCase();
                     }
                     el.textContent = labelText;
                 }

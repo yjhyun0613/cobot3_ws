@@ -32,7 +32,7 @@ import redis
 # ──────────────────────────────────────────────
 # 2. 기설정된 USD 맵 스테이지 로드
 # ──────────────────────────────────────────────
-USD_MAP_PATH = "/home/rokey/cobot3_ws/src/cobot3/resource/floor_with_con,storage.usd"
+USD_MAP_PATH = "/home/rokey/cobot3_ws/src/cobot3/resource/Small_map/World3.usd"
 
 usd_context = omni.usd.get_context()
 opened = usd_context.open_stage(USD_MAP_PATH)

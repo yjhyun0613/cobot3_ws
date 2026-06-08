@@ -6,7 +6,7 @@ from omni.isaac.kit import SimulationApp
 sim = SimulationApp({"headless": True})
 from pxr import Usd, UsdGeom, Gf
 
-stage = Usd.Stage.Open('/home/rokey/cobot3_ws/src/cobot3/resource/floor_with_con,storage.usd')
+stage = Usd.Stage.Open('/home/rokey/cobot3_ws/src/cobot3/resource/Small_map/World3.usd')
 
 results = []
 results.append("=== Top-level Prims (depth <=3) ===")

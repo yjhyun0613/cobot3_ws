@@ -17,12 +17,12 @@ def main():
     
     # DB에 존재하는 실제 물리적 격자 QR ID와 픽셀 매핑 스팟들의 매칭 리스트
     waypoints = [
-        {"qr_id": "FLOOR_X_-12.275_Y_23.475", "name": "charging_02 (충전소 2)"},
-        {"qr_id": "FLOOR_X_-10.775_Y_-9.525", "name": "spot_01 (창고 보관 spot_01)"},
-        {"qr_id": "FLOOR_X_-24.275_Y_-11.025", "name": "sg2_in_01_A (1번 입고라인 A구역)"},
-        {"qr_id": "FLOOR_X_-18.275_Y_-23.025", "name": "stage_01 (대기구역 stage_01)"},
-        {"qr_id": "FLOOR_X_-24.275_Y_-2.025", "name": "sg2_in_03_A (3번 입고라인 A구역)"},
-        {"qr_id": "FLOOR_X_-10.775_Y_-3.525", "name": "spot_05 (창고 보관 spot_05)"}
+        {"qr_id": "FLOOR_X_-3.0_Y_-7.5", "name": "charging_02 (충전소 2)"},
+        {"qr_id": "FLOOR_X_1.5_Y_3.0", "name": "spot_01 (창고 보관 spot_01)"},
+        {"qr_id": "FLOOR_X_7.5_Y_1.5", "name": "sg2_in_01_A (1번 입고라인 A구역)"},
+        {"qr_id": "FLOOR_X_4.5_Y_9.0", "name": "stage_01 (대기구역 stage_01)"},
+        {"qr_id": "FLOOR_X_7.5_Y_-7.5", "name": "sg2_in_03_A (3번 입고라인 A구역)"},
+        {"qr_id": "FLOOR_X_1.5_Y_-3.0", "name": "spot_05 (창고 보관 spot_05)"}
     ]
 
     print(f"\n{amr_id}가 대시보드 화면상의 유효 격자 스팟들을 순차적으로 순회합니다.")

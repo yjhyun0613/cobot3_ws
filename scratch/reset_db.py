@@ -35,7 +35,7 @@ def reset_database():
             print("1.3 warehouse_locations 테이블 비우기...")
             cursor.execute("TRUNCATE TABLE warehouse_locations CASCADE;")
             
-            # 10개 작업대 주차 및 2개 빈 스팟 설정
+            # 10개 작업대 주차 설정
             for i in range(1, 11):
                 ws_id = f"WS{i:02d}"
                 spot_id = f"spot_{i:02d}"
@@ -43,15 +43,9 @@ def reset_database():
                     "INSERT INTO warehouse_locations (spot_id, workstation_id, status) VALUES (%s, %s, 'OCCUPIED');",
                     (spot_id, ws_id)
                 )
-            for i in range(11, 13):
-                spot_id = f"spot_{i:02d}"
-                cursor.execute(
-                    "INSERT INTO warehouse_locations (spot_id, workstation_id, status) VALUES (%s, NULL, 'EMPTY');",
-                    (spot_id,)
-                )
                 
-            # 6개 출고대기 스팟 설정
-            for i in range(1, 7):
+            # 4개 출고대기 스팟 설정
+            for i in range(1, 5):
                 stage_id = f"stage_{i:02d}"
                 cursor.execute(
                     "INSERT INTO warehouse_locations (spot_id, workstation_id, status) VALUES (%s, NULL, 'EMPTY');",
@@ -74,10 +68,10 @@ def reset_database():
         sys.exit(1)
 
     # 3. 바닥 QR 격자 재생성
-    print("3.1 바닥 1,813개 QR 공간 맵 재생성 시작...")
+    print("3.1 바닥 169개 QR 공간 맵 재생성 시작...")
     import subprocess
     ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    qr_script = os.path.join(ws_root, "scratch", "generate_all_qr_codes.py")
+    qr_script = os.path.join(ws_root, "scratch", "update_20x20_grid_assets.py")
     try:
         result = subprocess.run(
             [sys.executable, qr_script],

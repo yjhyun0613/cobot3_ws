@@ -8,6 +8,11 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# 외부에서 ROS_LOCALHOST_ONLY를 설정하지 않았을 경우 기본값 1(로컬 전용) 사용
+if [ -z "$ROS_LOCALHOST_ONLY" ]; then
+    export ROS_LOCALHOST_ONLY=1
+fi
+
 echo -e "${BLUE}================================================================${NC}"
 echo -e "${BLUE}   🚀 쿠팡 물류창고 Multi-AMR 통합 관제 시뮬레이션 테스트 가동   ${NC}"
 echo -e "${BLUE}================================================================${NC}"
@@ -53,18 +58,18 @@ case $RUN_MODE in
             gnome-terminal --tab --title="FastAPI Dashboard" -- bash -c "python3 scratch/dashboard_server.py; exec bash"
             
             # ROS 2 관제 노드 실행
-            gnome-terminal --tab --title="ROS2 Control Tower" -- bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=1 && ros2 run cobot3 control_tower; exec bash"
+            gnome-terminal --tab --title="ROS2 Control Tower" -- bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY && ros2 run cobot3 control_tower; exec bash"
             
             # 로봇 시뮬레이터 실행
-            gnome-terminal --tab --title="Robot Simulation (A*)" -- bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=1 && python3 scratch/run_full_simulation_robot.py; exec bash"
+            gnome-terminal --tab --title="Robot Simulation (A*)" -- bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY && python3 scratch/run_full_simulation_robot.py; exec bash"
             
         elif command -v x-terminal-emulator >/dev/null 2>&1; then
             echo -e "${GREEN}x-terminal-emulator를 통해 실행합니다.${NC}"
             x-terminal-emulator -e bash -c "python3 scratch/dashboard_server.py" &
             sleep 0.5
-            x-terminal-emulator -e bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=1 && ros2 run cobot3 control_tower" &
+            x-terminal-emulator -e bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY && ros2 run cobot3 control_tower" &
             sleep 0.5
-            x-terminal-emulator -e bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=1 && python3 scratch/run_full_simulation_robot.py" &
+            x-terminal-emulator -e bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY && python3 scratch/run_full_simulation_robot.py" &
         else
             echo -e "${RED}새 터미널 창을 띄울 수 있는 도구(gnome-terminal 등)를 찾지 못했습니다.${NC}"
             echo -e "백그라운드 실행 모드로 전환합니다."
@@ -93,7 +98,7 @@ if [ "$RUN_MODE" = "2" ]; then
     echo "  - ROS 2 관제탑 노드 가동 중 (로그: log/control_tower.log)"
     source install/setup.bash
     export ROS_DOMAIN_ID=119
-    export ROS_LOCALHOST_ONLY=1
+    export ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY
     nohup ros2 run cobot3 control_tower > log/control_tower.log 2>&1 &
     sleep 1
     
@@ -114,13 +119,13 @@ if [ "$RUN_MODE" = "3" ] || [ -z "$RUN_MODE" ]; then
     echo -e "${BLUE}[터미널 2] ROS 2 관제탑(Control Tower) 구동${NC}"
     echo "  source install/setup.bash"
     echo "  export ROS_DOMAIN_ID=119"
-    echo "  export ROS_LOCALHOST_ONLY=1"
+    echo "  export ROS_LOCALHOST_ONLY=\$ROS_LOCALHOST_ONLY"
     echo "  ros2 run cobot3 control_tower"
     
     echo -e "${BLUE}[터미널 3] 5대 AMR 및 로봇 시뮬레이션 구동${NC}"
     echo "  source install/setup.bash"
     echo "  export ROS_DOMAIN_ID=119"
-    echo "  export ROS_LOCALHOST_ONLY=1"
+    echo "  export ROS_LOCALHOST_ONLY=\$ROS_LOCALHOST_ONLY"
     echo "  python3 scratch/run_full_simulation_robot.py"
 fi
 
