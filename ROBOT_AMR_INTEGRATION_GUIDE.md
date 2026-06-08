@@ -329,3 +329,29 @@ PC A의 파이썬 노드 및 커넥터 스크립트 실행 시 호스트 접속�
      * 3번 라인에는 창고의 새 빈 작업대가 자동 보충됩니다.
 3. **조기 포장 방지 (`system:inbound_started`)**:
    * 날짜 전환 직후 신규 당일 패키지 CSV가 올라와 적재가 개시되기 전까지는, 1번 라인으로 이월된 작업대가 바로 포장존으로 빠지지 않도록 제어합니다.
+
+---
+
+## 🛠️ 8. Isaac Sim 연동 시 프레임 병목 분석 및 성능 최적화 가이드 (Performance Optimization)
+다중 AMR을 Isaac Sim 물리 환경에서 구동할 때 발생할 수 있는 극심한 프레임 저하(2 FPS 이하)를 진단하고 해결하는 엔지니어링 가이드입니다.
+
+### 8.1 3대 핵심 성능 병목 요인
+1. **`/tf` 및 `/tf_static` 토픽 폭주**
+   * **원인**: 1,813개의 바닥 격자 QR코드 메쉬 등 씬 내부의 모든 정적 프림들의 물리적 위치가 `/tf` 채널을 통해 초당 수천 번 발행되어 DDS 네트워크가 마비됩니다.
+   * **해결**: Isaac Sim 내 OmniGraph에서 로봇 본체를 제외한 정적 마크들의 TF Publish 설정을 차단해야 합니다.
+2. **GPU-to-CPU 이미지 복사 (Readback) 지연**
+   * **원인**: 5대 AMR의 카메라 렌더링 픽셀 데이터를 GPU 메모리에서 CPU 메모리(NumPy)로 매 프레임 옮기는 연산 자체가 그래픽 버스 대역폭을 포화시킵니다.
+3. **단일 스레드 CPU 비전 디코딩 부하**
+   * **원인**: CPU로 가져온 이미지를 OpenCV 및 `zxingcpp` 라이브러리로 디코딩하는 작업이 멀티스레딩/GPU 가속 없이 단일 CPU 스레드를 점유하여 프레임이 중단됩니다.
+
+### 8.2 해결 방안 및 GPU 가속 아키텍처
+* **가장 신속한 조치 (무비전 트랜스폼 매핑)**:
+  * 실시간 비전 카메라 스캐닝을 생략하고, AMR 주행 좌표(Odometry)와 DB의 `floor_qr_map`을 트랜스폼 계산으로 매칭하는 **`QR_CAMERA_LOCALIZATION_ENABLED = False`** 옵션을 활성화하여 성능을 30 FPS 이상으로 보장합니다.
+* **GPU 텐서 직접 조회 (Zero-copy CUDA)**:
+  * Isaac Sim Replicator에서 픽셀 데이터를 뽑을 때, CPU용 NumPy 배열 대신 **GPU VRAM 내 PyTorch CUDA 텐서**를 직접 가져오도록 작성합니다.
+    ```python
+    # CPU 복사 오버헤드가 없는 GPU 다이렉트 텐서 수집
+    gpu_tensor = rep.annotators.get("rgb").get_data(device="cuda")
+    ```
+* **NVIDIA Isaac ROS AprilTag/QR 가속 노드 도입**:
+  * 욜로(YOLO) 모델을 직접 학습시킬 필요 없이, 사전 준비된 **NVIDIA Isaac ROS 가속 노드**를 활용하여 GPU 내부에서 직접 QR/AprilTag 코드를 100+ FPS 속도로 초고속 디코딩합니다.
