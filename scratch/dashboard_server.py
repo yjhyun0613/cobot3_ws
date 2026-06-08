@@ -3,7 +3,63 @@ import os
 import psycopg2
 import redis
 import json
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+import uvicorn
+import csv
+import io
+from datetime import datetime, timedelta
+import asyncio
+from typing import List
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_json(message)
+            except Exception:
+                self.disconnect(connection)
+
+manager = ConnectionManager(), WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+import uvicorn
+import csv
+import io
+from datetime import datetime, timedelta
+import asyncio
+from typing import List
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_json(message)
+            except Exception:
+                self.disconnect(connection)
+
+manager = ConnectionManager()
 from fastapi.responses import HTMLResponse
 import uvicorn
 import csv
@@ -84,6 +140,35 @@ def push_priority_task(redis_client, task_dict):
                 redis_client.delete('queue:amr_tasks')
                 redis_client.zadd('queue:amr_tasks', {json.dumps(task_dict): score})
 
+
+async def status_broadcast_loop():
+    while True:
+        if manager.active_connections:
+            try:
+                loop = asyncio.get_event_loop()
+                status_data = await loop.run_in_executor(None, get_status)
+                await manager.broadcast(status_data)
+            except Exception as e:
+                print(f"Broadcast loop error: {e}")
+        await asyncio.sleep(0.5)
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(status_broadcast_loop())
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        loop = asyncio.get_event_loop()
+        status_data = await loop.run_in_executor(None, get_status)
+        await websocket.send_json(status_data)
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception:
+        manager.disconnect(websocket)
 
 @app.get("/api/status")
 def get_status():
@@ -2354,57 +2439,54 @@ def index():
         }
 
         // 3. 상태 실시간 페치 루프
-        async function fetchStatus() {
-            try {
-                const response = await fetch('/api/status');
-                if (!response.ok) return;
-                const data = await response.json();
+        // 3. 상태 실시간 페치 및 UI 업데이트 루프
+        function updateUI(data) {
+            // Update global data for map canvas
+            locationsData = data.locations;
+            workstationsData = data.workstations;
 
-                // Update global data for map canvas
-                locationsData = data.locations;
-                workstationsData = data.workstations;
+            // Update the 2D floor plan
+            updateFloorPlan(data);
 
-                // Update the 2D floor plan
-                updateFloorPlan(data);
-
-                // Update day transition banner visibility
-                const banner = document.getElementById('day-transition-banner');
-                if (banner) {
-                    if (data.day_status === 'PENDING_TRANSITION') {
-                        banner.style.display = 'flex';
-                        const badge = document.getElementById('completed-day-badge');
-                        if (badge) badge.innerText = data.completed_day || '—';
-                    } else {
-                        banner.style.display = 'none';
-                    }
+            // Update day transition banner visibility
+            const banner = document.getElementById('day-transition-banner');
+            if (banner) {
+                if (data.day_status === 'PENDING_TRANSITION') {
+                    banner.style.display = 'flex';
+                    const badge = document.getElementById('completed-day-badge');
+                    if (badge) badge.innerText = data.completed_day || '—';
+                } else {
+                    banner.style.display = 'none';
                 }
+            }
 
-                // 3-1. Render Warehouse spots & Staging spots
-                const spotsContainer = document.getElementById('spots-list');
-                const stagingContainer = document.getElementById('staging-list');
+            // 3-1. Render Warehouse spots & Staging spots
+            const spotsContainer = document.getElementById('spots-list');
+            const stagingContainer = document.getElementById('staging-list');
+            
+            if (spotsContainer) spotsContainer.innerHTML = '';
+            if (stagingContainer) stagingContainer.innerHTML = '';
+            
+            data.spots.forEach(spot => {
+                const isOccupied = spot.status === 'OCCUPIED';
+                const item = document.createElement('div');
+                item.className = `spot-item ${isOccupied ? 'occupied' : 'empty'}`;
+                item.innerHTML = `
+                    <div class="spot-id">${spot.spot_id.toUpperCase()}</div>
+                    <div class="spot-ws">${spot.workstation_id || '—'}</div>
+                    <div class="spot-status-badge">${isOccupied ? 'OCCUPIED' : 'EMPTY'}</div>
+                `;
                 
-                if (spotsContainer) spotsContainer.innerHTML = '';
-                if (stagingContainer) stagingContainer.innerHTML = '';
-                
-                data.spots.forEach(spot => {
-                    const isOccupied = spot.status === 'OCCUPIED';
-                    const item = document.createElement('div');
-                    item.className = `spot-item ${isOccupied ? 'occupied' : 'empty'}`;
-                    item.innerHTML = `
-                        <div class="spot-id">${spot.spot_id.toUpperCase()}</div>
-                        <div class="spot-ws">${spot.workstation_id || '—'}</div>
-                        <div class="spot-status-badge">${isOccupied ? 'OCCUPIED' : 'EMPTY'}</div>
-                    `;
-                    
-                    if (spot.spot_id.startsWith('spot_')) {
-                        if (spotsContainer) spotsContainer.appendChild(item);
-                    } else if (spot.spot_id.startsWith('stage_')) {
-                        if (stagingContainer) stagingContainer.appendChild(item);
-                    }
-                });
+                if (spot.spot_id.startsWith('spot_')) {
+                    if (spotsContainer) spotsContainer.appendChild(item);
+                } else if (spot.spot_id.startsWith('stage_')) {
+                    if (stagingContainer) stagingContainer.appendChild(item);
+                }
+            });
 
-                // 3-2. Render Workstations
-                const wsContainer = document.getElementById('ws-list');
+            // 3-2. Render Workstations
+            const wsContainer = document.getElementById('ws-list');
+            if (wsContainer) {
                 wsContainer.innerHTML = '';
                 data.workstations.forEach(ws => {
                     const isMoving = ws.current_location.startsWith('MOVING_');
@@ -2433,10 +2515,12 @@ def index():
                     `;
                     wsContainer.appendChild(card);
                 });
+            }
 
-                // 3-3. Render Redis tasks queue
-                const tasksContainer = document.getElementById('tasks-list');
-                const redisCountEl = document.getElementById('redis-count');
+            // 3-3. Render Redis tasks queue
+            const tasksContainer = document.getElementById('tasks-list');
+            const redisCountEl = document.getElementById('redis-count');
+            if (tasksContainer && redisCountEl) {
                 tasksContainer.innerHTML = '';
                 
                 const count = data.redis_tasks.length;
@@ -2485,9 +2569,11 @@ def index():
                         tasksContainer.appendChild(item);
                     });
                 }
+            }
 
-                // 3-4. Render Packages table
-                const tbody = document.getElementById('package-tbody');
+            // 3-4. Render Packages table
+            const tbody = document.getElementById('package-tbody');
+            if (tbody) {
                 tbody.innerHTML = '';
                 data.packages.forEach(pkg => {
                     const row = document.createElement('tr');
@@ -2505,15 +2591,55 @@ def index():
                     `;
                     tbody.appendChild(row);
                 });
+            }
+        }
 
+        async function fetchStatus() {
+            try {
+                const response = await fetch('/api/status');
+                if (!response.ok) return;
+                const data = await response.json();
+                updateUI(data);
             } catch (err) {
                 console.error("Fetch status error:", err);
             }
         }
 
-        // 최초 실행 및 1초 주기로 실시간 페치 진행
-        fetchStatus();
-        setInterval(fetchStatus, 1000);
+        // WebSocket 연결 관리 (C-to-C 분산 환경을 위한 동적 호스트 바인딩)
+        let ws;
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            
+            console.log(`Connecting to WebSocket: ${wsUrl}`);
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = function() {
+                showToast("⚡ 실시간 WebSocket 관제 연결 완료");
+            };
+
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    updateUI(data);
+                } catch (err) {
+                    console.error("WebSocket message parse error:", err);
+                }
+            };
+
+            ws.onclose = function(e) {
+                console.warn("WebSocket closed. Attempting reconnect in 3s...", e.reason);
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = function(err) {
+                console.error("WebSocket error:", err);
+                ws.close();
+            };
+        }
+
+        // 웹소켓 연결 시작
+        connectWebSocket();
     </script>
 </body>
 </html>

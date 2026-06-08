@@ -355,19 +355,21 @@ PostgreSQL에 다음과 같은 공간 격자 맵 정보 관리 테이블을 정�
 
 ---
 
-## 🚀 11. 향후 개선 및 확장 제안 (Future Improvements & Extensions) - [대기]
+## 🚀 11. 향후 개선 및 확장 제안 (Future Improvements & Extensions) - [진행 중]
 
 시스템의 안정성, 성능 및 확장성을 한 단계 더 끌어올리기 위해 도입을 고려해볼 수 있는 추가 개선 항목들입니다.
 
-### 11.1 DB 커넥션 풀 (Connection Pool) 도입
-* **현재 구성**: `control_tower_node_00.py` 내 단일 DB 커넥션을 다중 스레드 콜백이 `threading.RLock()`으로 동기화하여 사용 중.
-* **한계**: 로봇 통신 및 스케줄링 주기가 극도로 짧아지거나 로봇 대수가 늘어날 때 락 경합(Lock Contention)에 의해 ROS2 콜백이 지연되는 병목이 발생할 수 있음.
-* **개선 방향**: `psycopg2.pool.ThreadedConnectionPool`을 도입하여 각 스레드가 필요할 때 풀에서 독립적인 커넥션을 획득하여 SQL 쿼리를 수행하게 함으로써 병목 해소 및 DB 동시 처리 능력 개선.
+### 11.1 DB 커넥션 풀 (Connection Pool) 도입 - [완료]
+* **적용 완료**: 2026년 6월 8일 구현 완료.
+* **현재 구성**: `control_tower_node.py` 내에 `psycopg2.pool.ThreadedConnectionPool`을 도입하여 각 스레드가 필요할 때 풀에서 독립적인 커넥션을 획득하여 SQL 쿼리를 수행하게 함으로써 병목 해소 및 DB 동시 처리 능력 개선.
+* **해결 방안**: `@contextmanager` 데코레이터를 이용한 `get_db_connection()` 컨텍스트 매니저를 구현하여 쿼리 연산 완료 후 자동으로 커넥션이 풀에 반환되도록 조치함.
 
-### 11.2 실시간 양방향 모니터링을 위한 WebSockets 전환
-* **현재 구성**: FastAPI 대시보드가 1초 주기 HTTP GET API Polling 방식으로 데이터를 요청함.
-* **한계**: 브라우저와 서버 양측의 HTTP 오버헤드가 발생하며, 데이터 변화가 없는 경우에도 지속적으로 트래픽이 유발됨.
-* **개선 방향**: FastAPI의 WebSocket 모듈을 활용하여 `/fleet/*` 토픽 등 데이터 변경 이벤트 발생 시 브라우저로 실시간 Push 해주는 Event-driven 방식으로 개선하여 응답 속도를 높이고 트래픽 최적화.
+### 11.2 실시간 양방향 모니터링을 위한 WebSockets 전환 - [완료]
+* **적용 완료**: 2026년 6월 8일 구현 완료.
+* **구현 요약**:
+  - **백엔드**: FastAPI에서 `ConnectionManager` 클래스 및 `/ws` WebSocket 라우트를 정의하고, 백그라운드 async 태스크 `status_broadcast_loop`를 기동하여 활성 세션에 0.5초 주기로 DB/Redis 상태 snapshot을 Broadcast하도록 구현하였습니다. 동기 DB/Redis IO 병목 방지를 위해 `loop.run_in_executor`를 활용하였습니다.
+  - **프론트엔드**: 브라우저의 HTTP 1Hz Polling 루프를 삭제하고, `connectWebSocket()`을 통해 동적으로 `window.location.host`에 연결해 실시간 상태 패킷을 즉시 UI 렌더러(`updateUI`)에 피딩하도록 연동하였습니다. 3초 주기 자동 재연결(Reconnect) 기능을 탑재해 네트워크 일시 유실 상황에 견고하게 대응합니다.
+  - **검증**: C-to-C 분산 환경 하에서 모니터링 브라우저가 기동 시 실시간 웹소켓 핸드셰이크를 성공하고 `⚡ 실시간 WebSocket 관제 연결 완료` 토스트 알림을 정상 출력하는 것을 뷰 검증 완료했습니다.
 
 ### 11.3 배터리 잔량 기반 AMR 스케줄링 고도화 (Battery-aware Dispatching)
 * **현재 구성**: `/fleet/amr_states` 토픽으로 배터리 정보를 발행하고 있으나, Redis 큐에서 작업을 분배할 때 배터리 상태는 반영되지 않음.
@@ -452,19 +454,109 @@ export ROS_LOCALHOST_ONLY=0
 ### 13.5 NVIDIA Isaac Sim 3D 시뮬레이터 연동 및 실시간 3D 뷰 가이드
 실제 NVIDIA Isaac Sim 3D 물리 환경 상에서 5대의 AMR 로봇 및 10대의 작업대(Rack)의 물리적 움직임을 실시간으로 렌더링하고 시각화할 수 있는 통합 커넥터 시스템이 구축되었습니다.
 
-* **연동 스크립트**: [scratch/isaac_amr_connector.py](file:///home/rokey/cobot3_ws/scratch/isaac_amr_connector.py)
+* **통합 연동 스크립트**: [scratch/isaac_amr_connector.py](file:///home/rokey/cobot3_ws/scratch/isaac_amr_connector.py) (AMR + 작업대 동시 동기화, PostgreSQL & Redis 사용)
+* **AMR 전용 연동 스크립트**: [scratch/isaac_only_amr_connector.py](file:///home/rokey/cobot3_ws/scratch/isaac_only_amr_connector.py) (AMR 단독 동기화, Redis만 사용)
 * **사용 맵 파일**: `src/cobot3/resource/floor_with_con,storage.usd`
   * 바닥 QR 격자(1,813개), 입고 컨베이어(`IN_conveyor`), 출고 컨베이어(`OUT_conveyor`), 메인 스토리지(`MAIN_storage`), 출고 스토리지(`OUT_storage`), 작업대 선반(`custom_rack`) 등이 **이미 사전 세팅**되어 있는 완성된 3D 창고 맵입니다.
 * **작동 메커니즘**:
   1. `isaacsim.SimulationApp`을 3D GUI 모드로 가동하여 위 맵 스테이지를 로드합니다.
-  2. PostgreSQL `floor_qr_map` 테이블에서 위치 좌표 정보를 로드하여 물리적 좌표 체계를 동적으로 구성합니다.
-  3. 기존 맵 위에 5대의 AMR 모델(Cyan색 실린더, `/World/AMRs/`)과 10대의 이동식 작업대 모델(Orange색 큐브, `/World/Workstations/`)을 동적으로 추가 생성합니다.
-  4. 매 프레임(30Hz)마다 Redis에서 각 AMR의 실시간 `(x, y)` 좌표와 작업대 리프팅 상태(`carrying_workstation`)를, PostgreSQL에서 작업대 주차 위치(`current_location`)를 읽어 3D 공간에서 텔레포트 이동시킵니다.
-  5. 10초마다 AMR 활성 대수 및 이송 중 작업대 수를 콘솔에 요약 출력합니다.
+  2. (통합형만 해당) PostgreSQL `floor_qr_map` 테이블에서 위치 좌표 정보를 로드하여 물리적 좌표 체계를 동적으로 구성합니다.
+  3. 기존 맵 위에 5대의 AMR 모델(Cyan색 실린더, `/World/AMRs/`)을 동적으로 추가 생성합니다. (통합형의 경우 10대의 이동식 작업대 모델인 Orange색 큐브도 생성)
+  4. 매 프레임(30Hz)마다 Redis에서 각 AMR의 실시간 `(x, y)` 좌표를 읽어 3D 공간에서 텔레포트 이동시킵니다. (AMR 전용 연동의 경우 QR ID 문자열 파싱 방식을 채택하여 DB 쿼리 오버헤드가 전혀 없으며, 통합형의 경우 추가로 PostgreSQL에서 작업대 위치도 함께 동기화)
+  5. 10초마다 동기화 상태 요약을 콘솔에 출력합니다.
 
 * **실행 방법** (`isaac-python` alias 사용):
+  * **통합 연동 실행 (AMR + 작업대)**:
+    ```bash
+    isaac-python scratch/isaac_amr_connector.py
+    ```
+  * **AMR 전용 연동 실행 (가벼운 Redis 단독 구독)**:
+    ```bash
+    isaac-python scratch/isaac_only_amr_connector.py
+    ```
+
+---
+
+## 🖥️ 14. Isaac Sim 네이티브 ROS2 / 소켓 하이브리드 연동 및 2대 분산 가동 가이드 - [완료]
+
+> [!NOTE]
+> **적용 완료**: 2026년 6월 8일 설계 완료. 
+> - 기존 Python API를 활용한 강제 3D 텔레포트 방식의 한계를 보완하고, Isaac Sim 내에 이미 준비된 3D 월드 및 로봇 물리 모델을 안전하게 제어하기 위해 ROS2 Action 및 TCP 소켓 하이브리드 브릿지 통신 모델을 수립하였습니다.
+> - 고성능 시뮬레이션 환경 유지를 위해 2대의 PC로 분산 처리하여 가동할 수 있는 네트워크 인프라 가이드를 함께 완성하였습니다.
+
+### 14.1 시스템 구성 및 아키텍처 개요
+Isaac Sim의 풍부한 물리 모델을 완전히 사용하면서 제어 오버헤드를 줄이기 위해 **제어 채널(DDS Action)**과 **토픽 피드백 채널(TCP Socket)**을 하이브리드 형태로 구성합니다.
+
+```
+[PC B (관제 및 DB)]                                  [PC A (시뮬레이터)]
+┌────────────────────────┐                          ┌────────────────────────┐
+│  • Control Tower Node  │ ◄─── (ROS2 Action) ────► │  • AMR Control Node    │
+│  • PostgreSQL & Redis  │                          │  • Socket-ROS2 Bridge  │
+│  • FastAPI Dashboard   │                          └───────────┬────────────┘
+└────────────────────────┘                                      │ (TCP Socket)
+                                                                ▼
+                                                    ┌────────────────────────┐
+                                                    │  • Isaac Sim Physics   │
+                                                    │  • Robot 3D Model      │
+                                                    └────────────────────────┘
+```
+
+* **제어 평면 (Control Plane - ROS2 Action)**:
+  * 관제탑 노드(PC B)와 AMR 제어 노드(PC A)는 네이티브 ROS2 환경을 공유합니다.
+  * 관제탑이 `ManageWorkstation` 또는 `MovePackage` 액션 골(Goal)을 던지면, PC A의 AMR 제어 노드가 이를 수신해 경로를 생성하고 주행을 수행합니다.
+* **상태/피드백 평면 (Data Plane - TCP Socket)**:
+  * 실시간 위치(`/odom`, `/tf`) 및 속도 명령(`/cmd_vel`) 같은 주기가 짧은 토픽들은 ROS Bridge의 DDS 오버헤드를 방지하기 위해 가벼운 **TCP 소켓 서버/클라이언트(JSON 포맷)**로 중계합니다.
+  * PC A에 떠 있는 `socket_ros2_bridge` 노드가 이 TCP 패킷을 ROS2 표준 토픽으로 번역해 AMR 제어 노드에 전달합니다.
+
+### 14.2 분산 환경(2대 PC) 구성 가이드
+시뮬레이터와 관제탑을 네트워크로 엮어 2대의 PC에서 안정적으로 구동하는 세부 지침입니다.
+
+#### ① 물리 네트워크 및 ROS2 DDS 설정
+* **네트워크**: 두 PC를 동일 기가비트 공유기에 연결하거나 Thunderbolt C-to-C 케이블로 직접 연결합니다.
+  * PC A (시뮬레이터) IP: `192.168.100.10`
+  * PC B (관제/DB) IP: `192.168.100.20`
+* **DDS 멀티머신 설정** (양쪽 PC 모두 `~/.bashrc`에 적용):
   ```bash
-  # 데이터베이스, 관제탑, 로봇 시뮬레이터가 구동 중인 상태에서 별도 터미널에서 실행
-  isaac-python scratch/isaac_amr_connector.py
+  export ROS_DOMAIN_ID=119
+  export ROS_LOCALHOST_ONLY=0  # 외부 기기와의 통신을 위해 반드시 0으로 설정
   ```
+
+#### ② PC A의 연결 코드 수정 (DB 호스트 변경)
+PC A의 AMR 제어 노드가 PC B의 데이터베이스와 Redis에 접근할 수 있도록 연결 설정의 호스트를 PC B의 IP 주소로 수정합니다.
+* **PostgreSQL 연결**: `host="192.168.100.20"` (PC B의 IP)
+* **Redis 연결**: `host="192.168.100.20"`, `port=6379`
+
+#### ③ PC B의 DB 외부 접근 개방
+* **PostgreSQL (`postgresql.conf`, `pg_hba.conf`)**: `listen_addresses = '*'`로 설정하고 PC A IP 대역의 md5 접속을 허용합니다.
+* **Redis (`redis.conf`)**: `bind 0.0.0.0`으로 호스트 포트를 외부로 개방합니다.
+
+### 14.3 구동 및 실행 프로세스
+순서에 맞춰 각 터미널에서 서비스를 차례대로 구동합니다.
+
+#### 1단계: PC B (관제 및 DB 머신) 구동
+1. **DB 가동**:
+   ```bash
+   cd ~/cobot3_ws/docker && sudo docker compose up -d
+   ```
+2. **FastAPI 대시보드 실행**:
+   ```bash
+   python3 scratch/dashboard_server.py
+   ```
+3. **관제탑 노드(Control Tower) 실행**:
+   ```bash
+   source install/setup.bash && ros2 run cobot3 control_tower
+   ```
+
+#### 2단계: PC A (시뮬레이터 머신) 구동
+1. **Isaac Sim 구동**: 로봇 모델이 탑재된 USD 스테이지를 로드하고 내부 소켓 스크립트를 활성화한 뒤 Play 버튼을 클릭합니다.
+2. **소켓-ROS2 브릿지 노드 실행**:
+   ```bash
+   source install/setup.bash && ros2 run cobot3 socket_ros2_bridge
+   ```
+3. **AMR 제어 노드 실행**:
+   ```bash
+   source install/setup.bash && ros2 run cobot3 amr_controller_node
+   ```
+
+
 

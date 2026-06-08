@@ -324,7 +324,21 @@
   - **`scratch/isaac_amr_connector.py` 신규 생성**: Isaac Sim 3D 환경(`floor_with_con,storage.usd` 맵)과 관제 시스템(Redis/PostgreSQL)을 실시간으로 브리지하는 커넥터 스크립트.
   - **사용 맵**: `src/cobot3/resource/floor_with_con,storage.usd` (바닥 QR 격자, 입출고 컨베이어, 메인/출고 스토리지, 작업대 선반 기설치 완료).
   - **3D 모델**: AMR 5대(Cyan색 실린더, `/World/AMRs/`) 및 이동식 작업대 10대(Orange색 큐브, `/World/Workstations/`)를 맵 위에 동적 생성.
-  - **동기화**: 매 프레임(30Hz)마다 Redis의 AMR 좌표 및 PostgreSQL의 작업대 주차 위치를 읽어 Isaac Sim 3D 공간에 텔레포트 반영.
+  - **동기화**: 매 프레임(30Hz)마다 Redis of AMR coordinates and PostgreSQL of workstation parking positions are read and teleported.
   - **실행 방법**: `isaac-python scratch/isaac_amr_connector.py` (`~/.bashrc`에 정의된 alias 사용).
   - **문서 업데이트**: `SYSTEM_IMPROVEMENT_PLAN.md` 섹션 13.5 및 `README.md` 섹션 4~5 신규 추가.
+
+---
+
+## 📅 2026년 6월 8일 (월요일)
+
+* **09:45** - **AMR 전용 Isaac Sim 실시간 연동 커넥터 개발**
+  - **`scratch/isaac_only_amr_connector.py` 신규 생성**: PostgreSQL 데이터베이스 의존성 및 Workstations 렌더링 과정을 완전히 배제하고, Redis의 AMR 위치 캐시(`amr:AMR_XX`)만 단독 구독하여 Isaac Sim에 반영하는 경량화 커넥터 스크립트 구축 완료.
+  - **실행 방법**: `isaac-python scratch/isaac_only_amr_connector.py`
+* **10:10** - **Isaac Sim 네이티브 ROS2 및 소켓 하이브리드 연동 & 2대 분산 가동 가이드 작성**
+  - **아키텍처 설계**: 제어 평면은 ROS2 Action으로 제어하고, 실시간 토픽(위치 및 속도 명령)은 TCP Socket 브릿지(`socket_ros2_bridge` 노드)를 활용해 경량 송수신하는 하이브리드 연동 모델 설계.
+  - **분산 환경 매핑**: PC A(시뮬레이터/AMR 제어 노드/소켓 브릿지)와 PC B(관제탑/PostgreSQL/Redis/FastAPI 대시보드)로 역할을 나누어 가동하는 상세 인프라 세팅 구축 및 가이드 문서화 완료.
+  - **문서 업데이트**: `SYSTEM_IMPROVEMENT_PLAN.md`에 섹션 14 신규 생성 및 수록 완료.
+
+
 
