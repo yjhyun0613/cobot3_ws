@@ -620,6 +620,16 @@ PC A의 AMR 제어 노드가 PC B의 데이터베이스와 Redis에 접근할 �
 * **start_test_env.sh 구동 유연성 확보**:
   * 로컬 및 분산 연동 여부를 환경변수 `ROS_LOCALHOST_ONLY` (0: 외부 통신 허용, 1: 로컬) 주입을 통해 다이내믹하게 결정할 수 있도록 환경 구축 스크립트를 개선했습니다.
 
+### 16.3 분산 연동 디버깅 및 실시간 관제 장애 해결 - [완료]
+* **관제탑 노드 자원 종료 교착 해결**:
+  * 관제탑 노드가 `SIGINT`(Ctrl+C) 종료 시점에 백그라운드 스케줄러 타이머들이 비동기로 PostgreSQL DB 세션을 잡고 있어 커넥션 풀 강제 종료 시 `cannot use Destroyable` 에러가 나던 현상을 해결했습니다.
+  * 종료 시퀀스를 **타이머 취소 ➡️ Executor 스레드 대기 종료(Join) ➡️ Node 소멸 및 DB 커넥션 풀 폐쇄** 순서로 전면 동기화하였습니다.
+* **경량 Mock 기기/로봇 에뮬레이터 개발 (`scratch/mock_sg2_devices.py`)**:
+  * 3D 물리 공간이나 A* 시뮬레이터 없이도 입고/이송/포장/회전 액션 및 서비스에 100% 모의 핑퐁 응답을 하며 DB와 Redis 데이터를 실시간 업데이트하는 독립 테스트 스크립트를 생성하여 개발 생산성을 개선했습니다.
+* **Redis 외부 개방 및 2D 맵 AMR 마커 유실 해결**:
+  * Docker 기반 Redis 컨테이너의 보안 제한(`protected-mode`)을 해제하기 위해 [docker-compose.yml](file:///home/rokey/cobot3_ws/docker/docker-compose.yml#L28)의 redis 서비스 구동 command에 `--protected-mode no` 인자를 추가하여 외부 AMR PC의 상태 데이터 push가 가능하도록 조치했습니다.
+  * AMR PC가 송신하는 소수점 아래 세 자리 좌표 문자열(예: `FLOOR_X_-3.000_Y_-9.000`)과 대시보드 2D 맵의 격자 매핑용 키(예: `FLOOR_X_-3.0_Y_-9.0`) 불일치로 마커가 렌더링되지 않던 버그를 [dashboard_server.py](file:///home/rokey/cobot3_ws/scratch/dashboard_server.py#L74)에 `normalize_qr_id` 문자열 규격화 함수를 추가 적용하여 해결했습니다.
+
 
 
 

@@ -71,6 +71,20 @@ from datetime import datetime, timedelta
 
 app = FastAPI(title="Coupang Warehouse Control Panel")
 
+def normalize_qr_id(qr_id: str) -> str:
+    if not qr_id or not qr_id.startswith("FLOOR_X_"):
+        return qr_id
+    try:
+        import re
+        match = re.match(r"FLOOR_X_(-?\d+\.?\d*)_Y_(-?\d+\.?\d*)", qr_id)
+        if match:
+            x_val = float(match.group(1))
+            y_val = float(match.group(2))
+            return f"FLOOR_X_{x_val:.1f}_Y_{y_val:.1f}"
+    except Exception:
+        pass
+    return qr_id
+
 # DB 연결 헬퍼 함수
 def get_db_connections():
     try:
@@ -300,8 +314,8 @@ def get_status():
                         if val:
                             amr_states[amr_id] = {
                                 "state": val.get("state", "IDLE"),
-                                "current_qr_id": val.get("current_qr_id", ""),
-                                "target_qr_id": val.get("target_qr_id", ""),
+                                "current_qr_id": normalize_qr_id(val.get("current_qr_id", "")),
+                                "target_qr_id": normalize_qr_id(val.get("target_qr_id", "")),
                                 "carrying_workstation_id": val.get("carrying_workstation_id", "") or "",
                                 "battery": val.get("battery", "100.0")
                             }

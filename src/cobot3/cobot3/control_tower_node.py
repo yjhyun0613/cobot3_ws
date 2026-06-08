@@ -1523,6 +1523,28 @@ class ControlTowerNode(Node):
             except Exception as e:
                 self.get_logger().error(f'일일 완료 검사 중 에러: {str(e)}')
 
+    def destroy_node(self):
+        """노드 종료 시 백그라운드 타이머를 먼저 정지하고 데이터베이스 풀을 해제하여 자원 경합을 방지"""
+        if hasattr(self, 'scheduler_timer') and self.scheduler_timer:
+            try:
+                self.scheduler_timer.cancel()
+            except Exception:
+                pass
+        if hasattr(self, 'fleet_states_timer') and self.fleet_states_timer:
+            try:
+                self.fleet_states_timer.cancel()
+            except Exception:
+                pass
+
+        if hasattr(self, 'pg_conn_pool') and self.pg_conn_pool:
+            try:
+                self.pg_conn_pool.closeall()
+                print('[control_tower_node] PostgreSQL connection pool closed successfully.')
+            except Exception as pool_err:
+                print(f'[control_tower_node] Error closing PostgreSQL connection pool: {pool_err}')
+
+        super().destroy_node()
+
 
 def main(args=None):
 
@@ -1536,15 +1558,28 @@ def main(args=None):
     try:
         executor.spin()
     except KeyboardInterrupt:
-        node.get_logger().info('관제 센터 노드 종료 중...')
+        print('[control_tower_node] 관제 센터 노드 종료 중 (SIGINT 수신)...')
     finally:
-        if node.pg_conn_pool:
+        # 1. 타이머가 백그라운드 스레드에서 새로 구동되는 것을 방지하기 위해 먼저 취소
+        if hasattr(node, 'scheduler_timer') and node.scheduler_timer:
             try:
-                node.pg_conn_pool.closeall()
-                node.get_logger().info('PostgreSQL connection pool closed.')
-            except Exception as pool_err:
-                node.get_logger().error(f'Error closing PostgreSQL connection pool: {pool_err}')
+                node.scheduler_timer.cancel()
+            except Exception:
+                pass
+        if hasattr(node, 'fleet_states_timer') and node.fleet_states_timer:
+            try:
+                node.fleet_states_timer.cancel()
+            except Exception:
+                pass
+
+        # 2. 실행기를 먼저 종료(shutdown)하여 현재 동작 중인 스레드가 완료(join)되기를 대기
+        executor.shutdown()
+        
+        # 3. 노드를 실행기에서 제거하고 안전하게 파괴 (DB 커넥션 풀 종료 포함)
+        executor.remove_node(node)
         node.destroy_node()
+        
+        # 4. rclpy shutdown
         if rclpy.ok():
             rclpy.shutdown()
 
