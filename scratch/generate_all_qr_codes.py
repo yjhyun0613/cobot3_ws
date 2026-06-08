@@ -78,11 +78,11 @@ def main():
         "ROBOT_sg2_in_02",
         "ROBOT_sg2_in_03",
         "ROBOT_sg2_out_00",
-        "ROBOT_amr_01",
-        "ROBOT_amr_02",
-        "ROBOT_amr_03",
-        "ROBOT_amr_04",
-        "ROBOT_amr_05",
+        "ROBOT_AMR_01",
+        "ROBOT_AMR_02",
+        "ROBOT_AMR_03",
+        "ROBOT_AMR_04",
+        "ROBOT_AMR_05",
     ]
     print("\n[1] 로봇 식별 QR코드 생성 중...")
     for robot in robots:

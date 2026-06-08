@@ -137,14 +137,15 @@ AMR의 3D 공간 자율주행 및 위치 좌표 해석(Localization)을 위해 �
 자율 주행 로봇(AMR) 제어 및 명령 큐에 사용되는 실시간 고속 인메모리 데이터의 구성 방식입니다.
 
 ### ① AMR 로봇 상태 캐시 (Hash Type)
-* **키 형식**: `amr:[amr_id]:status` (예: `amr:amr_01:status`)
+* **키 형식**: `amr:[amr_id]` (예: `amr:AMR_01`)
 * **관리 데이터**:
   ```json
   {
-      "x": 12.34,
-      "y": 5.67,
-      "z": 0.0,
-      "state": "IDLE" // IDLE, MOVING, ERROR
+      "state": "IDLE", // IDLE, MOVING, ERROR
+      "current_qr_id": "QR_0030",
+      "target_qr_id": "QR_0055",
+      "carrying_workstation_id": "WS01", // 없으면 ""
+      "battery": "85.5"
   }
   ```
 
