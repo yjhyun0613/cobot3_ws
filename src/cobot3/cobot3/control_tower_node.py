@@ -31,6 +31,13 @@ class ControlTowerNode(Node):
         super().__init__('control_tower_node')
         self.get_logger().info('=== 쿠팡 물류창고 관제 센터(Control Tower) 노드 구동 시작 ===')
 
+        # ----------------------------------------------------
+        # 스레드 동기화 락 추가 (Race Condition 방지)
+        # ----------------------------------------------------
+        self.trigger_lock = threading.Lock()
+        self.pre_fetch_triggered = set()
+        self.rotation_triggered = set()
+
         # 1. 데이터베이스 연결 정보 설정
         self.pg_conn_pool = None
         self.redis_client = None
@@ -64,26 +71,12 @@ class ControlTowerNode(Node):
         self.package_states_pub = self.create_publisher(String, '/fleet/package_states', 10)
         self.task_events_pub = self.create_publisher(String, '/fleet/task_events', 10)
 
-        # 4. 포장 피드백 Look-ahead / Rotation 트리거 중복 방지용 세트 및 락
-        self.pre_fetch_triggered = set()
-        self.rotation_triggered = set()
-        self.trigger_lock = threading.Lock()
-
-        # 5. Dispatch Throttle: 최대 동시 작업대 이송 수 제한 (AMR 5대 운용 기준)
-        self.MAX_ACTIVE_WORKSTATION_MOVES = 5
-        self.active_moves = set()  # 현재 진행 중인 이송 작업의 workstation_id 집합
-        self.active_moves_lock = threading.Lock()
-
-        # 6. Action Server 미응답 시 쿨다운 (불필요한 5초 타임아웃 반복 방지)
-        self.action_server_cooldown_until = 0.0  # time.time() 기준, 이 시각까지 dispatch 보류
-        self.ACTION_SERVER_COOLDOWN_SEC = 15.0   # 미응답 후 15초간 재시도 억제
-
-        # 7. 주기적 상태 체크 및 스케줄러 타이머 구동 (1초마다 실행)
+        # 4. 주기적 상태 체크 및 스케줄러 타이머 구동 (1초마다 실행)
         self.scheduler_timer = self.create_timer(1.0, self.task_scheduler_loop)
         # fleet 상태 브로드캐스트 타이머 구동 (1초마다 실행)
         self.fleet_states_timer = self.create_timer(1.0, self.publish_fleet_states_callback)
         
-        self.get_logger().info(f'ROS2 서비스 서버, 액션 클라이언트, Fleet 퍼블리셔, Dispatch Throttle(MAX={self.MAX_ACTIVE_WORKSTATION_MOVES}) 준비 완료.')
+        self.get_logger().info('ROS2 서비스 서버, 액션 클라이언트 및 Fleet 퍼블리셔 준비 완료.')
 
 
     def init_databases(self):
@@ -95,36 +88,42 @@ class ControlTowerNode(Node):
             )
             return
 
+        # ----------------------------------------------------
+        # Docker 환경 변수 지원 (localhost 하드코딩 제거)
+        # ----------------------------------------------------
+        pg_host = os.environ.get('POSTGRES_HOST', 'localhost')
+        redis_host = os.environ.get('REDIS_HOST', 'localhost')
+
         try:
             # PostgreSQL 연결 풀 생성 (ThreadedConnectionPool)
-            # 환경변수로 호스트를 주입받아 Docker 컨테이너 환경에서도 유연하게 접속
-            pg_host = os.environ.get('POSTGRES_HOST', 'localhost')
-            pg_port = int(os.environ.get('POSTGRES_PORT', '5432'))
-            pg_user = os.environ.get('POSTGRES_USER', 'rokey')
-            pg_pass = os.environ.get('POSTGRES_PASSWORD', 'rokey_pass')
-            pg_db = os.environ.get('POSTGRES_DB', 'warehouse_db')
             self.pg_conn_pool = ThreadedConnectionPool(
                 minconn=1,
                 maxconn=20,
                 host=pg_host,
-                port=pg_port,
-                user=pg_user,
-                password=pg_pass,
-                database=pg_db
+                port=5432,
+                user='rokey',
+                password='rokey_pass',
+                database='warehouse_db'
             )
-            self.get_logger().info(f'PostgreSQL Threaded Connection Pool 생성 완료 (host={pg_host}).')
+            self.get_logger().info(f'PostgreSQL Threaded Connection Pool 생성 완료. (Host: {pg_host})')
 
             # Redis 연결
-            redis_host = os.environ.get('REDIS_HOST', 'localhost')
-            redis_port = int(os.environ.get('REDIS_PORT', '6379'))
             self.redis_client = redis.Redis(
                 host=redis_host,
-                port=redis_port,
-                decode_responses=True,
-                socket_timeout=2.0,
-                socket_connect_timeout=3.0
+                port=6379,
+                decode_responses=True
             )
-            self.get_logger().info('Redis 인메모리 데이터베이스 연결 완료.')
+            self.get_logger().info(f'Redis 인메모리 데이터베이스 연결 완료. (Host: {redis_host})')
+
+            # ----------------------------------------------------
+            # 초기 상태값 설정 (대시보드 시작 버튼 제어용)
+            # ----------------------------------------------------
+            if not self.redis_client.exists('system:day_status'):
+                self.redis_client.set('system:day_status', 'WAITING_FOR_START')
+                self.get_logger().info("초기 시스템 상태를 'WAITING_FOR_START'로 설정했습니다.")
+            if not self.redis_client.exists('system:inbound_started'):
+                self.redis_client.set('system:inbound_started', 'false')
+                self.get_logger().info("초기 인바운드 상태를 'false'로 설정했습니다.")
 
         except Exception as e:
             self.get_logger().error(f'데이터베이스 연결 중 오류 발생: {str(e)}')
@@ -217,9 +216,9 @@ class ControlTowerNode(Node):
                 except Exception as e:
                     self.get_logger().error(f'GetPackageRoute DB 조회 중 오류: {str(e)}')
 
-        # DB 미연결 또는 예외 시 Mock 값 대응 (2026-06-01 기준)
+        # DB 미연결 또는 예외 시 Mock 값 대응
         if not route_date:
-            route_date = '2026-06-01'
+            route_date = datetime.now().strftime('%Y-%m-%d')
 
         response.route_destination = route_date
         self.get_logger().info(f'[GetPackageRoute] 목적지 분류 결과 전송 -> {route_date}')
@@ -354,36 +353,42 @@ class ControlTowerNode(Node):
 
         # [Look-ahead 최적화] 3번째 칸 적재 완료 시 다음 빈 작업대 대기 명령 적재
         if filled_slots_count == 3:
-            self.get_logger().info(f'[Look-ahead] {workstation_id}의 3번째 슬롯 적재 감지! B구역에 다음 빈 작업대 사전 배치 태스크 추가.')
-            self.push_amr_task({
-                'task_type': 'PRE_FETCH_EMPTY_WORKSTATION',
-                'target_robot': robot_id,
-                'description': f'{robot_id} 앞 B구역에 다음 작업대 대기',
-                'workstation_qr_id': ""
-            })
+            with self.trigger_lock:
+                if workstation_id not in self.pre_fetch_triggered:
+                    self.pre_fetch_triggered.add(workstation_id)
+                    self.get_logger().info(f'[Look-ahead] {workstation_id}의 3번째 슬롯 적재 감지! B구역에 다음 빈 작업대 사전 배치 태스크 추가.')
+                    self.push_amr_task({
+                        'task_type': 'PRE_FETCH_EMPTY_WORKSTATION',
+                        'target_robot': robot_id,
+                        'description': f'{robot_id} 앞 B구역에 다음 작업대 대기',
+                        'workstation_qr_id': ""
+                    })
 
         # [180도 회전 최적화] 4번째 칸 적재 완료 시 제자리 180도 회전 수행 및 로봇 대기 유도
         if filled_slots_count == 4:
-            self.get_logger().info(f'[Rotation Trigger] {workstation_id}의 4번째 슬롯 적재 감지! 180도 회전 태스크 추가 및 일시 정지 상태 적용.')
-            with self.get_db_connection() as conn:
-                if conn:
-                    try:
-                        with conn.cursor() as cursor:
-                            cursor.execute(
-                                "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
-                                (f"{robot_id}_A_ROTATING", workstation_id)
-                            )
-                    except Exception as db_err:
-                        self.get_logger().error(f'Rotation 상태 변경 실패: {db_err}')
+            with self.trigger_lock:
+                if workstation_id not in self.rotation_triggered:
+                    self.rotation_triggered.add(workstation_id)
+                    self.get_logger().info(f'[Rotation Trigger] {workstation_id}의 4번째 슬롯 적재 감지! 180도 회전 태스크 추가 및 일시 정지 상태 적용.')
+                    with self.get_db_connection() as conn:
+                        if conn:
+                            try:
+                                with conn.cursor() as cursor:
+                                    cursor.execute(
+                                        "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
+                                        (f"{robot_id}_A_ROTATING", workstation_id)
+                                    )
+                            except Exception as db_err:
+                                self.get_logger().error(f'Rotation 상태 변경 실패: {db_err}')
 
-            self.push_amr_task({
-                'task_type': 'ROTATE_WORKSTATION',
-                'workstation_id': workstation_id,
-                'from': f"{robot_id}_A_ROTATING",
-                'to': f"{robot_id}_A",
-                'description': f"{robot_id} 앞 작업대 {workstation_id} 180도 제자리 회전 (앞/뒤 슬롯 교체)",
-                'workstation_qr_id': workstation_qr_id
-            })
+                    self.push_amr_task({
+                        'task_type': 'ROTATE_WORKSTATION',
+                        'workstation_id': workstation_id,
+                        'from': f"{robot_id}_A_ROTATING",
+                        'to': f"{robot_id}_A",
+                        'description': f"{robot_id} 앞 작업대 {workstation_id} 180도 제자리 회전 (앞/뒤 슬롯 교체)",
+                        'workstation_qr_id': workstation_qr_id
+                    })
 
         response.success = True
         return response
@@ -407,61 +412,6 @@ class ControlTowerNode(Node):
         elif task_type == 'RETRIEVE_EMPTY_WORKSTATION':
             return 20
         return 30
-
-    # ==========================================
-    # Dispatch Throttle Gate (최대 5대 AMR 동시 이송 제한)
-    # ==========================================
-
-    def get_active_workstation_move_count(self):
-        """현재 진행 중인 작업대 이송 수를 DB 상태 + 로컬 추적 기반으로 카운트"""
-        db_count = 0
-        with self.get_db_connection() as conn:
-            if conn:
-                try:
-                    with conn.cursor() as cursor:
-                        cursor.execute(
-                            "SELECT COUNT(*) FROM workstations "
-                            "WHERE current_location LIKE 'MOVING_TO_%%' "
-                            "OR (status = 'PROCESSING' AND reserved_by IS NOT NULL);"
-                        )
-                        db_count = cursor.fetchone()[0]
-                except Exception as e:
-                    self.get_logger().error(f'Active move count 조회 실패: {str(e)}')
-
-        # 로컬 추적 세트와 DB 중 더 큰 값 사용 (안전 마진)
-        with self.active_moves_lock:
-            local_count = len(self.active_moves)
-
-        return max(db_count, local_count)
-
-    def can_dispatch_new_move(self, dispatched_this_tick=0):
-        """새 작업대 이송 명령을 발행할 수 있는지 판단하는 Dispatch Gate"""
-        active_count = self.get_active_workstation_move_count()
-        total = active_count + dispatched_this_tick
-
-        if total >= self.MAX_ACTIVE_WORKSTATION_MOVES:
-            self.get_logger().info(
-                f'[Dispatch Gate] 이송 한도 도달 ({total}/{self.MAX_ACTIVE_WORKSTATION_MOVES}). '
-                f'신규 이송 보류.')
-            return False
-        return True
-
-    def register_active_move(self, workstation_id):
-        """이송 시작 시 로컬 추적 세트에 등록"""
-        with self.active_moves_lock:
-            self.active_moves.add(workstation_id)
-            self.get_logger().info(
-                f'[Dispatch Throttle] {workstation_id} 이송 등록. '
-                f'Active: {len(self.active_moves)}/{self.MAX_ACTIVE_WORKSTATION_MOVES} '
-                f'({self.active_moves})')
-
-    def unregister_active_move(self, workstation_id):
-        """이송 완료/실패 시 로컬 추적 세트에서 제거"""
-        with self.active_moves_lock:
-            self.active_moves.discard(workstation_id)
-            self.get_logger().info(
-                f'[Dispatch Throttle] {workstation_id} 이송 해제. '
-                f'Active: {len(self.active_moves)}/{self.MAX_ACTIVE_WORKSTATION_MOVES}')
 
     def push_amr_task(self, task_dict):
         """AMR 작업 명령을 Redis 대기 큐(Sorted Set)에 집어넣음"""
@@ -530,7 +480,7 @@ class ControlTowerNode(Node):
 
         try:
             # Day Transition 상태 확인
-            day_status = 'RUNNING'
+            day_status = 'WAITING_FOR_START' # 기본값 변경
             if self.redis_client:
                 try:
                     val = self.redis_client.get('system:day_status')
@@ -571,6 +521,9 @@ class ControlTowerNode(Node):
         task_type = task.get('task_type')
         task_id = task.get('uuid')
 
+        # TODO: 실제 동적 분배 알고리즘(가용한 AMR 할당) 추가 필요
+        assigned_amr = 'AMR_01' 
+
         if task_type == 'DIRECT_WAREHOUSE':
             # 단일 패키지 창고 직송 액션 전송
             goal_msg = MovePackage.Goal()
@@ -579,7 +532,7 @@ class ControlTowerNode(Node):
             goal_msg.destination_zone = task.get('destination_zone', '')
             goal_msg.package_qr_id = task.get('package_qr_id', '')
 
-            self.get_logger().info(f'AMR에게 단일 택배({goal_msg.package_id}, QR: {goal_msg.package_qr_id}) 창고 직송 액션 전송 중...')
+            self.get_logger().info(f'{assigned_amr}에게 단일 택배({goal_msg.package_id}, QR: {goal_msg.package_qr_id}) 창고 직송 액션 전송 중...')
             if not self.move_package_action_client.wait_for_server(timeout_sec=5.0):
                 self.get_logger().error('AMR Action Server (move_package) is NOT available! Skipping DIRECT_WAREHOUSE.')
                 self.publish_task_event(
@@ -591,7 +544,7 @@ class ControlTowerNode(Node):
                     start_location="bg2",
                     target_location=goal_msg.destination_zone,
                     status='FAILED',
-                    assigned_amr='AMR_01'
+                    assigned_amr=assigned_amr
                 )
                 return
             # task_events 토픽 발행 (ASSIGNED)
@@ -604,7 +557,7 @@ class ControlTowerNode(Node):
                 start_location="bg2",
                 target_location=goal_msg.destination_zone,
                 status='ASSIGNED',
-                assigned_amr='AMR_01'
+                assigned_amr=assigned_amr
             )
             self.move_package_action_client.send_goal_async(goal_msg)
 
@@ -655,19 +608,19 @@ class ControlTowerNode(Node):
                         self.get_logger().error(f'창고 빈 작업대 조회 중 에러: {str(e)}')
 
             if workstation_id != 'WS_TEMP_EMPTY':
-                self.trigger_workstation_move(workstation_id, start_location, target_location, workstation_qr_id, task_id=task_id)
+                self.trigger_workstation_move(workstation_id, start_location, target_location, workstation_qr_id, task_id=task_id, assigned_amr=assigned_amr)
             else:
                 self.get_logger().warn("경고: 대기 중인 빈 작업대가 없어 이송을 대기합니다.")
 
         elif task_type == 'PRE_FETCH_WORKSTATION':
             # 포장 라인을 위해 창고의 작업대를 포장 로봇 앞으로 가져오는 액션
             workstation_id = task['workstation_id']
-            self.trigger_workstation_move(workstation_id, task['from'], task['to'], task.get('workstation_qr_id', ""), task_id=task_id)
+            self.trigger_workstation_move(workstation_id, task['from'], task['to'], task.get('workstation_qr_id', ""), task_id=task_id, assigned_amr=assigned_amr)
 
         elif task_type == 'ROTATE_WORKSTATION':
             # 작업대 180도 제자리 회전 액션
             workstation_id = task['workstation_id']
-            self.trigger_workstation_move(workstation_id, task['from'], task['to'], task.get('workstation_qr_id', ""), task_id=task_id)
+            self.trigger_workstation_move(workstation_id, task['from'], task['to'], task.get('workstation_qr_id', ""), task_id=task_id, assigned_amr=assigned_amr)
 
 
     def check_completed_workstations(self):
@@ -690,13 +643,13 @@ class ControlTowerNode(Node):
                         rows = list(cursor.fetchall())
                         
                         # 오늘 날짜 구하기 및 마지막 남은 작업대(8칸 미만) 체크
-                        today_date = self.redis_client.get('system:today_date') if self.redis_client else '2026-06-06'
+                        today_date = self.redis_client.get('system:today_date') if self.redis_client else datetime.now().strftime('%Y-%m-%d')
                         if not today_date:
-                            today_date = '2026-06-06'
+                            today_date = datetime.now().strftime('%Y-%m-%d')
                         cursor.execute("SELECT COUNT(*) FROM packages WHERE route_zone = %s AND status = 'WAITING';", (today_date,))
                         waiting_today_count = cursor.fetchone()[0]
                         
-                        inbound_started = self.redis_client.get('system:inbound_started') == 'true' if self.redis_client else True
+                        inbound_started = self.redis_client.get('system:inbound_started') == 'true' if self.redis_client else False
                         
                         if waiting_today_count == 0 and inbound_started:
                             cursor.execute("""
@@ -834,9 +787,9 @@ class ControlTowerNode(Node):
                                 self.trigger_workstation_move(ws_id, 'sg2_out_00_B', 'sg2_out_00_A', ws_qr)
                             # B구역에도 없는 경우 -> 창고에서 완충된 작업대를 조회해서 A구역으로 바로 공급 (오늘 물량만)
                             else:
-                                today_date = self.redis_client.get('system:today_date') if self.redis_client else '2026-06-06'
+                                today_date = self.redis_client.get('system:today_date') if self.redis_client else datetime.now().strftime('%Y-%m-%d')
                                 if not today_date:
-                                    today_date = '2026-06-06'
+                                    today_date = datetime.now().strftime('%Y-%m-%d')
 
                                 cursor.execute("SELECT COUNT(*) FROM packages WHERE route_zone = %s AND status = 'WAITING';", (today_date,))
                                 waiting_today = cursor.fetchone()[0]
@@ -848,7 +801,7 @@ class ControlTowerNode(Node):
                                 inbound_today_packages = cursor.fetchone()[0]
                                 
                                 having_cond = "HAVING COUNT(p.package_id) = 8"
-                                inbound_started = self.redis_client.get('system:inbound_started') == 'true' if self.redis_client else True
+                                inbound_started = self.redis_client.get('system:inbound_started') == 'true' if self.redis_client else False
                                 if waiting_today == 0 and inbound_today_packages == 0 and inbound_started:
                                     having_cond = "HAVING COUNT(p.package_id) > 0"
 
@@ -876,35 +829,11 @@ class ControlTowerNode(Node):
         except Exception as e:
             self.get_logger().error(f'Keep-Alive Dispatcher 실행 중 에러: {str(e)}')
 
-    def trigger_workstation_move(self, workstation_id, start, target, workstation_qr_id="", task_id=None):
+    def trigger_workstation_move(self, workstation_id, start, target, workstation_qr_id="", task_id=None, assigned_amr="AMR_01"):
         """AMR에게 작업대 통째로 이송하도록 액션 골 전송 및 DB 위치 선점 업데이트"""
         import uuid
         if not task_id:
             task_id = f"AUTO_{str(uuid.uuid4())[:8]}"
-
-        # Cooldown: Action Server 미응답 후 재시도 억제 기간 체크
-        if time.time() < self.action_server_cooldown_until:
-            remaining = self.action_server_cooldown_until - time.time()
-            self.get_logger().debug(
-                f'[Cooldown] Action Server 쿨다운 중 ({remaining:.0f}초 남음). {workstation_id} 이송 보류.')
-            return False
-
-        # Dispatch Gate: 동시 이송 한도 초과 시 보류
-        if not self.can_dispatch_new_move():
-            self.get_logger().warn(
-                f'[Dispatch Gate] {workstation_id} 이송 보류 (한도 초과). '
-                f'target={target}')
-            return False
-
-        # 동일 WS가 이미 이송 중인지 로컬 추적으로도 확인
-        with self.active_moves_lock:
-            if workstation_id in self.active_moves:
-                self.get_logger().warn(
-                    f'[Dispatch Gate] {workstation_id}는 이미 이송 진행 중. 중복 방지.')
-                return False
-
-        # 이송 시작 등록
-        self.register_active_move(workstation_id)
 
         actual_target = target
         actual_start = start
@@ -973,8 +902,8 @@ class ControlTowerNode(Node):
                 try:
                     with conn.cursor() as cursor:
                         cursor.execute(
-                            "UPDATE workstations SET current_location = %s, status = 'PROCESSING', reserved_by = 'AMR_01' WHERE workstation_id = %s;",
-                            (f"MOVING_TO_{actual_target.upper()}", workstation_id)
+                            "UPDATE workstations SET current_location = %s, status = 'PROCESSING', reserved_by = %s WHERE workstation_id = %s;",
+                            (f"MOVING_TO_{actual_target.upper()}", assigned_amr, workstation_id)
                         )
                 except Exception as e:
                     self.get_logger().error(f'작업대 이동 상태 DB 업데이트 실패: {str(e)}')
@@ -1027,14 +956,12 @@ class ControlTowerNode(Node):
         goal_msg.target_yaw = target_yaw
 
         self.get_logger().info(
-            f'AMR에게 작업대 {workstation_id}(QR: {workstation_qr_id}) 이송 액션 전송:\n'
+            f'{assigned_amr}에게 작업대 {workstation_id}(QR: {workstation_qr_id}) 이송 액션 전송:\n'
             f'  - 출발지: {actual_start} [{start_coords_str}]\n'
             f'  - 목적지: {actual_target} [{target_coords_str}]'
         )
         if not self.manage_workstation_action_client.wait_for_server(timeout_sec=5.0):
-            self.get_logger().error(f'AMR Action Server (manage_workstation) is NOT available! Skipping move for {workstation_id}. {self.ACTION_SERVER_COOLDOWN_SEC}초간 재시도 억제.')
-            # 쿨다운 설정: 불필요한 5초 타임아웃 반복 방지
-            self.action_server_cooldown_until = time.time() + self.ACTION_SERVER_COOLDOWN_SEC
+            self.get_logger().error(f'AMR Action Server (manage_workstation) is NOT available! Skipping move for {workstation_id}.')
             self.publish_task_event(
                 task_id=task_id,
                 task_type="MOVE_WORKSTATION",
@@ -1044,11 +971,10 @@ class ControlTowerNode(Node):
                 start_location=actual_start,
                 target_location=actual_target,
                 status='FAILED',
-                assigned_amr='AMR_01'
+                assigned_amr=assigned_amr
             )
             # Reset workstation status in PG
             self.recover_workstation_move_db_state(workstation_id, actual_start, actual_target)
-            self.unregister_active_move(workstation_id)
             return
         
         # task_events 토픽 발행 (ASSIGNED)
@@ -1061,13 +987,13 @@ class ControlTowerNode(Node):
             start_location=actual_start,
             target_location=actual_target,
             status='ASSIGNED',
-            assigned_amr='AMR_01'
+            assigned_amr=assigned_amr
         )
 
         # 액션 완료 시 결과를 받아 실제 DB 최종 위치를 수정하도록 콜백 설정
         send_goal_future = self.manage_workstation_action_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(
-            lambda future: self.workstation_move_response_callback(future, workstation_id, actual_start, actual_target, task_id)
+            lambda future: self.workstation_move_response_callback(future, workstation_id, actual_start, actual_target, task_id, assigned_amr)
         )
 
     def recover_workstation_move_db_state(self, workstation_id, start, target):
@@ -1103,7 +1029,7 @@ class ControlTowerNode(Node):
                 except Exception as e:
                     self.get_logger().error(f'[DB 복구] 복구 쿼리 실행 중 에러 발생: {str(e)}')
 
-    def workstation_move_response_callback(self, future, workstation_id, start, target, task_id):
+    def workstation_move_response_callback(self, future, workstation_id, start, target, task_id, assigned_amr):
         """AMR의 작업대 이송 액션 결과 확인 콜백"""
         goal_handle = future.result()
         if not goal_handle.accepted:
@@ -1118,21 +1044,18 @@ class ControlTowerNode(Node):
                 start_location=start,
                 target_location=target,
                 status='FAILED',
-                assigned_amr='AMR_01'
+                assigned_amr=assigned_amr
             )
             self.recover_workstation_move_db_state(workstation_id, start, target)
-            self.unregister_active_move(workstation_id)
             return
 
         self.get_logger().info(f'작업대 {workstation_id} 이송 목표 수락됨. 이동 진행 중...')
-        # Action Server 응답 확인 → 쿨다운 해제
-        self.action_server_cooldown_until = 0.0
         get_result_future = goal_handle.get_result_async()
         get_result_future.add_done_callback(
-            lambda res_future: self.workstation_move_completed_callback(res_future, workstation_id, start, target, task_id)
+            lambda res_future: self.workstation_move_completed_callback(res_future, workstation_id, start, target, task_id, assigned_amr)
         )
 
-    def workstation_move_completed_callback(self, future, workstation_id, start, target, task_id):
+    def workstation_move_completed_callback(self, future, workstation_id, start, target, task_id, assigned_amr):
         """AMR이 이송을 완료했을 때 최종적으로 DB 갱신 및 완료 이벤트 전송"""
         result = future.result().result
         if result.success:
@@ -1156,9 +1079,6 @@ class ControlTowerNode(Node):
                     except Exception as e:
                         self.get_logger().error(f'도착지 DB 최종 반영 실패: {str(e)}')
 
-            # Dispatch Throttle: 이송 완료 해제
-            self.unregister_active_move(workstation_id)
-
             # task_events 토픽 발행 (COMPLETED)
             self.publish_task_event(
                 task_id=task_id,
@@ -1169,7 +1089,7 @@ class ControlTowerNode(Node):
                 start_location=start,
                 target_location=target,
                 status='COMPLETED',
-                assigned_amr='AMR_01'
+                assigned_amr=assigned_amr
             )
 
             # 만약 포장 구역 A(sg2_out_00_A)에 안전하게 도착했고, 180도 회전 동작이 아니었다면 포장 공정(Action) 트리거
@@ -1178,7 +1098,6 @@ class ControlTowerNode(Node):
         else:
             self.get_logger().error(f'[실패] 작업대 {workstation_id} 이송 중 에러 발생')
             self.recover_workstation_move_db_state(workstation_id, start, target)
-            self.unregister_active_move(workstation_id)
 
             # task_events 토픽 발행 (FAILED)
             self.publish_task_event(
@@ -1190,7 +1109,7 @@ class ControlTowerNode(Node):
                 start_location=start,
                 target_location=target,
                 status='FAILED',
-                assigned_amr='AMR_01'
+                assigned_amr=assigned_amr
             )
 
 
@@ -1251,8 +1170,6 @@ class ControlTowerNode(Node):
 
         self.get_logger().info(f'[포장 피드백] 현재 완료 슬롯 수: {completed_slots}/8, 최근 완료: {last_packed_slot}')
 
-        # pre_fetch_triggered / rotation_triggered 세트는 __init__에서 초기화됨
-
         # 현재 포장 중인 작업대 조회
         workstation_id = ""
         workstation_qr_id = ""
@@ -1275,86 +1192,81 @@ class ControlTowerNode(Node):
             return
 
         # [Look-ahead 최적화] 3번째 칸 포장 완료 시 다음 작업대 B구역으로 사전 호출
-        # Lock을 사용하여 멀티스레드 환경에서 중복 트리거 방지 (Race Condition 해결)
-        should_pre_fetch = False
-        with self.trigger_lock:
-            if completed_slots == 3 and workstation_id not in self.pre_fetch_triggered:
-                self.pre_fetch_triggered.add(workstation_id)
-                should_pre_fetch = True
-        if should_pre_fetch:
-            self.get_logger().info(f'[Look-ahead] 3번째 칸 포장 완료 감지! 작업대 {workstation_id}에 대해 다음 작업대 B구역 사전 호출을 시작합니다.')
-            
-            with self.get_db_connection() as conn:
-                if conn:
-                    try:
-                        with conn.cursor() as cursor:
-                            today_date = self.redis_client.get('system:today_date') if self.redis_client else '2026-06-06'
-                            if not today_date:
-                                today_date = '2026-06-06'
+        if completed_slots == 3:
+            with self.trigger_lock:
+                if workstation_id not in self.pre_fetch_triggered:
+                    self.pre_fetch_triggered.add(workstation_id)
+                    self.get_logger().info(f'[Look-ahead] 3번째 칸 포장 완료 감지! 작업대 {workstation_id}에 대해 다음 작업대 B구역 사전 호출을 시작합니다.')
+                    
+                    with self.get_db_connection() as conn:
+                        if conn:
+                            try:
+                                with conn.cursor() as cursor:
+                                    today_date = self.redis_client.get('system:today_date') if self.redis_client else datetime.now().strftime('%Y-%m-%d')
+                                    if not today_date:
+                                        today_date = datetime.now().strftime('%Y-%m-%d')
 
-                            # 오늘 날짜의 완충 작업대 조회 (Staging 우선, Storage 다음)
-                            cursor.execute(
-                                "SELECT w.workstation_id, w.qr_id "
-                                "FROM workstations w "
-                                "JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WAREHOUSE' "
-                                "WHERE (w.current_location LIKE 'spot_%%' OR w.current_location LIKE 'stage_%%') AND p.route_zone = %s "
-                                "GROUP BY w.workstation_id, w.qr_id "
-                                "HAVING COUNT(p.package_id) = 8 "
-                                "ORDER BY CASE WHEN w.current_location LIKE 'stage_%%' THEN 0 ELSE 1 END ASC, w.current_location ASC "
-                                "LIMIT 1;",
-                                (today_date,)
-                            )
-                            row = cursor.fetchone()
-                            if row:
-                                next_ws_id = row[0]
-                                next_ws_qr_id = row[1] if row[1] is not None else ""
-                                self.get_logger().info(f'[Look-ahead] 다음 포장 대상 작업대 선점 성공: {next_ws_id}(QR: {next_ws_qr_id})')
-                                
-                                # 중복 분배 방지를 위해 패키지 상태를 임시로 IN_WORKSTATION으로 돌려놓음
-                                cursor.execute(
-                                    "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
-                                    (next_ws_id,)
-                                )
-                                
-                                self.push_amr_task({
-                                    'task_type': 'PRE_FETCH_WORKSTATION',
-                                    'workstation_id': next_ws_id,
-                                    'from': 'warehouse',
-                                    'to': 'sg2_out_00_B',
-                                    'workstation_qr_id': next_ws_qr_id
-                                })
-                            else:
-                                self.get_logger().info('[Look-ahead] 창고 및 대기 구역에 대기 중인 완충 작업대가 없어 사전 호출을 보류합니다.')
-                    except Exception as e:
-                        self.get_logger().error(f'[Look-ahead] 다음 작업대 조회 중 오류: {str(e)}')
+                                    # 오늘 날짜의 완충 작업대 조회 (Staging 우선, Storage 다음)
+                                    cursor.execute(
+                                        "SELECT w.workstation_id, w.qr_id "
+                                        "FROM workstations w "
+                                        "JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WAREHOUSE' "
+                                        "WHERE (w.current_location LIKE 'spot_%%' OR w.current_location LIKE 'stage_%%') AND p.route_zone = %s "
+                                        "GROUP BY w.workstation_id, w.qr_id "
+                                        "HAVING COUNT(p.package_id) = 8 "
+                                        "ORDER BY CASE WHEN w.current_location LIKE 'stage_%%' THEN 0 ELSE 1 END ASC, w.current_location ASC "
+                                        "LIMIT 1;",
+                                        (today_date,)
+                                    )
+                                    row = cursor.fetchone()
+                                    if row:
+                                        next_ws_id = row[0]
+                                        next_ws_qr_id = row[1] if row[1] is not None else ""
+                                        self.get_logger().info(f'[Look-ahead] 다음 포장 대상 작업대 선점 성공: {next_ws_id}(QR: {next_ws_qr_id})')
+                                        
+                                        # 중복 분배 방지를 위해 패키지 상태를 임시로 IN_WORKSTATION으로 돌려놓음
+                                        cursor.execute(
+                                            "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
+                                            (next_ws_id,)
+                                        )
+                                        
+                                        self.push_amr_task({
+                                            'task_type': 'PRE_FETCH_WORKSTATION',
+                                            'workstation_id': next_ws_id,
+                                            'from': 'warehouse',
+                                            'to': 'sg2_out_00_B',
+                                            'workstation_qr_id': next_ws_qr_id
+                                        })
+                                    else:
+                                        self.get_logger().info('[Look-ahead] 창고 및 대기 구역에 대기 중인 완충 작업대가 없어 사전 호출을 보류합니다.')
+                            except Exception as e:
+                                self.get_logger().error(f'[Look-ahead] 다음 작업대 조회 중 오류: {str(e)}')
 
         # [180도 회전 최적화] 4번째 칸 포장 완료 시 제자리 180도 회전 수행 및 로봇 대기 유도
-        should_rotate = False
-        with self.trigger_lock:
-            if completed_slots == 4 and workstation_id not in self.rotation_triggered:
-                self.rotation_triggered.add(workstation_id)
-                should_rotate = True
-        if should_rotate:
-            self.get_logger().info(f'[Rotation Trigger] 작업대 {workstation_id}의 4번째 슬롯 포장 감지! 180도 회전 태스크 추가 및 일시 정지 상태 적용.')
-            with self.get_db_connection() as conn:
-                if conn:
-                    try:
-                        with conn.cursor() as cursor:
-                            cursor.execute(
-                                "UPDATE workstations SET current_location = 'sg2_out_00_A_ROTATING' WHERE workstation_id = %s;",
-                                (workstation_id,)
-                            )
-                    except Exception as db_err:
-                        self.get_logger().error(f'Rotation 상태 변경 실패: {db_err}')
+        if completed_slots == 4:
+            with self.trigger_lock:
+                if workstation_id not in self.rotation_triggered:
+                    self.rotation_triggered.add(workstation_id)
+                    self.get_logger().info(f'[Rotation Trigger] 작업대 {workstation_id}의 4번째 슬롯 포장 감지! 180도 회전 태스크 추가 및 일시 정지 상태 적용.')
+                    with self.get_db_connection() as conn:
+                        if conn:
+                            try:
+                                with conn.cursor() as cursor:
+                                    cursor.execute(
+                                        "UPDATE workstations SET current_location = 'sg2_out_00_A_ROTATING' WHERE workstation_id = %s;",
+                                        (workstation_id,)
+                                    )
+                            except Exception as db_err:
+                                self.get_logger().error(f'Rotation 상태 변경 실패: {db_err}')
 
-            self.push_amr_task({
-                'task_type': 'ROTATE_WORKSTATION',
-                'workstation_id': workstation_id,
-                'from': 'sg2_out_00_A_ROTATING',
-                'to': 'sg2_out_00_A',
-                'description': f"포장존 A구역 작업대 {workstation_id} 180도 제자리 회전 (앞/뒤 슬롯 교체)",
-                'workstation_qr_id': workstation_qr_id
-            })
+                    self.push_amr_task({
+                        'task_type': 'ROTATE_WORKSTATION',
+                        'workstation_id': workstation_id,
+                        'from': 'sg2_out_00_A_ROTATING',
+                        'to': 'sg2_out_00_A',
+                        'description': f"포장존 A구역 작업대 {workstation_id} 180도 제자리 회전 (앞/뒤 슬롯 교체)",
+                        'workstation_qr_id': workstation_qr_id
+                    })
 
     def packaging_response_callback(self, future, workstation_id):
         """포장 명령 수락 콜백"""
@@ -1378,8 +1290,10 @@ class ControlTowerNode(Node):
 
             # Trigger가 초기화되도록 세트에서 제거
             with self.trigger_lock:
-                self.pre_fetch_triggered.discard(workstation_id)
-                self.rotation_triggered.discard(workstation_id)
+                if workstation_id in self.pre_fetch_triggered:
+                    self.pre_fetch_triggered.remove(workstation_id)
+                if workstation_id in self.rotation_triggered:
+                    self.rotation_triggered.remove(workstation_id)
 
             with self.get_db_connection() as conn:
                 if conn:
@@ -1400,9 +1314,9 @@ class ControlTowerNode(Node):
                             )
 
                             # 오늘 날짜를 구함
-                            today_date = self.redis_client.get('system:today_date') if self.redis_client else '2026-06-06'
+                            today_date = self.redis_client.get('system:today_date') if self.redis_client else datetime.now().strftime('%Y-%m-%d')
                             if not today_date:
-                                today_date = '2026-06-06'
+                                today_date = datetime.now().strftime('%Y-%m-%d')
 
                             if today_date:
                                 # 오늘 날짜의 미완료 패키지가 아직 남았는지 검사
@@ -1517,12 +1431,12 @@ class ControlTowerNode(Node):
                         # Try hash first
                         val = self.redis_client.hgetall(key)
                         if val:
-                            # 안전한 배터리 값 파싱 (ValueError/빈 문자열 대응)
                             try:
-                                battery_raw = val.get("battery", "100.0")
-                                battery_float = float(battery_raw) if battery_raw and str(battery_raw).strip() else 100.0
+                                battery_val = val.get("battery", "100.0")
+                                battery_float = float(battery_val) if battery_val.strip() else 100.0
                             except (ValueError, TypeError):
                                 battery_float = 100.0
+
                             amr_states[amr_id] = {
                                 "state": val.get("state", "IDLE"),
                                 "current_qr_id": val.get("current_qr_id", ""),
@@ -1558,73 +1472,68 @@ class ControlTowerNode(Node):
         amr_msg.data = json.dumps(amr_states)
         self.amr_states_pub.publish(amr_msg)
 
-        # 2. Workstation States — 구독자가 있을 때만 DB 조회 (조건부 발행)
-        has_ws_subs = self.workstation_states_pub.get_subscription_count() > 0
-        has_pkg_subs = self.package_states_pub.get_subscription_count() > 0
+        # 2. Workstation States (JOIN floor_qr_map and packages occupied slots)
+        workstations_list = []
+        with self.get_db_connection() as conn:
+            if conn:
+                try:
+                    with conn.cursor() as cursor:
+                        # w.status, w.reserved_by가 새로 추가됨
+                        cursor.execute(
+                            "SELECT w.workstation_id, w.qr_id, COALESCE(f.qr_id, w.current_location) as current_location_qr, "
+                            "       w.status, w.reserved_by, "
+                            "       COALESCE(array_to_json(array_agg(p.slot_number ORDER BY p.slot_number) FILTER (WHERE p.slot_number IS NOT NULL AND p.status = 'IN_WORKSTATION')), '[]'::json) as filled_slots "
+                            "FROM workstations w "
+                            "LEFT JOIN floor_qr_map f ON w.current_location = f.location_name "
+                            "LEFT JOIN packages p ON w.workstation_id = p.workstation_id "
+                            "GROUP BY w.workstation_id, w.current_location, f.qr_id, w.qr_id, w.status, w.reserved_by;"
+                        )
+                        rows = cursor.fetchall()
+                        for row in rows:
+                            workstations_list.append({
+                                "workstation_id": row[0],
+                                "workstation_qr_id": row[1] or "",
+                                "current_location": row[2],
+                                "status": row[3] or "WAITING",
+                                "slot_count": 8,
+                                "filled_slots": row[5] if isinstance(row[5], list) else json.loads(row[5] or '[]'),
+                                "reserved_by": row[4]
+                            })
+                except Exception as e:
+                    self.get_logger().error(f'PostgreSQL에서 작업대 상태 로드 중 에러: {str(e)}')
 
-        if has_ws_subs:
-            workstations_list = []
-            with self.get_db_connection() as conn:
-                if conn:
-                    try:
-                        with conn.cursor() as cursor:
-                            # w.status, w.reserved_by가 새로 추가됨
-                            cursor.execute(
-                                "SELECT w.workstation_id, w.qr_id, COALESCE(f.qr_id, w.current_location) as current_location_qr, "
-                                "       w.status, w.reserved_by, "
-                                "       COALESCE(array_to_json(array_agg(p.slot_number ORDER BY p.slot_number) FILTER (WHERE p.slot_number IS NOT NULL AND p.status = 'IN_WORKSTATION')), '[]'::json) as filled_slots "
-                                "FROM workstations w "
-                                "LEFT JOIN floor_qr_map f ON w.current_location = f.location_name "
-                                "LEFT JOIN packages p ON w.workstation_id = p.workstation_id "
-                                "GROUP BY w.workstation_id, w.current_location, f.qr_id, w.qr_id, w.status, w.reserved_by;"
-                            )
-                            rows = cursor.fetchall()
-                            for row in rows:
-                                workstations_list.append({
-                                    "workstation_id": row[0],
-                                    "workstation_qr_id": row[1] or "",
-                                    "current_location": row[2],
-                                    "status": row[3] or "WAITING",
-                                    "slot_count": 8,
-                                    "filled_slots": row[5] if isinstance(row[5], list) else json.loads(row[5] or '[]'),
-                                    "reserved_by": row[4]
-                                })
-                    except Exception as e:
-                        self.get_logger().error(f'PostgreSQL에서 작업대 상태 로드 중 에러: {str(e)}')
+        ws_msg = String()
+        ws_msg.data = json.dumps({"workstations": workstations_list})
+        self.workstation_states_pub.publish(ws_msg)
 
-            ws_msg = String()
-            ws_msg.data = json.dumps({"workstations": workstations_list})
-            self.workstation_states_pub.publish(ws_msg)
+        # 3. Package States (only WAITING, IN_WORKSTATION, IN_WAREHOUSE status)
+        packages_list = []
+        with self.get_db_connection() as conn:
+            if conn:
+                try:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT package_id, customer_name, route_zone, status, outbound_id, workstation_id, slot_number, qr_id "
+                            "FROM packages WHERE status != 'COMPLETED';"
+                        )
+                        rows = cursor.fetchall()
+                        for row in rows:
+                            packages_list.append({
+                                "package_id": row[0],
+                                "customer_name": row[1],
+                                "route_zone": row[2],
+                                "status": row[3],
+                                "outbound_id": row[4],
+                                "workstation_id": row[5],
+                                "slot_number": row[6],
+                                "qr_id": row[7] or ""
+                            })
+                except Exception as e:
+                    self.get_logger().error(f'PostgreSQL에서 패키지 상태 로드 중 에러: {str(e)}')
 
-        # 3. Package States — 구독자가 있을 때만 DB 조회 (조건부 발행)
-        if has_pkg_subs:
-            packages_list = []
-            with self.get_db_connection() as conn:
-                if conn:
-                    try:
-                        with conn.cursor() as cursor:
-                            cursor.execute(
-                                "SELECT package_id, customer_name, route_zone, status, outbound_id, workstation_id, slot_number, qr_id "
-                                "FROM packages WHERE status != 'COMPLETED';"
-                            )
-                            rows = cursor.fetchall()
-                            for row in rows:
-                                packages_list.append({
-                                    "package_id": row[0],
-                                    "customer_name": row[1],
-                                    "route_zone": row[2],
-                                    "status": row[3],
-                                    "outbound_id": row[4],
-                                    "workstation_id": row[5],
-                                    "slot_number": row[6],
-                                    "qr_id": row[7] or ""
-                                })
-                    except Exception as e:
-                        self.get_logger().error(f'PostgreSQL에서 패키지 상태 로드 중 에러: {str(e)}')
-
-            pkg_msg = String()
-            pkg_msg.data = json.dumps({"packages": packages_list})
-            self.package_states_pub.publish(pkg_msg)
+        pkg_msg = String()
+        pkg_msg.data = json.dumps({"packages": packages_list})
+        self.package_states_pub.publish(pkg_msg)
 
         # 오늘 물량 완료 검사 (Day finished check)
         if self.redis_client:
@@ -1634,9 +1543,9 @@ class ControlTowerNode(Node):
                     with self.get_db_connection() as conn:
                         if conn:
                             with conn.cursor() as cursor:
-                                today_date = self.redis_client.get('system:today_date') if self.redis_client else '2026-06-06'
+                                today_date = self.redis_client.get('system:today_date') if self.redis_client else datetime.now().strftime('%Y-%m-%d')
                                 if not today_date:
-                                    today_date = '2026-06-06'
+                                    today_date = datetime.now().strftime('%Y-%m-%d')
                                 
                                 if today_date:
                                     cursor.execute(

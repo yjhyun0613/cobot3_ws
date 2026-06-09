@@ -3,47 +3,21 @@ import os
 import psycopg2
 import redis
 import json
+import csv
+import io
+import asyncio
+import re
+from datetime import datetime, timedelta
+from typing import List
+
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 import uvicorn
-import csv
-import io
-from datetime import datetime, timedelta
-import asyncio
-from typing import List
+from psycopg2 import pool
 
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: dict):
-        for connection in list(self.active_connections):
-            try:
-                await connection.send_json(message)
-            except Exception:
-                self.disconnect(connection)
-
-manager = ConnectionManager(), WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
-import uvicorn
-import csv
-import io
-from datetime import datetime, timedelta
-import asyncio
-from typing import List
-
-# DB 정적 데이터 캐시 (서버 시작 후 1회만 쿼리)
-_grid_cells_cache = None
-_locations_cache = None
-
+# ----------------------------------------------------
+# 1. 웹소켓 커넥션 매니저 클래스
+# ----------------------------------------------------
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -64,19 +38,19 @@ class ConnectionManager:
                 self.disconnect(connection)
 
 manager = ConnectionManager()
-from fastapi.responses import HTMLResponse
-import uvicorn
-import csv
-import io
-from datetime import datetime, timedelta
-
 app = FastAPI(title="Coupang Warehouse Control Panel")
+
+# DB 정적 데이터 캐시 (서버 시작 후 1회만 쿼리하여 부하 감소)
+_grid_cells_cache = None
+_locations_cache = None
+
+db_pool = None
+global_redis = None
 
 def normalize_qr_id(qr_id: str) -> str:
     if not qr_id or not qr_id.startswith("FLOOR_X_"):
         return qr_id
     try:
-        import re
         match = re.match(r"FLOOR_X_(-?\d+\.?\d*)_Y_(-?\d+\.?\d*)", qr_id)
         if match:
             x_val = float(match.group(1))
@@ -85,10 +59,6 @@ def normalize_qr_id(qr_id: str) -> str:
     except Exception:
         pass
     return qr_id
-
-from psycopg2 import pool
-db_pool = None
-global_redis = None
 
 def get_db_connections():
     global db_pool, global_redis
@@ -171,39 +141,6 @@ def push_priority_task(redis_client, task_dict):
                 redis_client.delete('queue:amr_tasks')
                 redis_client.zadd('queue:amr_tasks', {json.dumps(task_dict): score})
 
-
-async def status_broadcast_loop():
-    while True:
-        if manager.active_connections:
-            try:
-                loop = asyncio.get_event_loop()
-                status_data = await loop.run_in_executor(None, get_status)
-                # grid_cells는 초기 연결 시에만 전송하고 주기적 브로드캐스트에서는 제외 (대역폭 절약)
-                broadcast_data = {k: v for k, v in status_data.items() if k != 'grid_cells'}
-                await manager.broadcast(broadcast_data)
-            except Exception as e:
-                print(f"Broadcast loop error: {e}")
-        await asyncio.sleep(1.5)  # 0.5s → 1.5s: 브라우저 DOM 부하 경감
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(status_broadcast_loop())
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
-    try:
-        loop = asyncio.get_event_loop()
-        status_data = await loop.run_in_executor(None, get_status)
-        await websocket.send_json(status_data)
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-    except Exception:
-        manager.disconnect(websocket)
-
-@app.get("/api/status")
 def get_status():
     pg_conn, redis_client = get_db_connections()
     if not pg_conn:
@@ -245,9 +182,7 @@ def get_status():
                 })
             
             # 2. Warehouse Locations
-            cursor.execute("""
-                SELECT spot_id, workstation_id, status FROM warehouse_locations ORDER BY spot_id;
-            """)
+            cursor.execute("SELECT spot_id, workstation_id, status FROM warehouse_locations ORDER BY spot_id;")
             spots = []
             for row in cursor.fetchall():
                 spots.append({
@@ -287,7 +222,7 @@ def get_status():
                     _locations_cache[loc_name] = {"x": x, "y": y, "type": loc_type, "qr_id": qr}
             locations = _locations_cache
                 
-        # 4. Redis Active Queue Tasks (Sorted Set, 내림차순 조회)
+        # 4. Redis Active Queue Tasks (Sorted Set)
         redis_tasks = []
         if redis_client:
             try:
@@ -300,7 +235,7 @@ def get_status():
                     except:
                         redis_tasks.append({"raw_task": t_raw, "priority_score": int(score)})
             except Exception as re:
-                if "WRONGTYPE" in str(re):
+                if "WRONGTYPE" in str(e):
                     redis_client.delete('queue:amr_tasks')
                 print(f"Redis Queue Query Error: {re}")
 
@@ -339,7 +274,6 @@ def get_status():
             except Exception as e:
                 print(f"AMR query error: {e}")
 
-        # If no AMR states are found in Redis, generate smart dynamic fallback/mock states
         if not amr_states:
             moving_ws = [w for w in workstations if w["current_location"].lower().startswith("moving_to_") or w["current_location"].lower().endswith("_rotating")]
             for idx, ws in enumerate(moving_ws):
@@ -368,15 +302,12 @@ def get_status():
                     "battery": "91"
                 }
 
-        # 3.6. grid_cells는 캐시 사용 (DB를 매번 치지 않음 — 성능 최적화)
+        # grid_cells 캐시 활용
         global _grid_cells_cache
         if _grid_cells_cache is None:
             try:
                 with pg_conn.cursor() as cursor:
-                    cursor.execute("""
-                        SELECT qr_id, x_coord, y_coord, location_name, location_type 
-                        FROM floor_qr_map;
-                    """)
+                    cursor.execute("SELECT qr_id, x_coord, y_coord, location_name, location_type FROM floor_qr_map;")
                     _grid_cells_cache = []
                     for qr, x, y, loc_name, loc_type in cursor.fetchall():
                         _grid_cells_cache.append({
@@ -392,18 +323,11 @@ def get_status():
                 _grid_cells_cache = []
         grid_cells = _grid_cells_cache
 
-        # 3.7. Device connection statuses
         device_status = {
-            "bg2": True,
-            "sg2_in_01": True,
-            "sg2_in_02": True,
-            "sg2_in_03": True,
-            "sg2_out_00": True,
-            "amr": False
+            "bg2": True, "sg2_in_01": True, "sg2_in_02": True, "sg2_in_03": True, "sg2_out_00": True, "amr": False
         }
         if redis_client:
             try:
-                # Check for active AMRs
                 amr_keys = redis_client.keys("amr:*")
                 device_status["amr"] = len([k for k in amr_keys if k != "queue:amr_tasks"]) > 0
             except Exception as de:
@@ -411,21 +335,48 @@ def get_status():
 
         release_db_connection(pg_conn)
         return {
-            "workstations": workstations,
-            "spots": spots,
-            "packages": packages,
-            "redis_tasks": redis_tasks,
-            "locations": locations,
-            "day_status": day_status,
-            "completed_day": completed_day,
-            "amr_states": amr_states,
-            "grid_cells": grid_cells,
+            "workstations": workstations, "spots": spots, "packages": packages,
+            "redis_tasks": redis_tasks, "locations": locations, "day_status": day_status,
+            "completed_day": completed_day, "amr_states": amr_states, "grid_cells": grid_cells,
             "device_status": device_status
         }
     except Exception as e:
         if pg_conn:
             release_db_connection(pg_conn)
         raise HTTPException(status_code=500, detail=str(e))
+
+async def status_broadcast_loop():
+    while True:
+        if manager.active_connections:
+            try:
+                loop = asyncio.get_event_loop()
+                status_data = await loop.run_in_executor(None, get_status)
+                # 대역폭 절약을 위해 grid_cells는 브로드캐스트에서 제외
+                broadcast_data = {k: v for k, v in status_data.items() if k != 'grid_cells'}
+                await manager.broadcast(broadcast_data)
+            except Exception as e:
+                print(f"Broadcast loop error: {e}")
+        await asyncio.sleep(1.5)
+
+# 서버 시작 시 실시간 브로드캐스트 비동기 루프 구동
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(status_broadcast_loop())
+
+# 웹소켓 라우트 핸들러 정상 정의
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        loop = asyncio.get_event_loop()
+        status_data = await loop.run_in_executor(None, get_status)
+        await websocket.send_json(status_data)
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception:
+        manager.disconnect(websocket)
 
 @app.post("/api/upload_packages")
 async def upload_packages(request: Request):
@@ -434,13 +385,9 @@ async def upload_packages(request: Request):
         content = content_bytes.decode('utf-8')
         csv_reader = csv.DictReader(io.StringIO(content))
         
-        # 1. 컬럼 유효성 검사
         required_fields = ['package_id', 'customer_name', 'route_zone']
         if not csv_reader.fieldnames or not all(field in csv_reader.fieldnames for field in required_fields):
-            raise HTTPException(
-                status_code=400, 
-                detail=f"CSV file must contain columns: {', '.join(required_fields)}"
-            )
+            raise HTTPException(status_code=400, detail=f"CSV file must contain columns: {', '.join(required_fields)}")
         
         pg_conn, redis_client = get_db_connections()
         if not pg_conn:
@@ -465,11 +412,7 @@ async def upload_packages(request: Request):
                     INSERT INTO packages (package_id, customer_name, route_zone, status, qr_id)
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (package_id) 
-                    DO UPDATE SET 
-                        customer_name = EXCLUDED.customer_name,
-                        route_zone = EXCLUDED.route_zone,
-                        status = EXCLUDED.status,
-                        qr_id = EXCLUDED.qr_id;
+                    DO UPDATE SET customer_name = EXCLUDED.customer_name, route_zone = EXCLUDED.route_zone, status = EXCLUDED.status, qr_id = EXCLUDED.qr_id;
                 """, (pkg_id, cust_name, route_zone, status, qr_id))
                 success_count += 1
                 
@@ -487,25 +430,18 @@ def reset_db():
         raise HTTPException(status_code=500, detail="Database connection failed")
         
     try:
-        # 1. reset_db.py 스크립트 실행하여 DB와 Redis 완전 초기화 및 바닥 QR 격자 맵 복구
         import subprocess
         import sys
         ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         reset_script = os.path.join(ws_root, "scratch", "reset_db.py")
-        result = subprocess.run(
-            [sys.executable, reset_script],
-            cwd=ws_root,
-            capture_output=True, text=True, timeout=120
-        )
+        result = subprocess.run([sys.executable, reset_script], cwd=ws_root, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
             raise Exception(f"reset_db.py 실행 실패: {result.stderr}")
 
-        # 2. Redis 상태 및 기본값 기입
         if redis_client:
             redis_client.set('system:today_date', '2026-06-06')
             redis_client.set('system:day_status', 'WAITING_FOR_START')
 
-        # 3. grid_cells 캐시 초기화
         global _grid_cells_cache
         _grid_cells_cache = None
             
@@ -516,14 +452,12 @@ def reset_db():
             release_db_connection(pg_conn)
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/api/start_next_day")
 def start_next_day():
     pg_conn, redis_client = get_db_connections()
     if not redis_client:
         raise HTTPException(status_code=500, detail="Redis connection failed")
     try:
-        # 0. Redis 날짜 1일 증가
         today_date = redis_client.get('system:today_date')
         if not today_date:
             today_date = '2026-06-06'
@@ -537,15 +471,11 @@ def start_next_day():
         shift_count = 0
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                # 0-1. 라인에 있는 빈 작업대들을 창고로 우선 복귀
                 cursor.execute("""
                     SELECT workstation_id, current_location, qr_id FROM workstations
-                    WHERE (current_location ILIKE '%sg2_in_01%' 
-                       OR current_location ILIKE '%sg2_in_02%' 
-                       OR current_location ILIKE '%sg2_in_03%')
+                    WHERE (current_location ILIKE '%sg2_in_01%' OR current_location ILIKE '%sg2_in_02%' OR current_location ILIKE '%sg2_in_03%')
                       AND workstation_id NOT IN (
-                          SELECT DISTINCT workstation_id FROM packages
-                          WHERE status IN ('IN_WORKSTATION', 'IN_WAREHOUSE') AND workstation_id IS NOT NULL
+                          SELECT DISTINCT workstation_id FROM packages WHERE status IN ('IN_WORKSTATION', 'IN_WAREHOUSE') AND workstation_id IS NOT NULL
                       );
                 """)
                 empty_ws_to_return = cursor.fetchall()
@@ -557,52 +487,30 @@ def start_next_day():
                         spot_row = cursor.fetchone()
                     if spot_row:
                         target_spot = spot_row[0]
-                        # DB에서 창고 주차 상태를 즉시 선점하여 중복 방지 (선행 위치 갱신은 방지)
                         cursor.execute("UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;", (ws_id, target_spot))
                         
                         task_data = {
-                            "task_type": "PRE_FETCH_WORKSTATION",
-                            "workstation_id": ws_id,
-                            "from": curr_loc,
-                            "to": target_spot,
-                            "description": f"영업일 전환: 빈 작업대 반납 ({curr_loc} ➡️ {target_spot})",
-                            "workstation_qr_id": qr_id if qr_id else ""
+                            "task_type": "PRE_FETCH_WORKSTATION", "workstation_id": ws_id, "from": curr_loc, "to": target_spot,
+                            "description": f"영업일 전환: 빈 작업대 반납 ({curr_loc} ➡️ {target_spot})", "workstation_qr_id": qr_id if qr_id else ""
                         }
                         push_priority_task(redis_client, task_data)
                         shift_count += 1
 
-                # 1. 영업일 전환 시 물리적 이동(대안 A)이 필요한 작업대 조회
-                cursor.execute("""
-                    SELECT workstation_id, current_location, qr_id 
-                    FROM workstations 
-                    WHERE current_location ILIKE '%sg2_in_02%' 
-                       OR current_location ILIKE '%sg2_in_03%';
-                """)
+                cursor.execute("SELECT workstation_id, current_location, qr_id FROM workstations WHERE current_location ILIKE '%sg2_in_02%' OR current_location ILIKE '%sg2_in_03%';")
                 ws_rows = cursor.fetchall()
                 for ws_id, curr_loc, qr_id in ws_rows:
                     ws_qr = qr_id if qr_id else ""
                     target_loc = None
                     
-                    # 대안 A 물리 이송 위치 결정 (02 -> 01, 03 -> 02)
-                    if "sg2_in_02" in curr_loc:
-                        target_loc = curr_loc.replace("sg2_in_02", "sg2_in_01")
-                    elif "SG2_IN_02" in curr_loc:
-                        target_loc = curr_loc.replace("SG2_IN_02", "SG2_IN_01")
-                    elif "sg2_in_03" in curr_loc:
-                        target_loc = curr_loc.replace("sg2_in_03", "sg2_in_02")
-                    elif "SG2_IN_03" in curr_loc:
-                        target_loc = curr_loc.replace("SG2_IN_03", "SG2_IN_02")
+                    if "sg2_in_02" in curr_loc: target_loc = curr_loc.replace("sg2_in_02", "sg2_in_01")
+                    elif "SG2_IN_02" in curr_loc: target_loc = curr_loc.replace("SG2_IN_02", "SG2_IN_01")
+                    elif "sg2_in_03" in curr_loc: target_loc = curr_loc.replace("sg2_in_03", "sg2_in_02")
+                    elif "SG2_IN_03" in curr_loc: target_loc = curr_loc.replace("SG2_IN_03", "SG2_IN_02")
                     
                     if target_loc:
-                        # DB 선행 위치 갱신은 방지 (관제탑 이송 완료 시 자동 업데이트 위임)
-                        
                         task_data = {
-                            "task_type": "PRE_FETCH_WORKSTATION",
-                            "workstation_id": ws_id,
-                            "from": curr_loc,
-                            "to": target_loc,
-                            "description": f"영업일 전환 (대안 A): {ws_id} ({curr_loc} ➡️ {target_loc})",
-                            "workstation_qr_id": ws_qr
+                            "task_type": "PRE_FETCH_WORKSTATION", "workstation_id": ws_id, "from": curr_loc, "to": target_loc,
+                            "description": f"영업일 전환 (대안 A): {ws_id} ({curr_loc} ➡️ {target_loc})", "workstation_qr_id": ws_qr
                         }
                         push_priority_task(redis_client, task_data)
                         shift_count += 1
@@ -629,12 +537,10 @@ def start_business():
     if not redis_client:
         raise HTTPException(status_code=500, detail="Redis connection failed")
     try:
-        # 1. 오늘 날짜 구하기
         today_date = redis_client.get('system:today_date')
         if not today_date:
             today_date = '2026-06-06'
 
-        # 2. 오늘 분류할 대기 패키지가 데이터베이스에 존재하는지 검사 (선택 사항)
         has_packages = False
         if pg_conn:
             with pg_conn.cursor() as cursor:
@@ -644,43 +550,12 @@ def start_business():
             release_db_connection(pg_conn)
 
         if not has_packages:
-            return {
-                "success": False, 
-                "message": "오늘 분류할 대기 패키지가 존재하지 않습니다. 먼저 CSV 입고 명단을 업로드해 주세요."
-            }
+            return {"success": False, "message": "오늘 분류할 대기 패키지가 존재하지 않습니다. 먼저 CSV 입고 명단을 업로드해 주세요."}
 
-        # 3. 로봇 기기들의 연결 상태(Heartbeat) 체크 (bg2, sg2는 항상 True로 통과)
-        bg2_online = True
-        sg2_in_01_online = True
-        sg2_in_02_online = True
-        sg2_in_03_online = True
-        sg2_out_00_online = True
-
-        amr_keys = redis_client.keys("amr:*")
-        amr_online = len([k for k in amr_keys if k != "queue:amr_tasks"]) > 0
-
-        offline_devices = []
-        if not bg2_online: offline_devices.append("분류 로봇 (bg2)")
-        if not sg2_in_01_online: offline_devices.append("적재 로봇 1 (sg2_in_01)")
-        if not sg2_in_02_online: offline_devices.append("적재 로봇 2 (sg2_in_02)")
-        if not sg2_in_03_online: offline_devices.append("적재 로봇 3 (sg2_in_03)")
-        if not sg2_out_00_online: offline_devices.append("포장 로봇 (sg2_out_00)")
-        if not amr_online: offline_devices.append("AMR 주행 제어기")
-
-        if offline_devices:
-            return {
-                "success": False,
-                "message": f"연결되지 않은 기기가 있습니다: {', '.join(offline_devices)}. 모든 기기가 정상 연결된 후 영업을 시작할 수 있습니다."
-            }
-
-        # 4. 영업 시작 처리
         redis_client.set('system:day_status', 'RUNNING')
         redis_client.set('system:inbound_started', 'true')
         
-        return {
-            "success": True, 
-            "message": f"성공적으로 영업일({today_date})의 분류 및 이송 작업을 개시했습니다!"
-        }
+        return {"success": True, "message": f"성공적으로 영업일({today_date})의 분류 및 이송 작업을 개시했습니다!"}
     except Exception as e:
         if pg_conn:
             release_db_connection(pg_conn)
@@ -694,7 +569,6 @@ def simulate_inbound():
         
     try:
         with pg_conn.cursor() as cursor:
-            # 1. 아직 적재되지 않은 대기 중인 상자 하나 선택
             cursor.execute("SELECT package_id, customer_name, route_zone, qr_id FROM packages WHERE status = 'WAITING' LIMIT 1;")
             pkg_row = cursor.fetchone()
             if not pkg_row:
@@ -702,83 +576,52 @@ def simulate_inbound():
                 return {"success": False, "message": "더 이상 적재할 대기 패키지가 없습니다."}
             
             pkg_id, cust_name, zone, pkg_qr = pkg_row
-            
-            # Redis 기준 오늘, 내일, 모레 날짜 결정
             today_date, tomorrow_date, day_after_date = get_active_dates(redis_client)
 
-            # 목적지 분류에 따른 대상 로봇 결정
-            if zone == today_date:
-                target_robot = 'sg2_in_01'
-            elif zone == tomorrow_date:
-                target_robot = 'sg2_in_02'
-            elif zone == day_after_date:
-                target_robot = 'sg2_in_03'
-            else:
-                target_robot = 'sg2_in_01'
+            if zone == today_date: target_robot = 'sg2_in_01'
+            elif zone == tomorrow_date: target_robot = 'sg2_in_02'
+            elif zone == day_after_date: target_robot = 'sg2_in_03'
+            else: target_robot = 'sg2_in_01'
 
             target_loc = f"{target_robot}_A"
             
-            # 2. 해당 로봇 라인에 연관된 작업대 찾기 (A구역 -> 회전중 -> A로 이동중 -> B구역 -> B로 이동중 순으로 선호)
-            loc_a = f"{target_robot}_A"
-            loc_a_rot = f"{target_robot}_A_ROTATING"
-            loc_a_mov = f"MOVING_TO_{target_robot.upper()}_A"
-            loc_b = f"{target_robot}_B"
-            loc_b_mov = f"MOVING_TO_{target_robot.upper()}_B"
+            loc_a, loc_a_rot, loc_a_mov = f"{target_robot}_A", f"{target_robot}_A_ROTATING", f"MOVING_TO_{target_robot.upper()}_A"
+            loc_b, loc_b_mov = f"{target_robot}_B", f"MOVING_TO_{target_robot.upper()}_B"
             
             cursor.execute("""
                 SELECT workstation_id, current_location FROM workstations 
                 WHERE current_location IN (%s, %s, %s, %s, %s)
-                ORDER BY 
-                    CASE current_location
-                        WHEN %s THEN 1
-                        WHEN %s THEN 2
-                        WHEN %s THEN 3
-                        WHEN %s THEN 4
-                        WHEN %s THEN 5
-                        ELSE 6
-                    END
-                LIMIT 1;
+                ORDER BY CASE current_location
+                    WHEN %s THEN 1 WHEN %s THEN 2 WHEN %s THEN 3 WHEN %s THEN 4 WHEN %s THEN 5 ELSE 6
+                END LIMIT 1;
             """, (loc_a, loc_a_rot, loc_a_mov, loc_b, loc_b_mov, loc_a, loc_a_rot, loc_a_mov, loc_b, loc_b_mov))
             ws_row = cursor.fetchone()
             if ws_row:
                 ws_id = ws_row[0]
             else:
-                # 작업대가 없다면, 창고에서 비거나 대기중인 것 중 하나를 배정
                 cursor.execute("""
                     SELECT workstation_id, current_location FROM workstations 
                     WHERE current_location LIKE 'spot_%%'
                     AND workstation_id NOT IN (
-                        SELECT DISTINCT workstation_id FROM packages 
-                        WHERE status IN ('IN_WORKSTATION', 'IN_WAREHOUSE') AND workstation_id IS NOT NULL
+                        SELECT DISTINCT workstation_id FROM packages WHERE status IN ('IN_WORKSTATION', 'IN_WAREHOUSE') AND workstation_id IS NOT NULL
                     ) LIMIT 1;
                 """)
                 empty_ws_row = cursor.fetchone()
                 if empty_ws_row:
                     ws_id, current_loc = empty_ws_row
-                    # 출발 창고 스팟 비우기
                     cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (current_loc,))
-                    # A 구역으로 작업대 이송 태스크 발행 (선행 DB 업데이트는 제외)
                     cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
-                    ws_qr_row = cursor.fetchone()
-                    ws_qr = ws_qr_row[0] if ws_qr_row else ""
+                    ws_qr = cursor.fetchone()[0] or ""
                     task_deploy = {
-                        "task_type": "DEPLOY_EMPTY_WORKSTATION",
-                        "workstation_id": ws_id,
-                        "from": current_loc,
-                        "to": target_loc,
-                        "description": f"인바운드 호출: 빈 작업대 {ws_id} 배치 → {target_loc} (창고 직송)",
-                        "workstation_qr_id": ws_qr
+                        "task_type": "DEPLOY_EMPTY_WORKSTATION", "workstation_id": ws_id, "from": current_loc, "to": target_loc,
+                        "description": f"인바운드 호출: 빈 작업대 {ws_id} 배치 → {target_loc} (창고 직송)", "workstation_qr_id": ws_qr
                     }
                     push_priority_task(redis_client, task_deploy)
                 else:
                     release_db_connection(pg_conn)
                     return {"success": False, "message": f"{target_robot}_A 에 배치할 빈 작업대가 없습니다."}
 
-            # 3. 해당 작업대의 다음 빈 슬롯 찾기
-            cursor.execute("""
-                SELECT slot_number FROM packages 
-                WHERE workstation_id = %s AND status = 'IN_WORKSTATION';
-            """, (ws_id,))
+            cursor.execute("SELECT slot_number FROM packages WHERE workstation_id = %s AND status = 'IN_WORKSTATION';", (ws_id,))
             filled_slots = {r[0] for r in cursor.fetchall()}
             
             slot_num = None
@@ -791,489 +634,184 @@ def simulate_inbound():
                 release_db_connection(pg_conn)
                 return {"success": False, "message": f"작업대 {ws_id}의 모든 슬롯이 찼습니다!"}
                 
-            # 4. 데이터베이스 업데이트 (패키지 정보)
-            cursor.execute("""
-                UPDATE packages 
-                SET status = 'IN_WORKSTATION', workstation_id = %s, slot_number = %s
-                WHERE package_id = %s;
-            """, (ws_id, slot_num, pkg_id))
+            cursor.execute("UPDATE packages SET status = 'IN_WORKSTATION', workstation_id = %s, slot_number = %s WHERE package_id = %s;", (ws_id, slot_num, pkg_id))
             
-            # 5. 3번째 슬롯 적재 시 → Look-ahead: 다음 빈 작업대 사전 호출
             lookahead_triggered = False
             if slot_num == 3 and redis_client:
                 cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
                 ws_qr = cursor.fetchone()[0]
-                
                 task_data = {
-                    "task_type": "PRE_FETCH_EMPTY_WORKSTATION",
-                    "target_robot": target_robot,
-                    "description": f"Look-ahead: {ws_id} 3번째 슬롯 적재 감지 → B구역 예비 작업대 호출",
-                    "workstation_qr_id": ws_qr
+                    "task_type": "PRE_FETCH_EMPTY_WORKSTATION", "target_robot": target_robot,
+                    "description": f"Look-ahead: {ws_id} 3번째 슬롯 적재 감지 → B구역 예비 작업대 호출", "workstation_qr_id": ws_qr
                 }
                 push_priority_task(redis_client, task_data)
                 lookahead_triggered = True
 
-            # 5-1. 4번째 슬롯 적재 시 → 180도 회전 태스크 발행 및 로봇 대기 유도
             rotation_triggered = False
             if slot_num == 4 and redis_client:
                 cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
                 ws_qr = cursor.fetchone()[0]
-                
-                # DB 선행 업데이트 삭제 (관제탑이 태스크 시작 시 처리하도록 위임)
-                
                 task_data = {
-                    "task_type": "ROTATE_WORKSTATION",
-                    "workstation_id": ws_id,
-                    "from": f"{target_robot}_A_ROTATING",
-                    "to": target_loc,
-                    "description": f"제자리 회전: {ws_id} 4번째 슬롯 적재 완료 → 180도 회전",
-                    "workstation_qr_id": ws_qr
+                    "task_type": "ROTATE_WORKSTATION", "workstation_id": ws_id, "from": f"{target_robot}_A_ROTATING", "to": target_loc,
+                    "description": f"제자리 회전: {ws_id} 4번째 슬롯 적재 완료 → 180도 회전", "workstation_qr_id": ws_qr
                 }
                 push_priority_task(redis_client, task_data)
                 rotation_triggered = True
             
-            # 6. 8번째 슬롯 적재 시 → 완충 작업대 교체: 다 찬 작업대 회수 (포장존 또는 창고) + 새 작업대 교체 배치
             swap_triggered = False
             if slot_num == 8 and redis_client:
                 cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
-                ws_qr_row = cursor.fetchone()
-                ws_qr = ws_qr_row[0] if ws_qr_row else ""
+                ws_qr = cursor.fetchone()[0] or ""
                 
                 if target_robot == 'sg2_in_01':
-                    # 오늘 날짜 분류 라인 -> 포장존(sg2_out_00_A) 또는 출고 대기 창고(stage_01~06)로 이송
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM workstations 
-                        WHERE current_location = 'sg2_out_00_A' OR current_location = 'MOVING_TO_SG2_OUT_00_A';
-                    """)
-                    out_a_count = cursor.fetchone()[0]
-                    
-                    if out_a_count == 0:
-                        target_out = 'sg2_out_00_A'
+                    cursor.execute("SELECT COUNT(*) FROM workstations WHERE current_location = 'sg2_out_00_A' OR current_location = 'MOVING_TO_SG2_OUT_00_A';")
+                    if cursor.fetchone()[0] == 0: target_out = 'sg2_out_00_A'
                     else:
-                        # 포장존이 찬 경우 출고 대기 창고(stage_01~06)로 회수 보관
-                        cursor.execute("BEGIN;")
-                        cursor.execute("SELECT spot_id FROM warehouse_locations WHERE spot_id LIKE 'stage_%%' AND status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1 FOR UPDATE;")
-                        empty_spot_row = cursor.fetchone()
-                        target_out = empty_spot_row[0] if empty_spot_row else "staging"
-                        
-                        if empty_spot_row:
-                            cursor.execute(
-                                "UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;",
-                                (ws_id, target_out)
-                            )
-                        cursor.execute("COMMIT;")
-                        
-                        cursor.execute(
-                            "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE workstation_id = %s AND status = 'IN_WORKSTATION';",
-                            (ws_id,)
-                        )
-
-                    task_retrieve = {
-                        "task_type": "RETRIEVE_FULL_WORKSTATION",
-                        "workstation_id": ws_id,
-                        "from": target_loc,
-                        "to": target_out,
-                        "description": f"완충 작업대 {ws_id} 회수 → {target_out} 이동",
-                        "workstation_qr_id": ws_qr
-                    }
-                elif target_robot == 'sg2_in_02':
-                    # 내일 날짜 분류 라인 -> 출고 대기 창고(stage_01~06)로 이송
-                    cursor.execute("BEGIN;")
-                    cursor.execute("SELECT spot_id FROM warehouse_locations WHERE spot_id LIKE 'stage_%%' AND status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1 FOR UPDATE;")
-                    empty_spot_row = cursor.fetchone()
-                    target_out = empty_spot_row[0] if empty_spot_row else "staging"
-                    
-                    if empty_spot_row:
-                        cursor.execute(
-                            "UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;",
-                            (ws_id, target_out)
-                        )
-                    cursor.execute("COMMIT;")
-                    
-                    cursor.execute(
-                        "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE workstation_id = %s AND status = 'IN_WORKSTATION';",
-                        (ws_id,)
-                    )
-                    task_retrieve = {
-                        "task_type": "RETRIEVE_FULL_WORKSTATION",
-                        "workstation_id": ws_id,
-                        "from": target_loc,
-                        "to": target_out,
-                        "description": f"완충 작업대 {ws_id} 회수 → {target_out} 이동",
-                        "workstation_qr_id": ws_qr
-                    }
+                        cursor.execute("SELECT spot_id FROM warehouse_locations WHERE spot_id LIKE 'stage_%%' AND status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1;")
+                        row = cursor.fetchone()
+                        target_out = row[0] if row else "staging"
+                        if row: cursor.execute("UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;", (ws_id, target_out))
+                        cursor.execute("UPDATE packages SET status = 'IN_WAREHOUSE' WHERE workstation_id = %s AND status = 'IN_WORKSTATION';", (ws_id,))
                 else:
-                    # 모레 분류 라인 -> 창고(spot_01~10)로 이송
-                    # 빈 창고 스팟 배정
-                    cursor.execute("BEGIN;")
-                    cursor.execute("SELECT spot_id FROM warehouse_locations WHERE spot_id LIKE 'spot_%%' AND status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1 FOR UPDATE;")
-                    empty_spot_row = cursor.fetchone()
-                    target_spot = empty_spot_row[0] if empty_spot_row else "warehouse"
-                    
-                    if empty_spot_row:
-                        cursor.execute(
-                            "UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;",
-                            (ws_id, target_spot)
-                        )
-                    cursor.execute("COMMIT;")
-                    
-                    cursor.execute(
-                        "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE workstation_id = %s AND status = 'IN_WORKSTATION';",
-                        (ws_id,)
-                    )
-                    task_retrieve = {
-                        "task_type": "RETRIEVE_FULL_WORKSTATION",
-                        "workstation_id": ws_id,
-                        "from": target_loc,
-                        "to": target_spot,
-                        "description": f"완충 작업대 {ws_id} 회수 → 창고 {target_spot} 입고",
-                        "workstation_qr_id": ws_qr
-                    }
-                
+                    prefix = 'stage_%%' if target_robot == 'sg2_in_02' else 'spot_%%'
+                    cursor.execute(f"SELECT spot_id FROM warehouse_locations WHERE spot_id LIKE '{prefix}' AND status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1;")
+                    row = cursor.fetchone()
+                    target_out = row[0] if row else "warehouse"
+                    if row: cursor.execute("UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;", (ws_id, target_out))
+                    cursor.execute("UPDATE packages SET status = 'IN_WAREHOUSE' WHERE workstation_id = %s AND status = 'IN_WORKSTATION';", (ws_id,))
+
+                task_retrieve = {
+                    "task_type": "RETRIEVE_FULL_WORKSTATION", "workstation_id": ws_id, "from": target_loc, "to": target_out,
+                    "description": f"완충 작업대 {ws_id} 회수 → {target_out} 이동", "workstation_qr_id": ws_qr
+                }
                 push_priority_task(redis_client, task_retrieve)
                 
-                # B구역에 대기 중인 작업대가 있다면 A구역으로 승격시키고 DEPLOY 태스크 발행
                 cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = %s LIMIT 1;", (f"{target_robot}_B",))
                 b_ws_row = cursor.fetchone()
                 if b_ws_row:
-                    b_ws_id, b_ws_qr = b_ws_row
-                    b_ws_qr = b_ws_qr if b_ws_qr else ""
-                    
                     task_deploy = {
-                        "task_type": "DEPLOY_EMPTY_WORKSTATION",
-                        "workstation_id": b_ws_id,
-                        "from": f"{target_robot}_B",
-                        "to": target_loc,
-                        "description": f"대기 작업대 {b_ws_id} 배치 → {target_loc} (승격)",
-                        "workstation_qr_id": b_ws_qr
+                        "task_type": "DEPLOY_EMPTY_WORKSTATION", "workstation_id": b_ws_row[0], "from": f"{target_robot}_B", "to": target_loc,
+                        "description": f"대기 작업대 {b_ws_row[0]} 배치 → {target_loc} (승격)", "workstation_qr_id": b_ws_row[1] or ""
                     }
                     push_priority_task(redis_client, task_deploy)
                 else:
-                    # B구역에 없다면 창고에서 직접 가져오기
-                    cursor.execute("""
-                        SELECT w.workstation_id, w.current_location, w.qr_id
-                        FROM workstations w
-                        WHERE w.current_location LIKE 'spot_%%'
-                        AND w.workstation_id NOT IN (
-                            SELECT DISTINCT workstation_id FROM packages
-                            WHERE workstation_id IS NOT NULL AND status IN ('IN_WORKSTATION', 'IN_WAREHOUSE')
-                        ) LIMIT 1;
-                    """)
-                    new_ws_row = cursor.fetchone()
-                    if new_ws_row:
-                        new_ws_id, new_ws_loc, new_ws_qr = new_ws_row
-                        new_ws_qr = new_ws_qr if new_ws_qr else ""
-                        
-                        cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (new_ws_loc,))
-                        
+                    cursor.execute("SELECT workstation_id, current_location, qr_id FROM workstations WHERE current_location LIKE 'spot_%%' AND workstation_id NOT IN (SELECT DISTINCT workstation_id FROM packages WHERE workstation_id IS NOT NULL AND status IN ('IN_WORKSTATION', 'IN_WAREHOUSE')) LIMIT 1;")
+                    new_row = cursor.fetchone()
+                    if new_row:
+                        cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (new_row[1],))
                         task_deploy = {
-                            "task_type": "DEPLOY_EMPTY_WORKSTATION",
-                            "workstation_id": new_ws_id,
-                            "from": new_ws_loc,
-                            "to": target_loc,
-                            "description": f"새 빈 작업대 {new_ws_id} 배치 → {target_loc} (창고 직송)",
-                            "workstation_qr_id": new_ws_qr
+                            "task_type": "DEPLOY_EMPTY_WORKSTATION", "workstation_id": new_row[0], "from": new_row[1], "to": target_loc,
+                            "description": f"새 빈 작업대 {new_row[0]} 배치 → {target_loc} (창고 직송)", "workstation_qr_id": new_row[2] or ""
                         }
                         push_priority_task(redis_client, task_deploy)
-                
                 swap_triggered = True
 
         release_db_connection(pg_conn)
         msg = f"상자 {pkg_id}를 {target_robot} 라인의 작업대 {ws_id} {slot_num}번 슬롯에 적재했습니다."
-        if lookahead_triggered:
-            msg += " (★ Look-ahead 예비 작업대 호출 트리거 발동!)"
-        if rotation_triggered:
-            msg += " (🔄 180도 회전 태스크 발행 및 로봇 대기 적용!)"
-        if swap_triggered:
-            msg += " (🔄 완충! 작업대 교체 수행: 회수 + 새 작업대 배치 완료)"
-            
+        if lookahead_triggered: msg += " (★ Look-ahead 예비 작업대 호출 트리거 발동!)"
+        if rotation_triggered: msg += " (🔄 180도 회전 태스크 발행 및 로봇 대기 적용!)"
+        if swap_triggered: msg += " (🔄 완충! 작업대 교체 수행 완료)"
         return {"success": True, "message": msg}
     except Exception as e:
-        if pg_conn:
-            release_db_connection(pg_conn)
+        if pg_conn: release_db_connection(pg_conn)
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/api/simulate_packaging")
 def simulate_packaging():
-    """포장 시뮬레이션: 포장존(sg2_out_00_A)에 있는 작업대의 패키지를 하나씩 포장 완료 처리"""
     pg_conn, redis_client = get_db_connections()
-    if not pg_conn:
-        raise HTTPException(status_code=500, detail="Database connection failed")
+    if not pg_conn: raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
         with pg_conn.cursor() as cursor:
-            # Redis 기준 오늘 날짜 결정
             today_date = get_active_dates(redis_client)[0]
-
-            # 1. 활성 포장 구역(sg2_out_00_A)에 위치한 작업대 찾기
             cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = 'sg2_out_00_A' LIMIT 1;")
             ws_row = cursor.fetchone()
             
             if not ws_row:
-                # 1-1. 포장 대기 구역(sg2_out_00_B)에 작업대가 있으면 A구역으로 승격 배치
                 cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = 'sg2_out_00_B' LIMIT 1;")
                 b_ws_row = cursor.fetchone()
                 if b_ws_row:
                     ws_id, ws_qr = b_ws_row
-                    ws_qr = ws_qr if ws_qr else ""
-                    
-                    # 대기 작업대가 활성화되었으므로 패키지들의 상태를 IN_WORKSTATION으로 전환
-                    cursor.execute(
-                        "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
-                        (ws_id,)
-                    )
-                    
+                    cursor.execute("UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';", (ws_id,))
                     if redis_client:
-                        task_deploy = {
-                            "task_type": "DEPLOY_PACKAGING_WORKSTATION",
-                            "workstation_id": ws_id,
-                            "from": "sg2_out_00_B",
-                            "to": "sg2_out_00_A",
-                            "description": f"대기 작업대 {ws_id} 배치 → sg2_out_00_A (승격)",
-                            "workstation_qr_id": ws_qr
-                        }
-                        push_priority_task(redis_client, task_deploy)
-                        
+                        push_priority_task(redis_client, {"task_type": "DEPLOY_PACKAGING_WORKSTATION", "workstation_id": ws_id, "from": "sg2_out_00_B", "to": "sg2_out_00_A", "description": f"대기 작업대 {ws_id} 배치 → sg2_out_00_A (승격)", "workstation_qr_id": ws_qr or ""})
                     release_db_connection(pg_conn)
-                    return {"success": True, "message": f"대기 중이던 작업대 {ws_id}를 활성 포장존(sg2_out_00_A)으로 승격 배치했습니다."}
+                    return {"success": True, "message": f"대기 작업대 {ws_id}를 활성 포장존(sg2_out_00_A)으로 승격 배치했습니다."}
                 
-                # 1-2. 포장 구역(A/B)에 작업대가 아예 없으면, 창고/대기소에서 완충된 작업대를 가져옴 (오늘 날짜 물량만, staging 구역 우선)
-                cursor.execute("""
-                    SELECT w.workstation_id, w.current_location, w.qr_id
-                    FROM workstations w
-                    WHERE w.workstation_id IN (
-                        SELECT DISTINCT p.workstation_id FROM packages p
-                        WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s
-                    )
-                    ORDER BY CASE WHEN w.current_location LIKE 'stage_%%' THEN 0 ELSE 1 END ASC, w.current_location ASC
-                    LIMIT 1;
-                """, (today_date,))
-                warehouse_ws = cursor.fetchone()
-                if not warehouse_ws:
+                cursor.execute("SELECT w.workstation_id, w.current_location, w.qr_id FROM workstations w WHERE w.workstation_id IN (SELECT DISTINCT p.workstation_id FROM packages p WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s) ORDER BY CASE WHEN w.current_location LIKE 'stage_%%' THEN 0 ELSE 1 END ASC, w.current_location ASC LIMIT 1;", (today_date,))
+                wh_row = cursor.fetchone()
+                if not wh_row:
                     release_db_connection(pg_conn)
-                    return {"success": False, "message": "포장할 작업대가 없습니다. 먼저 적재 시뮬레이션으로 작업대를 완충시켜 주세요."}
+                    return {"success": False, "message": "포장할 작업대가 없습니다."}
                 
-                ws_id, ws_loc, ws_qr = warehouse_ws
-                ws_qr = ws_qr if ws_qr else ""
-                
-                # 창고/대기 스팟 비우기
+                ws_id, ws_loc, ws_qr = wh_row
                 if ws_loc.startswith('spot_') or ws_loc.startswith('stage_'):
-                    cursor.execute(
-                        "UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;",
-                        (ws_loc,)
-                    )
-                
-                # 패키지 상태를 IN_WORKSTATION으로 복원 (포장 대기 상태)
-                cursor.execute(
-                    "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
-                    (ws_id,)
-                )
-                
+                    cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (ws_loc,))
+                cursor.execute("UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';", (ws_id,))
                 if redis_client:
-                    task_fetch = {
-                        "task_type": "FETCH_FOR_PACKAGING",
-                        "workstation_id": ws_id,
-                        "from": ws_loc,
-                        "to": "sg2_out_00_A",
-                        "description": f"포장용 작업대 {ws_id} 호출 → sg2_out_00_A",
-                        "workstation_qr_id": ws_qr
-                    }
-                    push_priority_task(redis_client, task_fetch)
-                
+                    push_priority_task(redis_client, {"task_type": "FETCH_FOR_PACKAGING", "workstation_id": ws_id, "from": ws_loc, "to": "sg2_out_00_A", "description": f"포장용 작업대 {ws_id} 호출 → sg2_out_00_A", "workstation_qr_id": ws_qr or ""})
                 release_db_connection(pg_conn)
                 return {"success": True, "message": f"작업대 {ws_id}를 창고({ws_loc})에서 활성 포장존(sg2_out_00_A)으로 이송했습니다."}
             
             ws_id, ws_qr = ws_row
-            ws_qr = ws_qr if ws_qr else ""
-            
-            # 2. 해당 작업대에서 아직 포장 안 된(IN_WORKSTATION) 패키지 하나 선택
-            cursor.execute("""
-                SELECT package_id, slot_number, customer_name
-                FROM packages
-                WHERE workstation_id = %s AND status = 'IN_WORKSTATION'
-                ORDER BY slot_number ASC
-                LIMIT 1;
-            """, (ws_id,))
+            cursor.execute("SELECT package_id, slot_number, customer_name FROM packages WHERE workstation_id = %s AND status = 'IN_WORKSTATION' ORDER BY slot_number ASC LIMIT 1;", (ws_id,))
             pkg_row = cursor.fetchone()
-            
             if not pkg_row:
                 release_db_connection(pg_conn)
                 return {"success": False, "message": f"작업대 {ws_id}에 포장할 패키지가 없습니다."}
             
             pkg_id, slot_num, cust_name = pkg_row
-            
-            # 3. 포장 완료 처리: 출고 ID 생성 및 상태 COMPLETED로 변경
-            from datetime import datetime
             outbound_id = f"sg2_out_00_{ws_id}-{slot_num}-{datetime.now().strftime('%Y%m%d%H%M')}"
-            cursor.execute("""
-                UPDATE packages
-                SET status = 'COMPLETED', outbound_id = %s
-                WHERE package_id = %s;
-            """, (outbound_id, pkg_id))
+            cursor.execute("UPDATE packages SET status = 'COMPLETED', outbound_id = %s WHERE package_id = %s;", (outbound_id, pkg_id))
             
-            # 4. 포장 완료된 슬롯 수 계산
-            cursor.execute("""
-                SELECT COUNT(*) FROM packages
-                WHERE workstation_id = %s AND status = 'COMPLETED';
-            """, (ws_id,))
+            cursor.execute("SELECT COUNT(*) FROM packages WHERE workstation_id = %s AND status = 'COMPLETED';", (ws_id,))
             completed_count = cursor.fetchone()[0]
-            
-            # 5. 남은 미포장 패키지 수 확인
-            cursor.execute("""
-                SELECT COUNT(*) FROM packages
-                WHERE workstation_id = %s AND status = 'IN_WORKSTATION';
-            """, (ws_id,))
+            cursor.execute("SELECT COUNT(*) FROM packages WHERE workstation_id = %s AND status = 'IN_WORKSTATION';", (ws_id,))
             remaining_count = cursor.fetchone()[0]
             
-            # 6. 7번째 포장 완료 시 → Look-ahead: 다음 포장 대기 작업대 사전 호출 (B구역 대기존으로)
             lookahead_triggered = False
             if completed_count == 7 and redis_client:
-                cursor.execute("""
-                    SELECT w.workstation_id, w.current_location, w.qr_id
-                    FROM workstations w
-                    WHERE w.workstation_id IN (
-                        SELECT DISTINCT p.workstation_id FROM packages p
-                        WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s
-                    )
-                    AND w.workstation_id != %s
-                    LIMIT 1;
-                """, (today_date, ws_id))
-                next_ws_row = cursor.fetchone()
-                
-                if next_ws_row:
-                    next_ws_id, next_ws_loc, next_ws_qr = next_ws_row
-                    next_ws_qr = next_ws_qr if next_ws_qr else ""
-                    
-                    # B구역에 대기중이거나 이동중인 작업대가 없을 때만 호출
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM workstations 
-                        WHERE current_location = 'sg2_out_00_B' OR current_location = 'MOVING_TO_SG2_OUT_00_B';
-                    """)
-                    b_occupy_count = cursor.fetchone()[0]
-                    
-                    if b_occupy_count == 0:
-                        task_data = {
-                            "task_type": "PRE_FETCH_PACKAGING_WORKSTATION",
-                            "workstation_id": next_ws_id,
-                            "from": next_ws_loc,
-                            "to": "sg2_out_00_B",
-                            "description": f"Look-ahead: {ws_id} 7번째 포장 완료 → 대기 작업대 {next_ws_id} 사전 호출",
-                            "workstation_qr_id": next_ws_qr
-                        }
-                        push_priority_task(redis_client, task_data)
+                cursor.execute("SELECT w.workstation_id, w.current_location, w.qr_id FROM workstations w WHERE w.workstation_id IN (SELECT DISTINCT p.workstation_id FROM packages p WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s) AND w.workstation_id != %s LIMIT 1;", (today_date, ws_id))
+                next_row = cursor.fetchone()
+                if next_row:
+                    cursor.execute("SELECT COUNT(*) FROM workstations WHERE current_location = 'sg2_out_00_B' OR current_location = 'MOVING_TO_SG2_OUT_00_B';")
+                    if cursor.fetchone()[0] == 0:
+                        push_priority_task(redis_client, {"task_type": "PRE_FETCH_PACKAGING_WORKSTATION", "workstation_id": next_row[0], "from": next_row[1], "to": "sg2_out_00_B", "description": f"Look-ahead: {ws_id} 7번째 포장 완료 → 대기 작업대 {next_row[0]} 사전 호출", "workstation_qr_id": next_row[2] or ""})
                         lookahead_triggered = True
             
-            # 7. 8번째(마지막) 포장 완료 시 → 작업대 교체: 빈 작업대 회수 + 다음 작업대 배치 (승격 또는 직접배치)
             swap_triggered = False
             if remaining_count == 0 and redis_client:
-                # 7-1. 포장 완료된 빈 작업대를 창고로 회수
-                cursor.execute("BEGIN;")
-                cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1 FOR UPDATE;")
-                empty_spot_row = cursor.fetchone()
-                target_spot = empty_spot_row[0] if empty_spot_row else "warehouse"
+                cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1;")
+                spot_row = cursor.fetchone()
+                target_spot = spot_row[0] if spot_row else "warehouse"
+                if spot_row: cursor.execute("UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;", (ws_id, target_spot))
+                cursor.execute("UPDATE packages SET workstation_id = NULL, slot_number = NULL WHERE workstation_id = %s AND status = 'COMPLETED';", (ws_id,))
                 
-                if empty_spot_row:
-                    cursor.execute(
-                        "UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;",
-                        (ws_id, target_spot)
-                    )
-                cursor.execute("COMMIT;")
+                push_priority_task(redis_client, {"task_type": "RETRIEVE_EMPTY_WORKSTATION", "workstation_id": ws_id, "from": "sg2_out_00_A", "to": target_spot, "description": f"포장 완료 빈 작업대 {ws_id} 회수 → {target_spot}", "workstation_qr_id": ws_qr or ""})
                 
-                # 패키지의 workstation 매핑 해제 (포장 완료 후 작업대에서 분리)
-                cursor.execute(
-                    "UPDATE packages SET workstation_id = NULL, slot_number = NULL WHERE workstation_id = %s AND status = 'COMPLETED';",
-                    (ws_id,)
-                )
-                
-                task_retrieve = {
-                    "task_type": "RETRIEVE_EMPTY_WORKSTATION",
-                    "workstation_id": ws_id,
-                    "from": "sg2_out_00_A",
-                    "to": target_spot,
-                    "description": f"포장 완료 빈 작업대 {ws_id} 회수 → {target_spot}",
-                    "workstation_qr_id": ws_qr
-                }
-                push_priority_task(redis_client, task_retrieve)
-                
-                # 7-2. B구역에 대기 중인 작업대가 있다면 A구역으로 즉시 승격 및 DEPLOY 태스크 발행
                 cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = 'sg2_out_00_B' LIMIT 1;")
-                b_ws_row = cursor.fetchone()
-                if b_ws_row:
-                    b_ws_id, b_ws_qr = b_ws_row
-                    b_ws_qr = b_ws_qr if b_ws_qr else ""
-                    
-                    cursor.execute(
-                        "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
-                        (b_ws_id,)
-                    )
-                    
-                    task_deploy = {
-                        "task_type": "DEPLOY_PACKAGING_WORKSTATION",
-                        "workstation_id": b_ws_id,
-                        "from": "sg2_out_00_B",
-                        "to": "sg2_out_00_A",
-                        "description": f"대기 작업대 {b_ws_id} 배치 → sg2_out_00_A (승격)",
-                        "workstation_qr_id": b_ws_qr
-                    }
-                    push_priority_task(redis_client, task_deploy)
+                b_row = cursor.fetchone()
+                if b_row:
+                    cursor.execute("UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';", (b_row[0],))
+                    push_priority_task(redis_client, {"task_type": "DEPLOY_PACKAGING_WORKSTATION", "workstation_id": b_row[0], "from": "sg2_out_00_B", "to": "sg2_out_00_A", "description": f"대기 작업대 {b_row[0]} 배치 → sg2_out_00_A (승격)", "workstation_qr_id": b_row[1] or ""})
                 else:
-                    # B구역에 없다면 창고에서 직접 가져오기 (오늘 물량만)
-                    cursor.execute("""
-                        SELECT w.workstation_id, w.current_location, w.qr_id
-                        FROM workstations w
-                        WHERE w.workstation_id IN (
-                            SELECT DISTINCT p.workstation_id FROM packages p
-                            WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s
-                        )
-                        AND w.workstation_id != %s
-                        LIMIT 1;
-                    """, (today_date, ws_id))
-                    next_ws_row = cursor.fetchone()
-                    
-                    if next_ws_row:
-                        next_ws_id, next_ws_loc, next_ws_qr = next_ws_row
-                        next_ws_qr = next_ws_qr if next_ws_qr else ""
-                        
-                        # 창고 스팟 비우기
-                        if next_ws_loc.startswith('spot_'):
-                            cursor.execute(
-                                "UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;",
-                                (next_ws_loc,)
-                            )
-                        
-                        # 패키지 상태 복원 (위치는 관제탑이 이동 완료 시 갱신)
-                        cursor.execute(
-                            "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
-                            (next_ws_id,)
-                        )
-                        
-                        task_deploy = {
-                            "task_type": "DEPLOY_PACKAGING_WORKSTATION",
-                            "workstation_id": next_ws_id,
-                            "from": next_ws_loc,
-                            "to": "sg2_out_00_A",
-                            "description": f"다음 포장 작업대 {next_ws_id} 배치 → sg2_out_00_A (교체)",
-                            "workstation_qr_id": next_ws_qr
-                        }
-                        push_priority_task(redis_client, task_deploy)
-                
+                    cursor.execute("SELECT w.workstation_id, w.current_location, w.qr_id FROM workstations w WHERE w.workstation_id IN (SELECT DISTINCT p.workstation_id FROM packages p WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s) AND w.workstation_id != %s LIMIT 1;", (today_date, ws_id))
+                    next_row = cursor.fetchone()
+                    if next_row:
+                        if next_row[1].startswith('spot_'): cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (next_row[1],))
+                        cursor.execute("UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';", (next_row[0],))
+                        push_priority_task(redis_client, {"task_type": "DEPLOY_PACKAGING_WORKSTATION", "workstation_id": next_row[0], "from": next_row[1], "to": "sg2_out_00_A", "description": f"다음 포장 작업대 {next_row[0]} 배치 → sg2_out_00_A (교체)", "workstation_qr_id": next_row[2] or ""})
                 swap_triggered = True
         
         release_db_connection(pg_conn)
-        msg = f"📦 {pkg_id} (슬롯 {slot_num}, {cust_name}) 포장 완료! 출고ID: {outbound_id} [{completed_count}/8]"
-        if lookahead_triggered:
-            msg += " (★ Look-ahead: 다음 포장 작업대 사전 호출!)"
-        if swap_triggered:
-            msg += " (🔄 전체 포장 완료! 작업대 교체: 빈 작업대 회수 + 새 작업대 배치)"
-        
+        msg = f"📦 {pkg_id} (슬롯 {slot_num}, {cust_name}) 포장 완료! [{completed_count}/8]"
+        if lookahead_triggered: msg += " (★ Look-ahead: 다음 포장 작업대 사전 호출!)"
+        if swap_triggered: msg += " (🔄 전체 포장 완료! 작업대 교체 수행)"
         return {"success": True, "message": msg}
     except Exception as e:
-        if pg_conn:
-            release_db_connection(pg_conn)
+        if pg_conn: release_db_connection(pg_conn)
         raise HTTPException(status_code=500, detail=str(e))
 
-# HTML 대시보드 마크업 제공
 @app.get("/", response_class=HTMLResponse)
 def index():
     return """
@@ -1281,803 +819,94 @@ def index():
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Coupang Control Center Dashboard</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: #0b0f19;
-            --card-bg: rgba(22, 28, 45, 0.6);
-            --border-color: rgba(255, 255, 255, 0.08);
-            --primary: #00f2fe;
-            --secondary: #4facfe;
-            --success: #10b981;
-            --warning: #f59e0b;
-            --danger: #ef4444;
-            --text: #e2e8f0;
-            --text-muted: #64748b;
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            font-family: 'Outfit', sans-serif;
-        }
-
-        body {
-            background-color: var(--bg-color);
-            color: var(--text);
-            overflow-x: hidden;
-            background-image: radial-gradient(circle at 10% 20%, rgba(0, 242, 254, 0.05) 0%, transparent 40%),
-                              radial-gradient(circle at 90% 80%, rgba(79, 172, 254, 0.05) 0%, transparent 40%);
-            background-attachment: fixed;
-        }
-
-        /* Layout */
-        .container {
-            max-width: 1440px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding-bottom: 2rem;
-            border-bottom: 1px solid var(--border-color);
-            margin-bottom: 2rem;
-        }
-
-        .logo-section h1 {
-            font-size: 1.8rem;
-            font-weight: 800;
-            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            letter-spacing: -0.5px;
-        }
-
-        .logo-section p {
-            font-size: 0.9rem;
-            color: var(--text-muted);
-            margin-top: 2px;
-        }
-
-        .status-badge {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: rgba(16, 185, 129, 0.1);
-            border: 1px solid rgba(16, 185, 129, 0.2);
-            color: var(--success);
-            padding: 8px 16px;
-            border-radius: 9999px;
-            font-weight: 600;
-            font-size: 0.85rem;
-        }
-
-        .status-badge .dot {
-            width: 8px;
-            height: 8px;
-            background-color: var(--success);
-            border-radius: 50%;
-            box-shadow: 0 0 10px var(--success);
-            animation: pulse 2s infinite;
-        }
-
-        /* Buttons Control Panel */
-        .controls {
-            display: flex;
-            gap: 12px;
-            margin-bottom: 2rem;
-        }
-
-        button {
-            padding: 12px 24px;
-            border-radius: 12px;
-            font-weight: 600;
-            font-size: 0.9rem;
-            cursor: pointer;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .btn-simulate {
-            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
-            border: none;
-            color: #000;
-            box-shadow: 0 4px 15px rgba(0, 242, 254, 0.25);
-        }
-
-        .btn-simulate:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(0, 242, 254, 0.4);
-        }
-
-        .btn-reset {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.2);
-            color: var(--danger);
-        }
-
-        .btn-reset:hover {
-            background: var(--danger);
-            color: #fff;
-            box-shadow: 0 4px 15px rgba(239, 68, 68, 0.2);
-            transform: translateY(-2px);
-        }
-
-        .btn-upload {
-            background: rgba(16, 185, 129, 0.1);
-            border: 1px solid rgba(16, 185, 129, 0.2);
-            color: #10b981;
-        }
-
-        .btn-upload:hover {
-            background: #10b981;
-            color: #000;
-            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.2);
-            transform: translateY(-2px);
-        }
-
-        /* Grid sections */
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 2rem;
-            margin-bottom: 2rem;
-        }
-
-        .panel-card {
-            background: var(--card-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 20px;
-            padding: 1.5rem;
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
-        }
-
-        .panel-card h2 {
-            font-size: 1.25rem;
-            font-weight: 700;
-            margin-bottom: 1.25rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            color: #fff;
-            border-left: 4px solid var(--primary);
-            padding-left: 10px;
-        }
-
-        /* Warehouse spots styling */
-        .spots-container {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-            gap: 12px;
-        }
-
-        .spot-item {
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid var(--border-color);
-            border-radius: 14px;
-            padding: 12px;
-            text-align: center;
-            transition: all 0.3s ease;
-        }
-
-        .spot-item.occupied {
-            border-color: rgba(245, 158, 11, 0.3);
-            background: rgba(245, 158, 11, 0.05);
-            box-shadow: inset 0 0 12px rgba(245, 158, 11, 0.05);
-        }
-
-        .spot-item.empty {
-            border-color: rgba(16, 185, 129, 0.3);
-            background: rgba(16, 185, 129, 0.05);
-        }
-
-        .spot-id {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            font-weight: 600;
-        }
-
-        .spot-ws {
-            font-size: 1.1rem;
-            font-weight: 700;
-            margin: 6px 0;
-            color: var(--text);
-        }
-
-        .spot-status-badge {
-            display: inline-block;
-            font-size: 0.65rem;
-            font-weight: 700;
-            padding: 2px 8px;
-            border-radius: 9999px;
-        }
-
-        .spot-item.occupied .spot-status-badge {
-            background: rgba(245, 158, 11, 0.15);
-            color: var(--warning);
-        }
-
-        .spot-item.empty .spot-status-badge {
-            background: rgba(16, 185, 129, 0.15);
-            color: var(--success);
-        }
-
-        /* Workstations styling */
-        .workstations-container {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 16px;
-        }
-
-        .workstations-container::-webkit-scrollbar {
-            width: 6px;
-        }
-        .workstations-container::-webkit-scrollbar-thumb {
-            background: var(--border-color);
-            border-radius: 99px;
-        }
-
-        .ws-card {
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid var(--border-color);
-            border-radius: 16px;
-            padding: 14px;
-            transition: all 0.3s ease;
-        }
-
-        .ws-card:hover {
-            transform: translateY(-2px);
-            border-color: rgba(0, 242, 254, 0.2);
-        }
-
-        .ws-header {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-start;
-            margin-bottom: 12px;
-            gap: 6px;
-        }
-
-        .ws-id {
-            font-size: 1.25rem;
-            font-weight: 800;
-            color: #fff;
-            letter-spacing: -0.5px;
-        }
-
-        .ws-loc {
-            font-size: 0.75rem;
-            font-weight: 600;
-            padding: 3px 8px;
-            border-radius: 6px;
-            background: rgba(255, 255, 255, 0.05);
-            color: var(--text);
-        }
-
-        .ws-loc.moving {
-            background: rgba(0, 242, 254, 0.15);
-            color: var(--primary);
-            animation: pulse-border 1.5s infinite;
-        }
-
-        /* WS Slot visual */
-        .ws-slots-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr); /* 2x4 Layout */
-            gap: 6px;
-        }
-
-        .ws-slot {
-            height: 38px;
-            border-radius: 8px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            font-size: 0.7rem;
-            font-weight: 600;
-            border: 1px solid var(--border-color);
-            background: rgba(255, 255, 255, 0.02);
-            transition: all 0.2s ease;
-            position: relative;
-        }
-
-        .ws-slot.full {
-            background: rgba(0, 242, 254, 0.08);
-            border-color: rgba(0, 242, 254, 0.3);
-            color: var(--primary);
-        }
-
-        .ws-slot-name {
-            font-size: 0.6rem;
-            color: var(--text-muted);
-            max-width: 90%;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-
-        /* Redis tasks */
-        .tasks-list {
-            margin-top: 10px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .task-item {
-            background: rgba(79, 172, 254, 0.08);
-            border: 1px solid rgba(79, 172, 254, 0.2);
-            border-radius: 10px;
-            padding: 10px 14px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 0.85rem;
-        }
-
-        .task-name {
-            font-weight: 700;
-            color: var(--primary);
-        }
-
-        .task-desc {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            margin-top: 2px;
-        }
-
-        /* Packages table */
-        .table-wrapper {
-            overflow-x: auto;
-            max-height: 400px;
-            overflow-y: auto;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            text-align: left;
-            font-size: 0.85rem;
-        }
-
-        th {
-            background: rgba(15, 23, 42, 0.8);
-            padding: 12px;
-            font-weight: 600;
-            color: var(--text-muted);
-            border-bottom: 1px solid var(--border-color);
-            position: sticky;
-            top: 0;
-            z-index: 10;
-        }
-
-        td {
-            padding: 12px;
-            border-bottom: 1px solid var(--border-color);
-            color: var(--text);
-        }
-
-        tr:hover td {
-            background: rgba(255, 255, 255, 0.02);
-        }
-
-        .status-pill {
-            display: inline-block;
-            font-size: 0.7rem;
-            font-weight: 700;
-            padding: 4px 10px;
-            border-radius: 9999px;
-        }
-
-        .status-pill.waiting {
-            background: rgba(100, 116, 139, 0.15);
-            color: var(--text-muted);
-        }
-
-        .status-pill.in_workstation {
-            background: rgba(0, 242, 254, 0.15);
-            color: var(--primary);
-        }
-
-        .status-pill.in_warehouse {
-            background: rgba(245, 158, 11, 0.15);
-            color: var(--warning);
-        }
-
-        .status-pill.completed {
-            background: rgba(16, 185, 129, 0.15);
-            color: var(--success);
-        }
-
-        /* Toast notification */
-        .toast {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            background: rgba(15, 23, 42, 0.9);
-            border: 1px solid var(--primary);
-            border-radius: 12px;
-            padding: 16px 24px;
-            color: #fff;
-            font-weight: 600;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-            transform: translateY(100px);
-            opacity: 0;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            z-index: 999;
-        }
-
-        .toast.show {
-            transform: translateY(0);
-            opacity: 1;
-        }
-
-        /* Keyframes */
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.4; }
-        }
-
-        @keyframes pulse-border {
-            0%, 100% { border-color: rgba(0, 242, 254, 0.2); box-shadow: 0 0 0 0 rgba(0, 242, 254, 0.2); }
-            50% { border-color: rgba(0, 242, 254, 0.8); box-shadow: 0 0 10px 0 rgba(0, 242, 254, 0.3); }
-        }
-
-        @keyframes pulse-border-orange {
-            0%, 100% { border-color: rgba(245, 158, 11, 0.3); box-shadow: 0 8px 32px 0 rgba(245, 158, 11, 0.15); }
-            50% { border-color: rgba(245, 158, 11, 0.8); box-shadow: 0 8px 32px 0 rgba(245, 158, 11, 0.35); }
-        }
-
-        @keyframes bounce {
-            0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-6px); }
-        }
-
-        /* === Floor Plan Styles === */
-        .conveyor-line {
-            background: rgba(16, 185, 129, 0.04);
-            border: 1px solid rgba(16, 185, 129, 0.12);
-            border-radius: 10px;
-            padding: 8px 12px;
-            transition: all 0.3s ease;
-        }
-        .conveyor-line:hover {
-            border-color: rgba(16, 185, 129, 0.35);
-            background: rgba(16, 185, 129, 0.08);
-        }
-        .conveyor-arrow {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .conveyor-label {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 28px;
-            height: 28px;
-            background: linear-gradient(135deg, #10b981, #059669);
-            color: #fff;
-            font-weight: 800;
-            font-size: 0.85rem;
-            border-radius: 8px;
-            flex-shrink: 0;
-            box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
-        }
-        .conveyor-bar {
-            flex: 1;
-            height: 4px;
-            background: linear-gradient(90deg, rgba(16, 185, 129, 0.6), rgba(16, 185, 129, 0.15));
-            border-radius: 2px;
-            min-width: 30px;
-        }
-        .conveyor-line.right .conveyor-bar {
-            background: linear-gradient(270deg, rgba(16, 185, 129, 0.6), rgba(16, 185, 129, 0.15));
-        }
-        .robot-dot {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            font-size: 0.55rem;
-            font-weight: 800;
-            flex-shrink: 0;
-            cursor: default;
-            transition: all 0.3s ease;
-        }
-        .robot-dot.sg2 {
-            background: rgba(59, 130, 246, 0.8);
-            color: #fff;
-            box-shadow: 0 0 10px rgba(59, 130, 246, 0.4);
-        }
-        .robot-dot.sg2:hover {
-            box-shadow: 0 0 18px rgba(59, 130, 246, 0.6);
-            transform: scale(1.1);
-        }
-        .amr-dot {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 44px;
-            height: 44px;
-            border-radius: 50%;
-            background: rgba(239, 68, 68, 0.7);
-            color: #fff;
-            font-size: 0.55rem;
-            font-weight: 800;
-            text-align: center;
-            line-height: 1.2;
-            box-shadow: 0 0 14px rgba(239, 68, 68, 0.35);
-            cursor: default;
-            transition: all 0.3s ease;
-            animation: amr-idle 3s ease-in-out infinite;
-        }
-        .amr-dot:hover {
-            box-shadow: 0 0 22px rgba(239, 68, 68, 0.6);
-            transform: scale(1.1);
-        }
-        @keyframes amr-idle {
-            0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-3px); }
-        }
-        .ws-slot-mini {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 32px;
-            height: 28px;
-            border-radius: 5px;
-            background: rgba(156, 163, 175, 0.15);
-            border: 1.5px solid rgba(156, 163, 175, 0.35);
-            color: rgba(156, 163, 175, 0.7);
-            font-size: 0.7rem;
-            font-weight: 700;
-            flex-shrink: 0;
-            transition: all 0.3s ease;
-            cursor: default;
-        }
-        .ws-slot-mini.standby {
-            border-style: dashed;
-            opacity: 0.5;
-        }
-        .ws-slot-mini.occupied {
-            background: rgba(0, 242, 254, 0.15);
-            border-color: rgba(0, 242, 254, 0.5);
-            color: #00f2fe;
-            box-shadow: 0 0 8px rgba(0, 242, 254, 0.15);
-        }
-        .ws-slot-mini.occupied.standby {
-            opacity: 0.8;
-        }
-        .ws-slot-mini.pack {
-            background: rgba(245, 158, 11, 0.1);
-            border-color: rgba(245, 158, 11, 0.35);
-            color: rgba(245, 158, 11, 0.8);
-        }
-        .ws-slot-mini.pack.occupied {
-            background: rgba(245, 158, 11, 0.2);
-            border-color: rgba(245, 158, 11, 0.6);
-            color: #f59e0b;
-            box-shadow: 0 0 8px rgba(245, 158, 11, 0.2);
-        }
-        .packaging-zone {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 8px;
-            padding: 16px 28px;
-            background: rgba(245, 158, 11, 0.04);
-            border: 1px solid rgba(245, 158, 11, 0.15);
-            border-radius: 14px;
-            transition: all 0.3s ease;
-        }
-        .packaging-zone:hover {
-            border-color: rgba(245, 158, 11, 0.35);
-            background: rgba(245, 158, 11, 0.08);
-        }
-        .pack-header {
-            font-size: 0.8rem;
-            font-weight: 700;
-            color: rgba(245, 158, 11, 0.8);
-            letter-spacing: 1px;
-        }
-        .pack-arrow {
-            font-size: 0.75rem;
-            color: rgba(16, 185, 129, 0.6);
-            font-weight: 700;
-            animation: pack-pulse 2s ease-in-out infinite;
-        }
-        @keyframes pack-pulse {
-            0%, 100% { opacity: 0.6; }
-            50% { opacity: 1; }
-        }
-        .pack-robot {
-            width: 28px !important;
-            height: 28px !important;
-        }
-        .warehouse-spot-cell {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            padding: 6px 4px;
-            border-radius: 8px;
-            background: rgba(0, 242, 254, 0.03);
-            border: 1px solid rgba(0, 242, 254, 0.12);
-            text-align: center;
-            transition: all 0.3s ease;
-            min-height: 52px;
-        }
-        .warehouse-spot-cell.occupied {
-            border-color: rgba(245, 158, 11, 0.35);
-            background: rgba(245, 158, 11, 0.06);
-        }
-        .warehouse-spot-cell.empty {
-            border-color: rgba(16, 185, 129, 0.2);
-            background: rgba(16, 185, 129, 0.03);
-        }
-        .warehouse-spot-cell .spot-name {
-            font-size: 0.55rem;
-            color: var(--text-muted);
-            font-weight: 600;
-        }
-        .warehouse-spot-cell .spot-ws-id {
-            font-size: 0.75rem;
-            font-weight: 800;
-            color: #fff;
-            margin: 2px 0;
-        }
-        .warehouse-spot-cell.empty .spot-ws-id {
-            color: rgba(16, 185, 129, 0.5);
-            font-size: 0.6rem;
-        }
-
-        /* 경량 바둑판 맵: CSS 배경 패턴 + 데이터 있는 위치만 absolute div */
-        .grid-map-container {
-            position: relative;
-            width: 272px;
-            height: 392px;
-            border: 2px solid rgba(255, 255, 255, 0.12);
-            background-color: rgba(10, 15, 30, 0.9);
-            background-image:
-                linear-gradient(45deg, rgba(255,255,255,0.018) 25%, transparent 25%),
-                linear-gradient(-45deg, rgba(255,255,255,0.018) 25%, transparent 25%),
-                linear-gradient(45deg, transparent 75%, rgba(255,255,255,0.018) 75%),
-                linear-gradient(-45deg, transparent 75%, rgba(255,255,255,0.018) 75%);
-            background-size: 60px 60px;
-            background-position: 0 0, 0 30px, 30px -30px, -30px 0px;
-            border-radius: 14px;
-            padding: 0;
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
-            margin: 0 auto;
-            user-select: none;
-            overflow: hidden;
-        }
-        .grid-loc {
-            position: absolute;
-            width: 28px;
-            height: 28px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 5px;
-            font-size: 0.6rem;
-            font-weight: 700;
-            color: rgba(255, 255, 255, 0.8);
-            text-align: center;
-            line-height: 1;
-            transition: all 0.3s ease;
-            z-index: 2;
-        }
-        .grid-loc.spot      { border: 1.5px solid rgba(59, 130, 246, 0.6); background: rgba(59, 130, 246, 0.15); }
-        .grid-loc.stage     { border: 1.5px solid rgba(245, 158, 11, 0.6); background: rgba(245, 158, 11, 0.15); }
-        .grid-loc.charging  { border: 1.5px solid rgba(168, 85, 247, 0.6); background: rgba(168, 85, 247, 0.15); }
-        .grid-loc.conveyor  { border: 1.5px solid rgba(16, 185, 129, 0.6); background: rgba(16, 185, 129, 0.15); }
-        .grid-loc.conveyor-belt { border: 1.5px solid rgba(6, 182, 212, 0.7); background: rgba(6, 182, 212, 0.15); color: #cffafe; }
-        .grid-loc.packaging { border: 1.5px solid rgba(236, 72, 153, 0.75); background: rgba(236, 72, 153, 0.18); color: #fbcfe8; }
-        .grid-loc.sg2-robot { border: 1.5px solid rgba(239, 68, 68, 0.7); background: rgba(239, 68, 68, 0.18); color: #fca5a5; }
-        .grid-loc.has-ws {
-            background: #1e1b4b;
-            border: 2px solid #eab308;
-            color: #fde047;
-            font-weight: 900;
-            box-shadow: 0 0 10px rgba(234, 179, 8, 0.45);
-            font-size: 0.52rem;
-        }
-        .grid-loc.path-active {
-            box-shadow: inset 0 0 8px rgba(255, 0, 127, 0.35), 0 0 4px rgba(255, 0, 127, 0.15);
-            background: rgba(255, 0, 127, 0.05);
-        }
-        .amr-icon {
-            position: absolute;
-            width: 26px;
-            height: 26px;
-            border-radius: 50%;
-            border: 2px solid #fff;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.65rem;
-            font-weight: 900;
-            color: #fff;
-            z-index: 20;
-            transform: translate(-50%, -50%);
-            box-shadow: 0 0 5px currentColor;
-            pointer-events: auto;
-            transition: left 0.3s linear, top 0.3s linear;
-        }
-
-        /* Start Business Button and Device Status Badges */
-        .btn-start-business {
-            background: rgba(16, 185, 129, 0.08);
-            border: 1px solid rgba(16, 185, 129, 0.2);
-            color: #10b981;
-            opacity: 0.6;
-            cursor: not-allowed;
-            pointer-events: none;
-            padding: 12px 24px;
-            border-radius: 12px;
-            font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            transition: all 0.3s ease;
-        }
-
-        .btn-start-business.ready {
-            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-            border: none;
-            color: #0b0f19;
-            opacity: 1;
-            cursor: pointer;
-            pointer-events: auto;
-            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
-        }
-
-        .btn-start-business.ready:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(16, 185, 129, 0.5);
-        }
+            --bg-color: #0b0f19; --card-bg: rgba(22, 28, 45, 0.6); --border-color: rgba(255, 255, 255, 0.08);
+            --primary: #00f2fe; --secondary: #4facfe; --success: #10b981; --warning: #f59e0b; --danger: #ef4444; --text: #e2e8f0; --text-muted: #64748b;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Outfit', sans-serif; }
+        body { background-color: var(--bg-color); color: var(--text); overflow-x: hidden; background-image: radial-gradient(circle at 10% 20%, rgba(0, 242, 254, 0.05) 0%, transparent 40%), radial-gradient(circle at 90% 80%, rgba(79, 172, 254, 0.05) 0%, transparent 40%); background-attachment: fixed; }
+        .container { max-width: 1440px; margin: 0 auto; padding: 2rem; }
+        header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 2rem; border-bottom: 1px solid var(--border-color); margin-bottom: 2rem; }
+        .logo-section h1 { font-size: 1.8rem; font-weight: 800; background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .logo-section p { font-size: 0.9rem; color: var(--text-muted); margin-top: 2px; }
+        .status-badge { display: flex; align-items: center; gap: 8px; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: var(--success); padding: 8px 16px; border-radius: 9999px; font-weight: 600; font-size: 0.85rem; }
+        .status-badge .dot { width: 8px; height: 8px; background-color: var(--success); border-radius: 50%; box-shadow: 0 0 10px var(--success); animation: pulse 2s infinite; }
+        .controls { display: flex; gap: 12px; margin-bottom: 2rem; }
+        button { padding: 12px 24px; border-radius: 12px; font-weight: 600; font-size: 0.9rem; cursor: pointer; transition: all 0.3s ease; display: flex; align-items: center; gap: 8px; }
+        .btn-simulate { background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%); border: none; color: #000; box-shadow: 0 4px 15px rgba(0, 242, 254, 0.25); }
+        .btn-simulate:hover { transform: translateY(-2px); }
+        .btn-reset { background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); color: var(--danger); }
+        .btn-reset:hover { background: var(--danger); color: #fff; transform: translateY(-2px); }
+        .btn-upload { background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #10b981; }
+        .btn-upload:hover { background: #10b981; color: #000; transform: translateY(-2px); }
+        .dashboard-grid { display: grid; grid-template-columns: 1fr; gap: 2rem; margin-bottom: 2rem; }
+        .panel-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 20px; padding: 1.5rem; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3); }
+        .panel-card h2 { font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem; border-left: 4px solid var(--primary); padding-left: 10px; color: #fff; }
+        .spots-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; }
+        .spot-item { background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 14px; padding: 12px; text-align: center; }
+        .spot-item.occupied { border-color: rgba(245, 158, 11, 0.3); background: rgba(245, 158, 11, 0.05); }
+        .spot-item.empty { border-color: rgba(16, 185, 129, 0.3); background: rgba(16, 185, 129, 0.05); }
+        .spot-id { font-size: 0.75rem; color: var(--text-muted); font-weight: 600; }
+        .spot-ws { font-size: 1.1rem; font-weight: 700; margin: 6px 0; }
+        .spot-status-badge { display: inline-block; font-size: 0.65rem; font-weight: 700; padding: 2px 8px; border-radius: 9999px; }
+        .spot-item.occupied .spot-status-badge { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+        .spot-item.empty .spot-status-badge { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+        .workstations-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; }
+        .ws-card { background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 16px; padding: 14px; }
+        .ws-header { display: flex; flex-direction: column; margin-bottom: 12px; }
+        .ws-id { font-size: 1.25rem; font-weight: 800; color: #fff; }
+        .ws-loc { font-size: 0.75rem; color: var(--text-muted); font-weight: 600; }
+        .ws-loc.moving { color: var(--primary); animation: pulse-border 1.5s infinite; }
+        .ws-slots-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+        .ws-slot { height: 38px; border-radius: 8px; display: flex; flex-direction: column; justify-content: center; align-items: center; font-size: 0.7rem; border: 1px solid var(--border-color); background: rgba(255, 255, 255, 0.02); }
+        .ws-slot.full { background: rgba(0, 242, 254, 0.08); border-color: rgba(0, 242, 254, 0.3); color: var(--primary); }
+        .ws-slot-name { font-size: 0.6rem; color: var(--text-muted); max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tasks-list { display: flex; flex-direction: column; gap: 8px; }
+        .task-item { background: rgba(79, 172, 254, 0.08); border: 1px solid rgba(79, 172, 254, 0.2); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; }
+        .task-name { font-weight: 700; color: var(--primary); }
+        .task-desc { font-size: 0.75rem; color: var(--text-muted); }
+        .table-wrapper { overflow-x: auto; max-height: 400px; }
+        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem; }
+        th { background: rgba(15, 23, 42, 0.8); padding: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border-color); position: sticky; top: 0; }
+        td { padding: 12px; border-bottom: 1px solid var(--border-color); }
+        .status-pill { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 4px 10px; border-radius: 9999px; }
+        .status-pill.waiting { background: rgba(100, 116, 139, 0.15); color: var(--text-muted); }
+        .status-pill.in_workstation { background: rgba(0, 242, 254, 0.15); color: var(--primary); }
+        .status-pill.in_warehouse { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+        .status-pill.completed { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+        .toast { position: fixed; bottom: 24px; right: 24px; background: rgba(15, 23, 42, 0.9); border: 1px solid var(--primary); border-radius: 12px; padding: 16px 24px; color: #fff; opacity: 0; transform: translateY(100px); transition: all 0.3s ease; z-index: 999; }
+        .toast.show { transform: translateY(0); opacity: 1; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        @keyframes pulse-border { 0%, 100% { border-color: rgba(0, 242, 254, 0.2); } 50% { border-color: rgba(0, 242, 254, 0.8); } }
         
-        .btn-start-business.running {
-            background: rgba(59, 130, 246, 0.1);
-            border: 1px solid rgba(59, 130, 246, 0.3);
-            color: #3b82f6;
-            opacity: 0.9;
-            cursor: default;
-            pointer-events: none;
-        }
+        /* 🗺️ 2D 그리드 레이아웃 (새로운 존 하이라이팅 포함) */
+        .grid-map-container { position: relative; width: 272px; height: 392px; border: 2px solid rgba(255, 255, 255, 0.12); background-color: rgba(10, 15, 30, 0.9); border-radius: 14px; margin: 0 auto; overflow: hidden; }
+        .grid-loc { position: absolute; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 5px; font-size: 0.55rem; font-weight: 700; color: rgba(255, 255, 255, 0.8); text-align: center; }
+        
+        /* 기본 맵 요소 스타일 */
+        .grid-loc.spot { border: 1.5px solid rgba(59, 130, 246, 0.6); background: rgba(59, 130, 246, 0.15); }
+        .grid-loc.stage { border: 1.5px solid rgba(245, 158, 11, 0.6); background: rgba(245, 158, 11, 0.15); }
+        .grid-loc.charging { border: 1.5px solid rgba(168, 85, 247, 0.6); background: rgba(168, 85, 247, 0.15); }
+        .grid-loc.conveyor { border: 1.5px solid rgba(16, 185, 129, 0.6); background: rgba(16, 185, 129, 0.15); }
+        .grid-loc.conveyor-belt { border: 1.5px solid rgba(6, 182, 212, 0.7); background: rgba(6, 182, 212, 0.25); color: transparent; font-weight: bold; }
+        .grid-loc.packaging { border: 1.5px solid rgba(236, 72, 153, 0.75); background: rgba(236, 72, 153, 0.18); }
+        .grid-loc.fixed-sg2-robot { border: 2px solid rgba(249, 115, 22, 0.8); background: rgba(249, 115, 22, 0.35); color: #fb923c; font-weight: bold; }
+        
+        /* 🚀 추가된 SG2 IN/OUT 그룹 존 하이라이트 스타일 */
+        .grid-loc.zone-sg2-in { border: 2px solid rgba(14, 165, 233, 0.8) !important; background: rgba(14, 165, 233, 0.25) !important; color: #38bdf8 !important; font-weight: 900; box-shadow: 0 0 10px rgba(14, 165, 233, 0.3); }
+        .grid-loc.zone-sg2-out { border: 2px solid rgba(217, 70, 239, 0.8) !important; background: rgba(217, 70, 239, 0.25) !important; color: #f472b6 !important; font-weight: 900; box-shadow: 0 0 10px rgba(217, 70, 239, 0.3); }
 
-        .dev-badge {
-            padding: 4px 10px;
-            border-radius: 8px;
-            background: rgba(239, 68, 68, 0.08);
-            border: 1px solid rgba(239, 68, 68, 0.2);
-            color: var(--danger);
-            font-size: 0.75rem;
-            transition: all 0.3s ease;
-            display: inline-flex;
-            align-items: center;
-            font-family: monospace;
-        }
-
-        .dev-badge.online {
-            background: rgba(16, 185, 129, 0.12);
-            border-color: rgba(16, 185, 129, 0.35);
-            color: var(--success);
-            box-shadow: 0 0 10px rgba(16, 185, 129, 0.15);
-        }
+        .grid-loc.has-ws { background: #1e1b4b !important; border: 2px solid #eab308 !important; color: #fde047 !important; font-weight: 900; font-size: 0.52rem; z-index: 5; }
+        .grid-loc.path-active { background: rgba(255, 0, 127, 0.05); box-shadow: inset 0 0 8px rgba(255, 0, 127, 0.35); }
+        .amr-icon { position: absolute; width: 26px; height: 26px; border-radius: 50%; border: 2px solid #fff; display: flex; align-items: center; justify-content: center; font-size: 0.65rem; font-weight: 900; color: #fff; z-index: 20; transform: translate(-50%, -50%); transition: left 0.3s linear, top 0.3s linear; }
+        .btn-start-business { background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); color: #10b981; opacity: 0.6; cursor: not-allowed; padding: 12px 24px; border-radius: 12px; font-weight: 700; }
+        .btn-start-business.ready { background: linear-gradient(135deg, #10b981 0%, #059669 100%); border: none; color: #0b0f19; opacity: 1; cursor: pointer; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3); }
+        .btn-start-business.running { background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); color: #3b82f6; opacity: 0.9; cursor: default; }
+        .dev-badge { padding: 4px 10px; border-radius: 8px; background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.2); color: var(--danger); font-size: 0.75rem; display: inline-flex; align-items: center; font-family: monospace; }
+        .dev-badge.online { background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.35); color: var(--success); }
     </style>
 </head>
 <body>
@@ -2087,34 +916,20 @@ def index():
                 <h1>Coupang Control Center</h1>
                 <p>PostgreSQL & Redis 실시간 모니터링 대시보드 (10 Workstations v1.2)</p>
             </div>
-            <div class="status-badge">
-                <span class="dot"></span>
-                <span>SYSTEM LIVE</span>
-            </div>
+            <div class="status-badge"><span class="dot"></span><span>SYSTEM LIVE</span></div>
         </header>
 
         <div class="controls" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 2rem;">
             <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center;">
-                <button id="btn-start-business" class="btn-start-business" onclick="startBusiness()" disabled>
-                    <span>▶️</span> 영업 시작
-                </button>
-                <button class="btn-upload" onclick="triggerCSVUpload()">
-                    <span>📥</span> CSV 입고 명단 업로드
-                </button>
+                <button id="btn-start-business" class="btn-start-business" onclick="startBusiness()" disabled>영업 시작</button>
+                <button class="btn-upload" onclick="triggerCSVUpload()">📥 CSV 입고 명단 업로드</button>
                 <input type="file" accept=".csv" id="csv-file-input" style="display:none" onchange="uploadCSV()">
-                <button class="btn-simulate" onclick="simulateInbound()">
-                    <span>⚡</span> 시뮬레이션 적재 발생
-                </button>
-                <button class="btn-packaging" onclick="simulatePackaging()" style="background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); border: none; color: #000; box-shadow: 0 4px 15px rgba(245, 158, 11, 0.25);">
-                    <span>📦</span> 시뮬레이션 포장 수행
-                </button>
-                <button class="btn-reset" onclick="resetDatabase()">
-                    <span>🔄</span> 데이터베이스 초기화
-                </button>
+                <button class="btn-simulate" onclick="simulateInbound()">⚡ 시뮬레이션 적재 발생</button>
+                <button class="btn-packaging" onclick="simulatePackaging()" style="background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); border: none; color: #000;">📦 시뮬레이션 포장 수행</button>
+                <button class="btn-reset" onclick="resetDatabase()">🔄 데이터베이스 초기화</button>
             </div>
-            
-            <div id="device-status-strip" style="display: flex; gap: 8px; padding: 10px 16px; background: rgba(22, 28, 45, 0.4); border: 1px solid var(--border-color); border-radius: 12px; font-size: 0.78rem; font-weight: 600; align-items: center; flex-wrap: wrap;">
-                <span style="color: var(--text-muted); margin-right: 4px; display: flex; align-items: center; gap: 4px;">📡 기기 상태:</span>
+            <div id="device-status-strip" style="display: flex; gap: 8px; padding: 10px 16px; background: rgba(22, 28, 45, 0.4); border: 1px solid var(--border-color); border-radius: 12px; font-size: 0.78rem; font-weight: 600; align-items: center;">
+                <span style="color: var(--text-muted); margin-right: 4px;">📡 기기 상태:</span>
                 <span id="dev-bg2" class="dev-badge">bg2</span>
                 <span id="dev-sg2-in-01" class="dev-badge">sg2_in_01</span>
                 <span id="dev-sg2-in-02" class="dev-badge">sg2_in_02</span>
@@ -2124,117 +939,52 @@ def index():
             </div>
         </div>
 
-        <!-- Day Transition Banner (Hidden by default) -->
-        <div id="day-transition-banner" style="display: none; background: linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(239, 68, 68, 0.15) 100%); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 16px; padding: 20px; margin-bottom: 2rem; align-items: center; justify-content: space-between; box-shadow: 0 8px 32px 0 rgba(245, 158, 11, 0.15); animation: pulse-border-orange 2s infinite;">
+        <div id="day-transition-banner" style="display: none; background: linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(239, 68, 68, 0.15) 100%); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 16px; padding: 20px; margin-bottom: 2rem; align-items: center; justify-content: space-between;">
             <div style="display: flex; align-items: center; gap: 16px;">
-                <div style="font-size: 2.2rem; animation: bounce 2s infinite;">🎉</div>
+                <div style="font-size: 2.2rem;">🎉</div>
                 <div>
-                    <h3 style="margin: 0; color: #fff; font-size: 1.15rem; font-weight: 700; display: flex; align-items: center; gap: 8px;">
-                        오늘 영업일 운영 마감 완료! <span id="completed-day-badge" style="font-size: 0.75rem; background: #f59e0b; color: #000; padding: 2px 8px; border-radius: 9999px; font-weight: 800;">—</span>
-                    </h3>
-                    <p style="margin: 4px 0 0 0; color: var(--text-muted); font-size: 0.88rem;">오늘 물량의 모든 포장 공정이 성공적으로 종료되었습니다. 일자별 통계 보고서가 로컬 서버에 저장되었습니다. 다음 영업일의 물류 및 이송 처리를 승인하십시오.</p>
+                    <h3 style="margin: 0; color: #fff; font-size: 1.15rem; font-weight: 700;">오늘 영업일 운영 마감 완료! <span id="completed-day-badge">—</span></h3>
+                    <p style="margin: 4px 0 0 0; color: var(--text-muted); font-size: 0.88rem;">모든 포장 공정이 종료되었습니다. 통계 보고서가 생성되었습니다.</p>
                 </div>
             </div>
-            <button onclick="startNextDay()" style="background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); border: none; color: #000; font-weight: 800; padding: 14px 28px; border-radius: 12px; box-shadow: 0 4px 15px rgba(245, 158, 11, 0.4); display: flex; align-items: center; gap: 8px; font-size: 0.95rem; cursor: pointer; transition: all 0.3s ease;">
-                <span>🚀</span> 다음 영업일 개시 (Next Day Transition)
-            </button>
+            <button onclick="startNextDay()" style="background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); border: none; color: #000; font-weight: 800; padding: 14px 28px; border-radius: 12px;">🚀 다음 영업일 개시</button>
         </div>
 
-        <!-- Warehouse 2D Live Grid Map -->
         <div class="panel-card" style="margin-bottom: 2rem;">
-            <h2>Warehouse 2D Live Grid Plan <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal; margin-left: 10px;">실시간 체스판 격자 배치도 (1.5m Grid)</span></h2>
-            
-            <div id="floor-plan-container" style="display: flex; flex-direction: column; gap: 16px; background: rgba(15, 23, 42, 0.45); border-radius: 16px; border: 1px solid var(--border-color); padding: 20px; color: var(--text-color); align-items: center; justify-content: center; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);">
-                <!-- Legend Row -->
-                <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-bottom: 5px;">
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(59, 130, 246, 0.1); border: 1.5px solid rgba(59, 130, 246, 0.5); border-radius: 2px;"></span>
-                        <span>보관스팟 (Warehouse spots)</span>
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(245, 158, 11, 0.1); border: 1.5px solid rgba(245, 158, 11, 0.5); border-radius: 2px;"></span>
-                        <span>대기구역 (Staging area)</span>
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(168, 85, 247, 0.1); border: 1.5px solid rgba(168, 85, 247, 0.5); border-radius: 2px;"></span>
-                        <span>충전소 (Charging stations)</span>
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(16, 185, 129, 0.1); border: 1.5px solid rgba(16, 185, 129, 0.5); border-radius: 2px;"></span>
-                        <span>입출고/컨베이어 (In/Out gates)</span>
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(0, 242, 254, 0.3); border: 1px solid rgba(0, 242, 254, 0.6); box-shadow: inset 0 0 4px rgba(0, 242, 254, 0.5);"></span>
-                        <span>실시간 주행 흔적 (Neon traces)</span>
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                        <span style="display: inline-block; width: 12px; height: 12px; background: var(--danger); border-radius: 50%; border: 1px solid #fff;"></span>
-                        <span>AMR 위치</span>
-                    </div>
-                </div>
-
-                <!-- Chess-like Grid Panel -->
-                <div id="grid-map-panel" class="grid-map-container">
-                    <!-- Javascript will dynamically build 49 x 37 cells here -->
-                </div>
+            <h2>Warehouse 2D Live Grid Plan</h2>
+            <div id="floor-plan-container" style="background: rgba(15, 23, 42, 0.45); border-radius: 16px; padding: 20px; display: flex; justify-content: center;">
+                <div id="grid-map-panel" class="grid-map-container"></div>
             </div>
         </div>
-
 
         <div class="dashboard-grid">
-            <!-- Left: Warehouse Parking spots -->
             <div class="panel-card">
-                <h2>Warehouse Parking Spots (10 Slots) <span style="font-size: 0.8rem; color: rgba(0, 242, 254, 0.7); font-weight: normal; margin-left: 10px;">spot_01 ~ spot_10 (보관 영역)</span></h2>
-                <div class="spots-container" id="spots-list">
-                    <!-- Dynamic spots go here -->
-                </div>
+                <h2>Warehouse Parking Spots (10 Slots)</h2>
+                <div class="spots-container" id="spots-list"></div>
             </div>
-
-            <!-- Left 2: Outbound Staging spots -->
             <div class="panel-card">
-                <h2>Outbound Staging Spots (4 Slots) <span style="font-size: 0.8rem; color: rgba(245, 158, 11, 0.7); font-weight: normal; margin-left: 10px;">stage_01 ~ stage_04 (출고 대기 영역)</span></h2>
-                <div class="spots-container" id="staging-list">
-                    <!-- Dynamic staging spots go here -->
-                </div>
+                <h2>Outbound Staging Spots (4 Slots)</h2>
+                <div class="spots-container" id="staging-list"></div>
             </div>
-
-            <!-- Right: Workstations Active slots -->
             <div class="panel-card">
-                <h2>Workstations Active Status (10 Plates) <span style="font-size: 0.8rem; color: var(--text-muted);">2x4 Slots Layout</span></h2>
-                <div class="workstations-container" id="ws-list">
-                    <!-- Dynamic workstations go here -->
-                </div>
+                <h2>Workstations Active Status (10 Plates)</h2>
+                <div class="workstations-container" id="ws-list"></div>
             </div>
         </div>
 
-        <!-- Redis Active commands queue -->
         <div class="panel-card" style="margin-bottom: 2rem;">
-            <h2>Redis Command Queue <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal; margin-left: 10px;" id="redis-count">0 tasks active</span></h2>
-            <div class="tasks-list" id="tasks-list">
-                <!-- Dynamic redis tasks -->
-            </div>
+            <h2>Redis Command Queue <span id="redis-count">0 tasks active</span></h2>
+            <div class="tasks-list" id="tasks-list"></div>
         </div>
 
-        <!-- Package tracking log -->
         <div class="panel-card">
             <h2>Package Tracking Log</h2>
             <div class="table-wrapper">
                 <table>
                     <thead>
-                        <tr>
-                            <th>Package ID</th>
-                            <th>QR ID</th>
-                            <th>수령인</th>
-                            <th>배송 예정구역</th>
-                            <th>진행 상태</th>
-                            <th>적재 작업대</th>
-                            <th>슬롯 번호</th>
-                            <th>출고 바코드 ID</th>
-                        </tr>
+                        <tr><th>Package ID</th><th>QR ID</th><th>수령인</th><th>배송 예정구역</th><th>진행 상태</th><th>적재 작업대</th><th>슬롯 번호</th><th>출고 바코드 ID</th></tr>
                     </thead>
-                    <tbody id="package-tbody">
-                        <!-- Dynamic packages go here -->
-                    </tbody>
+                    <tbody id="package-tbody"></tbody>
                 </table>
             </div>
         </div>
@@ -2243,42 +993,21 @@ def index():
     <div class="toast" id="toast-message"></div>
 
     <script>
-        // 토스트 알림 헬퍼
         function showToast(message) {
             const toast = document.getElementById('toast-message');
             toast.innerText = message;
             toast.classList.add('show');
-            setTimeout(() => {
-                toast.classList.remove('show');
-            }, 3000);
+            setTimeout(() => { toast.classList.remove('show'); }, 3000);
         }
 
-        // 2D Floor Plan State & Update Logic
-        let locationsData = null;
-        let workstationsData = [];
-
-        // 경량 바둑판 맵: 데이터 있는 주요 위치만 렌더링
         let gridInitialized = false;
-        let pathTraceQueue = []; // AMR 주행 잔상 큐 (최대 15개)
-        let locCellMap = {};     // location_name 또는 qr_id -> DOM element 매핑
+        let pathTraceQueue = [];
+        let locCellMap = {};
+        const X_MIN = -3.0; const Y_MAX = 9.0; const GRID_STEP = 1.5; const CELL_PX = 30;
 
-        // 좌표 -> 픽셀 변환 상수 (20col * 30px = 600px, 36row * 30px = 1080px)
-        const X_MIN = -3.0;
-        const Y_MAX = 9.0;
-        const GRID_STEP = 1.5;
-        const CELL_PX = 30; // 1칸 = 30px (28px 크기 + 2px 마진 간격 효과)
+        function xToPx(x) { return Math.round((x - X_MIN) / GRID_STEP) * CELL_PX + 1; }
+        function yToPx(y) { return Math.round((Y_MAX - y) / GRID_STEP) * CELL_PX + 1; }
 
-        function xToPx(x) {
-            const col = Math.round((x - X_MIN) / GRID_STEP);
-            return col * CELL_PX + 1; // 테두리 간격 보정
-        }
-
-        function yToPx(y) {
-            const row = Math.round((Y_MAX - y) / GRID_STEP);
-            return row * CELL_PX + 1; // 테두리 간격 보정
-        }
-
-        // 1회 초기화: 특수 위치(named locations) 및 정적 장애물 div로 생성
         function initGridMap(gridCells) {
             if (gridInitialized) return;
             const container = document.getElementById('grid-map-panel');
@@ -2286,569 +1015,232 @@ def index():
             container.innerHTML = '';
 
             if (gridCells) {
-                // 합쳐질 보조 장애물 격자들은 중복 및 겹침을 방지하기 위해 렌더링 스킵
-                const skipCoords = [
-                    '7.5,3.0', '7.5,-1.5', '7.5,-6.0',
-                    '-1.5,9.0', '-3.0,7.5', '-1.5,7.5'
-                ];
-
                 const renderLocations = gridCells.filter(cell => {
-                    const coordKey = `${cell.x.toFixed(1)},${cell.y.toFixed(1)}`;
-                    if (skipCoords.includes(coordKey)) {
-                        return false;
-                    }
                     return cell.location_name || cell.location_type === 'STATIC_OBSTACLE';
                 });
 
                 renderLocations.forEach(cell => {
                     const name = (cell.location_name || '').toLowerCase();
                     const type = cell.location_type;
-                    
                     const el = document.createElement('div');
-                    el.id = cell.location_name ? `loc-${name}` : `loc-obs-${cell.x}-${cell.y}`;
                     el.className = 'grid-loc';
-                    
-                    let labelText = '';
-                    let customWidth = '28px';
-                    let customHeight = '28px';
+                    let labelText = ''; let w = '28px'; height = '28px';
 
-                    if (name.startsWith('spot_')) {
-                        el.classList.add('spot');
-                        labelText = 'S' + name.replace('spot_', '');
-                    } else if (name.startsWith('stage_')) {
-                        el.classList.add('stage');
-                        labelText = 'ST' + name.replace('stage_', '');
-                    } else if (name.startsWith('charging_')) {
-                        el.classList.add('charging');
-                        labelText = 'C' + name.replace('charging_', '');
-                    } else if (name.startsWith('sg2_in_0')) {
-                        el.classList.add('conveyor');
-                        labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','A').replace('_b','B').toUpperCase();
-                    } else if (name.startsWith('sg2_out_0')) {
-                        el.classList.add('packaging');
-                        labelText = 'SG2_OUT_' + name.replace('sg2_out_00_', '').toUpperCase();
-                    } else if (name === 'sg2_out') {
-                        el.classList.add('sg2-robot');
-                        labelText = 'SG2_OUT';
-                        customWidth = '56px';
-                        customHeight = '56px';
-                    } else if (name.startsWith('sg2_in_') && !name.startsWith('sg2_in_0')) {
-                        el.classList.add('sg2-robot');
-                        labelText = cell.location_name; // 'SG2_IN_1', 'SG2_IN_2', 'SG2_IN_3'
-                        customWidth = '56px';
-                    } else if (type === 'STATIC_OBSTACLE') {
-                        if (cell.location_name === 'CONVEYOR_BELT') {
-                            el.classList.add('conveyor-belt');
+                    if (name.startsWith('spot_')) { el.classList.add('spot'); labelText = 'S' + name.replace('spot_', ''); }
+                    else if (name.startsWith('stage_')) { el.classList.add('stage'); labelText = 'ST' + name.replace('stage_', ''); }
+                    else if (name.startsWith('charging_')) { el.classList.add('charging'); labelText = 'C' + name.replace('charging_', ''); }
+                    else if (name.startsWith('sg2_in_0')) { el.classList.add('conveyor'); labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','A').replace('_b','B').toUpperCase(); }
+                    else if (name.startsWith('sg2_out_0')) { el.classList.add('packaging'); labelText = 'O' + name.replace('sg2_out_00_', '').toUpperCase(); }
+                    else if (type === 'STATIC_OBSTACLE') {
+                        if (name.includes('팔') || cell.location_name.includes('로봇')) {
+                            el.classList.add('fixed-sg2-robot');
+                            labelText = 'SG2';
                         } else {
-                            el.classList.add('sg2-robot');
+                            el.classList.add('conveyor-belt');
+                            labelText = 'CV';
                         }
                     }
 
-                    el.textContent = labelText;
-                    
-                    // absolute positioning 설정
-                    el.style.left = `${xToPx(cell.x)}px`;
-                    el.style.top = `${yToPx(cell.y)}px`;
-                    el.style.width = customWidth;
-                    el.style.height = customHeight;
-                    
-                    el.title = `${cell.location_name || 'Obstacle'} (${type})\nQR: ${cell.qr_id}\nCoordinates: X=${cell.x.toFixed(3)}, Y=${cell.y.toFixed(3)}`;
-                    
-                    container.appendChild(el);
-                    
-                    // 매핑 테이블 등록
-                    if (cell.location_name) {
-                        locCellMap[name] = el;
+                    // 🚀 특정 구역(존) 좌표 감지하여 강력한 CSS 덮어쓰기 로직
+                    const coordKey = `${cell.x.toFixed(1)},${cell.y.toFixed(1)}`;
+                    const outCoords = ['-1.5,7.5', '-3.0,7.5', '-1.5,9.0', '-3.0,9.0'];
+                    const inCoords = ['6.0,3.0', '7.5,3.0', '6.0,-1.5', '7.5,-1.5', '6.0,-6.0', '7.5,-6.0'];
+
+                    if (outCoords.includes(coordKey)) {
+                        el.className = 'grid-loc zone-sg2-out'; // 기존 클래스들을 아예 핑크퍼플 존으로 통일
+                        // 만약 빈 셀이었다면 기본 이름 부여
+                        if (!labelText && !el.classList.contains('conveyor-belt')) labelText = 'OUT';
+                    } else if (inCoords.includes(coordKey)) {
+                        el.className = 'grid-loc zone-sg2-in'; // 기존 클래스들을 아예 스카이블루 존으로 통일
+                        if (!labelText && !el.classList.contains('conveyor-belt')) labelText = 'IN';
                     }
+
+                    // 투명 컨베이어벨트인 경우 텍스트 안보이게 유지
+                    if (el.classList.contains('conveyor-belt')) { labelText = ''; }
+                    
+                    el.textContent = labelText;
+                    el.style.left = `${xToPx(cell.x)}px`; el.style.top = `${yToPx(cell.y)}px`;
+                    el.style.width = w; el.style.height = '28px';
+                    container.appendChild(el);
+                    if (cell.location_name) locCellMap[name] = el;
                     locCellMap[cell.qr_id] = el;
                 });
             }
             gridInitialized = true;
-            console.log("Lightweight Grid Map Initialized.");
         }
 
-        // 대시보드 데이터 수신 시 그리드 업데이트
         function updateFloorPlan(data) {
-            // 1. 그리드가 아직 초기화 안 되었다면 초기화
-            if (data.grid_cells && !gridInitialized) {
-                initGridMap(data.grid_cells);
-            }
+            if (data.grid_cells && !gridInitialized) initGridMap(data.grid_cells);
             if (!gridInitialized) return;
 
-            // 2. 모든 특수 위치의 has-ws 스타일 및 텍스트 초기화
             Object.keys(locCellMap).forEach(key => {
                 const el = locCellMap[key];
-                if (el) {
-                    el.classList.remove('has-ws');
-                    // 기본 라벨 복구
-                    const name = el.id.replace('loc-', '');
-                    let labelText = '';
-                    if (name.startsWith('spot_')) {
-                        labelText = 'S' + name.replace('spot_', '');
-                    } else if (name.startsWith('stage_')) {
-                        labelText = 'ST' + name.replace('stage_', '');
-                    } else if (name.startsWith('charging_')) {
-                        labelText = 'C' + name.replace('charging_', '');
-                    } else if (name.startsWith('sg2_in_0')) {
-                        labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','A').replace('_b','B').toUpperCase();
-                    } else if (name.startsWith('sg2_out_0')) {
-                        labelText = 'SG2_OUT_' + name.replace('sg2_out_00_', '').toUpperCase();
-                    } else if (name === 'sg2_out') {
-                        labelText = 'SG2_OUT';
-                    } else if (name.startsWith('sg2_in_') && !name.startsWith('sg2_in_0')) {
-                        labelText = name.toUpperCase();
-                    }
-                    el.textContent = labelText;
-                }
+                if (el) el.classList.remove('has-ws');
             });
 
-            // 3. 기존 AMR 마커 삭제 방지 (최적화를 위해 재사용)
             if (!window.amrDomElements) window.amrDomElements = {};
 
-            // 4. 워크스테이션(선반) 위치에 WS 배지 스타일링 반영 (has-ws 클래스 추가)
             if (data.workstations) {
                 data.workstations.forEach(ws => {
                     const loc = ws.current_location.toLowerCase();
                     let cellEl = locCellMap[loc];
-                    if (!cellEl && data.locations && data.locations[loc]) {
-                        cellEl = locCellMap[data.locations[loc].qr_id];
-                    }
                     if (cellEl) {
                         cellEl.classList.add('has-ws');
-                        // 28px 크기에 맞게 WS01 대신 W1, WS10 대신 W10 형태로 표기해 S1, S2 보관함명과 확연히 구분시킴
                         cellEl.textContent = ws.workstation_id.replace('WS0', 'W').replace('WS', 'W');
                     }
                 });
             }
 
-            // 5. 실시간 AMR 위치 매핑 및 주행 잔상 렌더링
             if (data.amr_states) {
                 const panel = document.getElementById('grid-map-panel');
-                if (!panel) return;
-                
                 Object.keys(data.amr_states).forEach(amrId => {
                     const amr = data.amr_states[amrId];
-                    let qrId = null;
-
-                    if (amr.current_qr_id) {
-                        if (amr.current_qr_id.startsWith('FLOOR_X_')) {
-                            qrId = amr.current_qr_id;
-                        } else {
-                            const locName = amr.current_qr_id.toLowerCase();
-                            if (data.locations) {
-                                Object.keys(data.locations).forEach(k => {
-                                    if (k.toLowerCase() === locName || (data.locations[k].qr_id && data.locations[k].qr_id.toLowerCase() === locName)) {
-                                        qrId = data.locations[k].qr_id;
-                                    }
-                                });
-                            }
+                    let qrId = amr.current_qr_id;
+                    const cellEl = locCellMap[qrId];
+                    if (cellEl) {
+                        let amrEl = window.amrDomElements[amrId];
+                        if (!amrEl) {
+                            amrEl = document.createElement('div');
+                            amrEl.className = 'amr-icon';
+                            panel.appendChild(amrEl);
+                            window.amrDomElements[amrId] = amrEl;
                         }
-                    }
-
-                    if (qrId) {
-                        // QR ID에 해당하는 셀 요소를 찾음
-                        const cellEl = locCellMap[qrId];
-                        if (cellEl) {
-                            // AMR 마커 동적 생성 및 panel에 absolute positioning으로 얹음
-                            let amrEl = window.amrDomElements[amrId];
-                            if (!amrEl) {
-                                amrEl = document.createElement('div');
-                                amrEl.className = 'amr-icon';
-                                panel.appendChild(amrEl);
-                                window.amrDomElements[amrId] = amrEl;
-                            }
-                            amrEl.textContent = amrId.replace('AMR_', '');
-                            amrEl.title = `${amrId}\nState: ${amr.state}\nBattery: ${amr.battery}%\nCarrying: ${amr.carrying_workstation_id || 'None'}`;
-                            
-                            amrEl.style.left = `${parseFloat(cellEl.style.left) + 14}px`;
-                            amrEl.style.top = `${parseFloat(cellEl.style.top) + 14}px`;
-                            
-                            const bat = parseFloat(amr.battery);
-                            let color = '#ff007f'; 
-                            if (bat <= 20) {
-                                color = '#ef4444'; // 배터리 경고 (빨강)
-                            } else if (bat <= 50) {
-                                color = '#f59e0b'; // 배터리 주의 (주황)
-                            }
-                            
-                            amrEl.style.backgroundColor = color;
-                            amrEl.style.color = color === '#f59e0b' ? '#000' : '#fff';
-                            amrEl.style.boxShadow = `0 0 10px ${color}`;
-
-                            // 주행 흔적(Trace fading trail) 활성화
-                            if (!cellEl.classList.contains('path-active')) {
-                                cellEl.classList.add('path-active');
-                                pathTraceQueue.push(cellEl);
-
-                                // 잔상 꼬리 15개로 제한
-                                if (pathTraceQueue.length > 15) {
-                                    const oldCell = pathTraceQueue.shift();
-                                    if (oldCell) {
-                                        oldCell.classList.remove('path-active');
-                                    }
-                                }
-                            }
-                        }
+                        amrEl.style.left = `${parseFloat(cellEl.style.left) + 14}px`;
+                        amrEl.style.top = `${parseFloat(cellEl.style.top) + 14}px`;
+                        amrEl.style.backgroundColor = '#ff007f';
+                        amrEl.textContent = amrId.replace('AMR_', '');
                     }
                 });
             }
         }
 
-
-
-        // 1. 모의 적재 이벤트 트리거
         async function simulateInbound() {
-            try {
-                const response = await fetch('/api/simulate', { method: 'POST' });
-                const data = await response.json();
-                if (data.success) {
-                    showToast(data.message);
-                    fetchStatus();
-                } else {
-                    showToast("❌ Error: " + data.message);
-                }
-            } catch (err) {
-                showToast("❌ API 통신 오류 발생");
-            }
+            const res = await fetch('/api/simulate', { method: 'POST' });
+            const d = await res.json();
+            showToast(d.message);
         }
 
-        // 1-2. 모의 포장 이벤트 트리거
         async function simulatePackaging() {
-            try {
-                const response = await fetch('/api/simulate_packaging', { method: 'POST' });
-                const data = await response.json();
-                if (data.success) {
-                    showToast(data.message);
-                    fetchStatus();
-                } else {
-                    showToast("❌ Error: " + data.message);
-                }
-            } catch (err) {
-                showToast("❌ API 통신 오류 발생");
-            }
+            const res = await fetch('/api/simulate_packaging', { method: 'POST' });
+            const d = await res.json();
+            showToast(d.message);
         }
 
-        function triggerCSVUpload() {
-            document.getElementById('csv-file-input').click();
-        }
-
+        function triggerCSVUpload() { document.getElementById('csv-file-input').click(); }
+        
         async function uploadCSV() {
             const fileInput = document.getElementById('csv-file-input');
             if (fileInput.files.length === 0) return;
-
-            const file = fileInput.files[0];
             const reader = new FileReader();
-
             reader.onload = async function(e) {
-                const textContent = e.target.result;
-                showToast("⏳ CSV 파일을 업로드하는 중...");
-
-                try {
-                    const response = await fetch('/api/upload_packages', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'text/plain; charset=utf-8'
-                        },
-                        body: textContent
-                    });
-                    const data = await response.json();
-                    if (response.ok && data.success) {
-                        showToast("✅ " + data.message);
-                        fetchStatus();
-                    } else {
-                        showToast("❌ 업로드 실패: " + (data.detail || data.message || "알 수 없는 오류"));
-                    }
-                } catch (err) {
-                    showToast("❌ API 통신 오류 발생");
-                } finally {
-                    fileInput.value = "";
-                }
+                const res = await fetch('/api/upload_packages', { method: 'POST', body: e.target.result });
+                const d = await res.json();
+                showToast(d.message);
             };
-
-            reader.readAsText(file);
+            reader.readAsText(fileInput.files[0]);
         }
 
-        // 1.5. 다음 영업일 개시 트리거
         async function startNextDay() {
-            try {
-                const response = await fetch('/api/start_next_day', { method: 'POST' });
-                const data = await response.json();
-                if (data.success) {
-                    showToast("🚀 " + data.message);
-                    fetchStatus();
-                } else {
-                    showToast("❌ 개시 실패: " + data.message);
-                }
-            } catch (err) {
-                showToast("❌ API 통신 오류 발생");
-            }
+            const res = await fetch('/api/start_next_day', { method: 'POST' });
+            const d = await res.json();
+            showToast(d.message);
         }
 
-        // 2. DB 초기화 트리거
         async function resetDatabase() {
-            if(!confirm("PostgreSQL과 Redis 큐를 초기상태로 완전히 리셋하시겠습니까?")) return;
-            try {
-                const response = await fetch('/api/reset', { method: 'POST' });
-                const data = await response.json();
-                if (data.success) {
-                    showToast("🔄 " + data.message);
-                    fetchStatus();
-                } else {
-                    showToast("❌ 초기화 실패: " + data.message);
-                }
-            } catch (err) {
-                showToast("❌ API 통신 오류 발생");
-            }
+            if(!confirm("DB를 리셋하시겠습니까?")) return;
+            const res = await fetch('/api/reset', { method: 'POST' });
+            const d = await res.json();
+            showToast(d.message);
+            lastDataHash = { spots: '', workstations: '', redis_tasks: '', packages: '' };
         }
 
-        // 2.2. 영업일 시작 트리거
         async function startBusiness() {
-            try {
-                const response = await fetch('/api/start_business', { method: 'POST' });
-                const data = await response.json();
-                if (data.success) {
-                    showToast("▶️ " + data.message);
-                    fetchStatus();
-                } else {
-                    showToast("❌ 시작 실패: " + data.message);
-                }
-            } catch (err) {
-                showToast("❌ API 통신 오류 발생");
-            }
+            const res = await fetch('/api/start_business', { method: 'POST' });
+            const d = await res.json();
+            showToast(d.message);
         }
 
-        // 3. 상태 실시간 페치 및 UI 업데이트 루프
+        let lastDataHash = { spots: '', workstations: '', redis_tasks: '', packages: '' };
+
         function updateUI(data) {
-            // Update global data for map canvas
-            locationsData = data.locations;
-            workstationsData = data.workstations;
+            updateFloorPlan(data);
+            const banner = document.getElementById('day-transition-banner');
+            if (banner) banner.style.display = data.day_status === 'PENDING_TRANSITION' ? 'flex' : 'none';
 
-            // 3-0. Update Device status strip & Start Business Button
-            const devBg2 = document.getElementById('dev-bg2');
-            const devSg2In1 = document.getElementById('dev-sg2-in-01');
-            const devSg2In2 = document.getElementById('dev-sg2-in-02');
-            const devSg2In3 = document.getElementById('dev-sg2-in-03');
-            const devSg2Out = document.getElementById('dev-sg2-out-00');
-            const devAmr = document.getElementById('dev-amr');
-            
-            let bg2_ok = false;
-            let sg2_in_01_ok = false;
-            let sg2_in_02_ok = false;
-            let sg2_in_03_ok = false;
-            let sg2_out_ok = false;
-            let amr_ok = false;
-
-            if (data.device_status) {
-                bg2_ok = data.device_status.bg2;
-                sg2_in_01_ok = data.device_status.sg2_in_01;
-                sg2_in_02_ok = data.device_status.sg2_in_02;
-                sg2_in_03_ok = data.device_status.sg2_in_03;
-                sg2_out_ok = data.device_status.sg2_out_00;
-                amr_ok = data.device_status.amr;
-            }
-
-            const toggleBadge = (el, isOnline) => {
+            const devices = ['bg2', 'sg2-in-01', 'sg2-in-02', 'sg2-in-03', 'sg2-out-00', 'amr'];
+            devices.forEach(dev => {
+                const dataKey = dev.replace(/-/g, '_'); 
+                const el = document.getElementById(`dev-${dev}`);
                 if (el) {
-                    if (isOnline) {
+                    if (data.device_status && data.device_status[dataKey]) {
                         el.classList.add('online');
                     } else {
                         el.classList.remove('online');
                     }
                 }
-            };
+            });
 
-            toggleBadge(devBg2, bg2_ok);
-            toggleBadge(devSg2In1, sg2_in_01_ok);
-            toggleBadge(devSg2In2, sg2_in_02_ok);
-            toggleBadge(devSg2In3, sg2_in_03_ok);
-            toggleBadge(devSg2Out, sg2_out_ok);
-            toggleBadge(devAmr, amr_ok);
+            const startBtn = document.getElementById('btn-start-business');
+            if (startBtn) {
+                const systemRunning = data.day_status === 'RUNNING';
+                const packagesWaiting = (data.packages || []).some(pkg => pkg.status === 'WAITING');
+                const ready = packagesWaiting && !systemRunning && data.day_status !== 'PENDING_TRANSITION';
 
-            // 오늘 택배 명단이 등록되었는지 확인 (WAITING 상태인 패키지가 존재하는지)
-            const hasWaitingPackages = data.packages && data.packages.some(p => p.status === 'WAITING');
-
-            // 영업시작 버튼 활성화/비활성화 처리
-            const btnStart = document.getElementById('btn-start-business');
-            if (btnStart) {
-                if (data.day_status === 'WAITING_FOR_START') {
-                    const allRobotsOk = bg2_ok && sg2_in_01_ok && sg2_in_02_ok && sg2_in_03_ok && sg2_out_ok && amr_ok;
-                    
-                    if (allRobotsOk && hasWaitingPackages) {
-                        btnStart.disabled = false;
-                        btnStart.className = 'btn-start-business ready';
-                        btnStart.innerHTML = '<span>▶️</span> 영업 시작';
-                    } else {
-                        btnStart.disabled = true;
-                        btnStart.className = 'btn-start-business';
-                        
-                        let reason = [];
-                        if (!allRobotsOk) reason.push('로봇 미연결');
-                        if (!hasWaitingPackages) reason.push('명단 미등록');
-                        btnStart.innerHTML = `<span>▶️</span> 영업 시작 (${reason.join(', ')})`;
-                    }
-                } else if (data.day_status === 'RUNNING') {
-                    btnStart.disabled = true;
-                    btnStart.className = 'btn-start-business running';
-                    btnStart.innerHTML = '<span>⚡</span> 영업 진행 중';
+                if (systemRunning) {
+                    startBtn.classList.remove('ready');
+                    startBtn.classList.add('running');
+                    startBtn.textContent = '영업 중';
+                    startBtn.disabled = true;
+                } else if (ready) {
+                    startBtn.classList.add('ready');
+                    startBtn.classList.remove('running');
+                    startBtn.textContent = '영업 시작';
+                    startBtn.disabled = false;
                 } else {
-                    btnStart.disabled = true;
-                    btnStart.className = 'btn-start-business';
-                    btnStart.innerHTML = '<span>⏸️</span> 영업 준비 중';
-                }
-            }
-
-        // State hash to prevent unnecessary DOM rebuilds
-        let lastDataHash = { spots: '', workstations: '', redis_tasks: '', packages: '' };
-
-        function updateUI(data) {
-            // Update the 2D floor plan
-            updateFloorPlan(data);
-
-            // Update day transition banner visibility
-            const banner = document.getElementById('day-transition-banner');
-            if (banner) {
-                if (data.day_status === 'PENDING_TRANSITION') {
-                    banner.style.display = 'flex';
-                    const badge = document.getElementById('completed-day-badge');
-                    if (badge) badge.innerText = data.completed_day || '—';
-                } else {
-                    banner.style.display = 'none';
+                    startBtn.classList.remove('ready', 'running');
+                    startBtn.textContent = '영업 시작';
+                    startBtn.disabled = true;
                 }
             }
 
             const spotsStr = JSON.stringify(data.spots || []);
-            const wsStr = JSON.stringify(data.workstations || []);
-            const tasksStr = JSON.stringify(data.redis_tasks || []);
-            const pkgsStr = JSON.stringify(data.packages || []);
-
-            // 3-1. Render Warehouse spots & Staging spots
             if (spotsStr !== lastDataHash.spots) {
-                const spotsContainer = document.getElementById('spots-list');
-                const stagingContainer = document.getElementById('staging-list');
-                
-                if (spotsContainer) spotsContainer.innerHTML = '';
-                if (stagingContainer) stagingContainer.innerHTML = '';
+                const sc = document.getElementById('spots-list');
+                const stc = document.getElementById('staging-list');
+                if (sc) sc.innerHTML = ''; if (stc) stc.innerHTML = '';
                 
                 (data.spots || []).forEach(spot => {
-                    const isOccupied = spot.status === 'OCCUPIED';
-                    const item = document.createElement('div');
-                    item.className = `spot-item ${isOccupied ? 'occupied' : 'empty'}`;
-                    item.innerHTML = `
-                        <div class="spot-id">${spot.spot_id.toUpperCase()}</div>
-                        <div class="spot-ws">${spot.workstation_id || '—'}</div>
-                        <div class="spot-status-badge">${isOccupied ? 'OCCUPIED' : 'EMPTY'}</div>
-                    `;
-                    
-                    if (spot.spot_id.startsWith('spot_')) {
-                        if (spotsContainer) spotsContainer.appendChild(item);
-                    } else if (spot.spot_id.startsWith('stage_')) {
-                        if (stagingContainer) stagingContainer.appendChild(item);
-                    }
+                    const el = document.createElement('div');
+                    el.className = `spot-item ${spot.status === 'OCCUPIED' ? 'occupied' : 'empty'}`;
+                    el.innerHTML = `<div class="spot-id">${spot.spot_id}</div><div class="spot-ws">${spot.workstation_id || '—'}</div>`;
+                    if (spot.spot_id.startsWith('spot_') && sc) sc.appendChild(el);
+                    else if (spot.spot_id.startsWith('stage_') && stc) stc.appendChild(el);
                 });
                 lastDataHash.spots = spotsStr;
             }
 
-            // 3-2. Render Workstations
+            const wsStr = JSON.stringify(data.workstations || []);
             if (wsStr !== lastDataHash.workstations) {
-                const wsContainer = document.getElementById('ws-list');
-                if (wsContainer) {
-                    wsContainer.innerHTML = '';
+                const wc = document.getElementById('ws-list');
+                if (wc) {
+                    wc.innerHTML = '';
                     (data.workstations || []).forEach(ws => {
-                        const isMoving = ws.current_location.startsWith('MOVING_');
-                        const card = document.createElement('div');
-                        card.className = 'ws-card';
-                        
-                        let slotsHTML = '';
-                        ws.slots.forEach(slot => {
-                            const isFull = slot.status === 'FULL';
-                            slotsHTML += `
-                                <div class="ws-slot ${isFull ? 'full' : ''}">
-                                    <div>Slot ${slot.slot_number}</div>
-                                    <div class="ws-slot-name">${slot.customer || 'EMPTY'}</div>
-                                </div>
-                            `;
-                        });
-
-                        card.innerHTML = `
-                            <div class="ws-header">
-                                <span class="ws-id">${ws.workstation_id}</span>
-                                <span class="ws-loc ${isMoving ? 'moving' : ''}">${ws.current_location}</span>
-                            </div>
-                            <div class="ws-slots-grid">
-                                ${slotsHTML}
-                            </div>
-                        `;
-                        wsContainer.appendChild(card);
+                        const el = document.createElement('div');
+                        el.className = 'ws-card';
+                        el.innerHTML = `<div class="ws-header"><span class="ws-id">${ws.workstation_id}</span><span class="ws-loc">${ws.current_location}</span></div>`;
+                        if (wc) wc.appendChild(el);
                     });
                 }
                 lastDataHash.workstations = wsStr;
             }
 
-            // 3-3. Render Redis tasks queue
-            if (tasksStr !== lastDataHash.redis_tasks) {
-                const tasksContainer = document.getElementById('tasks-list');
-                const redisCountEl = document.getElementById('redis-count');
-                if (tasksContainer && redisCountEl) {
-                    tasksContainer.innerHTML = '';
-                    
-                    const count = (data.redis_tasks || []).length;
-                    redisCountEl.innerText = `${count} task${count !== 1 ? 's' : ''} active`;
-
-                    if (count === 0) {
-                        tasksContainer.innerHTML = `
-                            <div style="text-align: center; color: var(--text-muted); font-size: 0.85rem; padding: 10px;">
-                                큐에 현재 대기 중인 AMR 이송 명령이 없습니다.
-                            </div>
-                        `;
-                    } else {
-                        (data.redis_tasks || []).forEach(task => {
-                            const item = document.createElement('div');
-                            item.className = 'task-item';
-                            
-                            const score = task.priority_score || 0;
-                            let badgeBg = 'rgba(255,255,255,0.1)';
-                            let badgeColor = 'var(--text-muted)';
-                            if (score >= 90) {
-                                badgeBg = 'rgba(239, 68, 68, 0.2)';
-                                badgeColor = '#ef4444';
-                            } else if (score >= 80) {
-                                badgeBg = 'rgba(245, 158, 11, 0.2)';
-                                badgeColor = '#f59e0b';
-                            } else if (score >= 50) {
-                                badgeBg = 'rgba(59, 130, 246, 0.2)';
-                                badgeColor = '#3b82f6';
-                            }
-
-                            item.innerHTML = `
-                                <div>
-                                    <div class="task-name" style="display: flex; align-items: center; gap: 6px;">
-                                        ${task.task_type || 'TASK'}
-                                        <span style="font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; background: ${badgeBg}; color: ${badgeColor}; font-weight: 700;">
-                                            P-${score}
-                                        </span>
-                                    </div>
-                                    <div class="task-desc">${task.description || ''}</div>
-                                </div>
-                                <div style="font-size: 0.72rem; color: var(--text-muted); text-align: right;">
-                                    <div>QR: ${task.workstation_qr_id || 'N/A'}</div>
-                                    <div style="font-size: 0.55rem; opacity: 0.7; margin-top: 2px;">UUID: ${task.uuid ? task.uuid.substring(0, 8) : 'N/A'}</div>
-                                </div>
-                            `;
-                            tasksContainer.appendChild(item);
-                        });
-                    }
-                }
-                lastDataHash.redis_tasks = tasksStr;
-            }
-
-            // 3-4. Render Packages table
-            if (pkgsStr !== lastDataHash.packages) {
+            const pkgsStr = JSON.stringify(data.packages || []);
+            if (pkgsStr !== lastDataHash.packages || (data.packages && data.packages.length > 0 && document.getElementById('package-tbody').children.length === 0)) {
                 const tbody = document.getElementById('package-tbody');
                 if (tbody) {
                     tbody.innerHTML = '';
                     (data.packages || []).forEach(pkg => {
                         const row = document.createElement('tr');
-                        
                         let statusClass = pkg.status.toLowerCase();
                         row.innerHTML = `
                             <td style="font-weight: 600; color:#fff;">${pkg.package_id}</td>
@@ -2858,7 +1250,7 @@ def index():
                             <td><span class="status-pill ${statusClass}">${pkg.status}</span></td>
                             <td>${pkg.workstation_id || '—'}</td>
                             <td>${pkg.slot_number || '—'}</td>
-                            <td style="font-family: monospace; color: var(--primary); font-size: 0.75rem;">${pkg.outbound_id || '—'}</td>
+                            <td style="font-family: monospace; color: #00f2fe; font-size: 0.75rem;">${pkg.outbound_id || '—'}</td>
                         `;
                         tbody.appendChild(row);
                     });
@@ -2867,51 +1259,15 @@ def index():
             }
         }
 
-        async function fetchStatus() {
-            try {
-                const response = await fetch('/api/status');
-                if (!response.ok) return;
-                const data = await response.json();
-                updateUI(data);
-            } catch (err) {
-                console.error("Fetch status error:", err);
-            }
-        }
-
-        // WebSocket 연결 관리 (C-to-C 분산 환경을 위한 동적 호스트 바인딩)
         let ws;
         function connectWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/ws`;
-            
-            console.log(`Connecting to WebSocket: ${wsUrl}`);
             ws = new WebSocket(wsUrl);
-
-            ws.onopen = function() {
-                showToast("⚡ 실시간 WebSocket 관제 연결 완료");
-            };
-
-            ws.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    updateUI(data);
-                } catch (err) {
-                    console.error("WebSocket message parse error:", err);
-                }
-            };
-
-            ws.onclose = function(e) {
-                console.warn("WebSocket closed. Attempting reconnect in 3s...", e.reason);
-                setTimeout(connectWebSocket, 3000);
-            };
-
-            ws.onerror = function(err) {
-                console.error("WebSocket error:", err);
-                ws.close();
-            };
+            ws.onopen = function() { showToast("⚡ 실시간 WebSocket 관제 연결 완료"); };
+            ws.onmessage = function(event) { updateUI(JSON.parse(event.data)); };
+            ws.onclose = function() { setTimeout(connectWebSocket, 3000); };
         }
-
-        // 웹소켓 연결 시작
         connectWebSocket();
     </script>
 </body>
@@ -2920,4 +1276,3 @@ def index():
 
 if __name__ == "__main__":
     uvicorn.run("dashboard_server:app", host="0.0.0.0", port=8009, reload=True)
-
