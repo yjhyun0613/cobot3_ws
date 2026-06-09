@@ -16,6 +16,20 @@ import sys
 import time
 
 # ──────────────────────────────────────────────
+# 0. 실행 옵션 파싱 (Omniverse app 초기화 전에 sys.argv에서 분리 필요)
+# ──────────────────────────────────────────────
+# Omniverse SimulationApp은 자체 CLI 인자를 엄격히 체크하므로 커넥터 인자를 sys.argv에서 수동 분리합니다.
+only_amr = False
+if "--only-amr" in sys.argv:
+    only_amr = True
+    sys.argv.remove("--only-amr")
+if "-o" in sys.argv:
+    only_amr = True
+    sys.argv.remove("-o")
+
+print(f"=== [Isaac Sim Connector] 옵션 적용 - only-amr (작업대 동기화 제외): {only_amr} ===")
+
+# ──────────────────────────────────────────────
 # 1. Isaac Sim 엔진 초기화 (GUI 모드)
 # ──────────────────────────────────────────────
 print("=== [Isaac Sim Connector] Omniverse Kit 엔진 초기화 중... ===")
@@ -189,38 +203,39 @@ try:
                 pass
 
         # ── B. PostgreSQL에서 10대 작업대 위치 조회 ──
-        try:
-            with pg_conn.cursor() as cursor:
-                cursor.execute("SELECT workstation_id, current_location FROM workstations;")
-                rows = cursor.fetchall()
-                for ws_id, cur_loc in rows:
-                    path_str = ws_paths.get(ws_id)
-                    if not path_str:
-                        continue
+        if not only_amr:
+            try:
+                with pg_conn.cursor() as cursor:
+                    cursor.execute("SELECT workstation_id, current_location FROM workstations;")
+                    rows = cursor.fetchall()
+                    for ws_id, cur_loc in rows:
+                        path_str = ws_paths.get(ws_id)
+                        if not path_str:
+                            continue
 
-                    prim = stage.GetPrimAtPath(path_str)
-                    if not prim:
-                        continue
+                        prim = stage.GetPrimAtPath(path_str)
+                        if not prim:
+                            continue
 
-                    xform = UsdGeom.XformCommonAPI(prim)
+                        xform = UsdGeom.XformCommonAPI(prim)
 
-                    # Case A: AMR이 작업대를 들어올린 상태 → 리프트
-                    if ws_id in carried_workstations:
-                        ax, ay = carried_workstations[ws_id]
-                        xform.SetTranslate(Gf.Vec3d(ax, ay, 0.55))
+                        # Case A: AMR이 작업대를 들어올린 상태 → 리프트
+                        if ws_id in carried_workstations:
+                            ax, ay = carried_workstations[ws_id]
+                            xform.SetTranslate(Gf.Vec3d(ax, ay, 0.55))
 
-                    # Case B: 특정 장소에 주차된 상태
-                    elif cur_loc:
-                        loc_key = cur_loc.lower()
-                        if loc_key in location_coords:
-                            lx, ly = location_coords[loc_key]
-                            xform.SetTranslate(Gf.Vec3d(lx, ly, 0.40))
-                        else:
-                            # 좌표 미확인 → 씬 밖으로 숨김
-                            xform.SetTranslate(Gf.Vec3d(0.0, 0.0, -10.0))
-        except Exception as db_err:
-            if frame_count % 300 == 0:
-                print(f"[WARNING] 작업대 위치 조회 실패: {db_err}")
+                        # Case B: 특정 장소에 주차된 상태
+                        elif cur_loc:
+                            loc_key = cur_loc.lower()
+                            if loc_key in location_coords:
+                                lx, ly = location_coords[loc_key]
+                                xform.SetTranslate(Gf.Vec3d(lx, ly, 0.40))
+                            else:
+                                # 좌표 미확인 → 씬 밖으로 숨김
+                                xform.SetTranslate(Gf.Vec3d(0.0, 0.0, -10.0))
+            except Exception as db_err:
+                if frame_count % 300 == 0:
+                    print(f"[WARNING] 작업대 위치 조회 실패: {db_err}")
 
         # ── C. Isaac Sim 렌더 프레임 갱신 ──
         simulation_app.update()

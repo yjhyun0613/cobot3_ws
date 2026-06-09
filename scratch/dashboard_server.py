@@ -540,8 +540,7 @@ def start_next_day():
                         spot_row = cursor.fetchone()
                     if spot_row:
                         target_spot = spot_row[0]
-                        # DB에서 위치와 창고 주차 상태를 즉시 선점하여 중복 방지
-                        cursor.execute("UPDATE workstations SET current_location = %s WHERE workstation_id = %s;", (target_spot, ws_id))
+                        # DB에서 창고 주차 상태를 즉시 선점하여 중복 방지 (선행 위치 갱신은 방지)
                         cursor.execute("UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;", (ws_id, target_spot))
                         
                         task_data = {
@@ -578,8 +577,7 @@ def start_next_day():
                         target_loc = curr_loc.replace("SG2_IN_03", "SG2_IN_02")
                     
                     if target_loc:
-                        # DB에서 위치 상태를 즉시 선점하여 중복 방지
-                        cursor.execute("UPDATE workstations SET current_location = %s WHERE workstation_id = %s;", (target_loc, ws_id))
+                        # DB 선행 위치 갱신은 방지 (관제탑 이송 완료 시 자동 업데이트 위임)
                         
                         task_data = {
                             "task_type": "PRE_FETCH_WORKSTATION",
@@ -742,8 +740,19 @@ def simulate_inbound():
                     ws_id, current_loc = empty_ws_row
                     # 출발 창고 스팟 비우기
                     cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (current_loc,))
-                    # A 구역으로 강제 매핑
-                    cursor.execute("UPDATE workstations SET current_location = %s WHERE workstation_id = %s;", (target_loc, ws_id))
+                    # A 구역으로 작업대 이송 태스크 발행 (선행 DB 업데이트는 제외)
+                    cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
+                    ws_qr_row = cursor.fetchone()
+                    ws_qr = ws_qr_row[0] if ws_qr_row else ""
+                    task_deploy = {
+                        "task_type": "DEPLOY_EMPTY_WORKSTATION",
+                        "workstation_id": ws_id,
+                        "from": current_loc,
+                        "to": target_loc,
+                        "description": f"인바운드 호출: 빈 작업대 {ws_id} 배치 → {target_loc} (창고 직송)",
+                        "workstation_qr_id": ws_qr
+                    }
+                    push_priority_task(redis_client, task_deploy)
                 else:
                     pg_conn.close()
                     return {"success": False, "message": f"{target_robot}_A 에 배치할 빈 작업대가 없습니다."}
@@ -793,11 +802,7 @@ def simulate_inbound():
                 cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
                 ws_qr = cursor.fetchone()[0]
                 
-                # DB 상태를 ROTATING으로 변경하여 로봇 대기 유도
-                cursor.execute(
-                    "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
-                    (f"{target_robot}_A_ROTATING", ws_id)
-                )
+                # DB 선행 업데이트 삭제 (관제탑이 태스크 시작 시 처리하도록 위임)
                 
                 task_data = {
                     "task_type": "ROTATE_WORKSTATION",
@@ -846,10 +851,6 @@ def simulate_inbound():
                             (ws_id,)
                         )
 
-                    cursor.execute(
-                        "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
-                        (target_out, ws_id)
-                    )
                     task_retrieve = {
                         "task_type": "RETRIEVE_FULL_WORKSTATION",
                         "workstation_id": ws_id,
@@ -875,10 +876,6 @@ def simulate_inbound():
                     cursor.execute(
                         "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE workstation_id = %s AND status = 'IN_WORKSTATION';",
                         (ws_id,)
-                    )
-                    cursor.execute(
-                        "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
-                        (target_out, ws_id)
                     )
                     task_retrieve = {
                         "task_type": "RETRIEVE_FULL_WORKSTATION",
@@ -907,11 +904,6 @@ def simulate_inbound():
                         "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE workstation_id = %s AND status = 'IN_WORKSTATION';",
                         (ws_id,)
                     )
-                    cursor.execute(
-                        "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
-                        (target_spot, ws_id)
-                    )
-                    
                     task_retrieve = {
                         "task_type": "RETRIEVE_FULL_WORKSTATION",
                         "workstation_id": ws_id,
@@ -929,8 +921,6 @@ def simulate_inbound():
                 if b_ws_row:
                     b_ws_id, b_ws_qr = b_ws_row
                     b_ws_qr = b_ws_qr if b_ws_qr else ""
-                    
-                    cursor.execute("UPDATE workstations SET current_location = %s WHERE workstation_id = %s;", (target_loc, b_ws_id))
                     
                     task_deploy = {
                         "task_type": "DEPLOY_EMPTY_WORKSTATION",
@@ -957,7 +947,6 @@ def simulate_inbound():
                         new_ws_id, new_ws_loc, new_ws_qr = new_ws_row
                         new_ws_qr = new_ws_qr if new_ws_qr else ""
                         
-                        cursor.execute("UPDATE workstations SET current_location = %s WHERE workstation_id = %s;", (target_loc, new_ws_id))
                         cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (new_ws_loc,))
                         
                         task_deploy = {
@@ -1012,8 +1001,6 @@ def simulate_packaging():
                     ws_id, ws_qr = b_ws_row
                     ws_qr = ws_qr if ws_qr else ""
                     
-                    cursor.execute("UPDATE workstations SET current_location = 'sg2_out_00_A' WHERE workstation_id = %s;", (ws_id,))
-                    
                     # 대기 작업대가 활성화되었으므로 패키지들의 상태를 IN_WORKSTATION으로 전환
                     cursor.execute(
                         "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
@@ -1059,9 +1046,6 @@ def simulate_packaging():
                         "UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;",
                         (ws_loc,)
                     )
-                
-                # 작업대를 활성 포장 구역(sg2_out_00_A)으로 즉시 이동
-                cursor.execute("UPDATE workstations SET current_location = 'sg2_out_00_A' WHERE workstation_id = %s;", (ws_id,))
                 
                 # 패키지 상태를 IN_WORKSTATION으로 복원 (포장 대기 상태)
                 cursor.execute(
@@ -1184,10 +1168,6 @@ def simulate_packaging():
                     "UPDATE packages SET workstation_id = NULL, slot_number = NULL WHERE workstation_id = %s AND status = 'COMPLETED';",
                     (ws_id,)
                 )
-                cursor.execute(
-                    "UPDATE workstations SET current_location = %s WHERE workstation_id = %s;",
-                    (target_spot, ws_id)
-                )
                 
                 task_retrieve = {
                     "task_type": "RETRIEVE_EMPTY_WORKSTATION",
@@ -1206,7 +1186,6 @@ def simulate_packaging():
                     b_ws_id, b_ws_qr = b_ws_row
                     b_ws_qr = b_ws_qr if b_ws_qr else ""
                     
-                    cursor.execute("UPDATE workstations SET current_location = 'sg2_out_00_A' WHERE workstation_id = %s;", (b_ws_id,))
                     cursor.execute(
                         "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
                         (b_ws_id,)
@@ -1246,8 +1225,7 @@ def simulate_packaging():
                                 (next_ws_loc,)
                             )
                         
-                        # 작업대를 포장존 A로 이동 + 패키지 상태 복원
-                        cursor.execute("UPDATE workstations SET current_location = 'sg2_out_00_A' WHERE workstation_id = %s;", (next_ws_id,))
+                        # 패키지 상태 복원 (위치는 관제탑이 이동 완료 시 갱신)
                         cursor.execute(
                             "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
                             (next_ws_id,)
