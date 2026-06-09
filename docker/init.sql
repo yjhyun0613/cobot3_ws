@@ -95,16 +95,16 @@ INSERT INTO workstations (workstation_id, current_location, qr_id) VALUES
 
 -- 창고 스팟 등록 및 작업대 주차 (spot_01 ~ spot_10)
 INSERT INTO warehouse_locations (spot_id, workstation_id, status) VALUES
-('spot_01', 'WS01', 'OCCUPIED'),
-('spot_02', 'WS02', 'OCCUPIED'),
-('spot_03', 'WS03', 'OCCUPIED'),
-('spot_04', 'WS04', 'OCCUPIED'),
+('spot_01', 'WS09', 'OCCUPIED'),
+('spot_02', 'WS10', 'OCCUPIED'),
+('spot_03', 'WS07', 'OCCUPIED'),
+('spot_04', 'WS08', 'OCCUPIED'),
 ('spot_05', 'WS05', 'OCCUPIED'),
 ('spot_06', 'WS06', 'OCCUPIED'),
-('spot_07', 'WS07', 'OCCUPIED'),
-('spot_08', 'WS08', 'OCCUPIED'),
-('spot_09', 'WS09', 'OCCUPIED'),
-('spot_10', 'WS10', 'OCCUPIED');
+('spot_07', 'WS03', 'OCCUPIED'),
+('spot_08', 'WS04', 'OCCUPIED'),
+('spot_09', 'WS01', 'OCCUPIED'),
+('spot_10', 'WS02', 'OCCUPIED');
 
 
 -- 출고 대기 구역 등록 (stage_01 ~ stage_04)
