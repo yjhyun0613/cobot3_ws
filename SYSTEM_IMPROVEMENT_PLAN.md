@@ -229,8 +229,8 @@ AMR 이송 속도가 로봇의 적재 및 포장 속도보다 느려 발생하�
 ## 🗺️ 9. 바닥 QR코드 공간 격자 맵 데이터베이스(Spatial Floor QR Map DB) 연동 설계 - [완료]
 
 > [!NOTE]
-> **적용 완료**: 2026년 6월 5일 구현 완료 (2026년 6월 7일 신규 물리 좌표 및 Offset 1,819개 노드 적재 추가).
-> - PostgreSQL 데이터베이스 초기화 스크립트(`docker/init.sql`)에 `floor_qr_map` 테이블 정의 추가.
+> **적용 완료**: 2026년 6월 5일 구현 완료 (2026년 6월 7일 신규 물리 좌표 및 Offset 1,819개 노드 적재 추가, 2026년 6월 9일 init.sql 시드 데이터 추가).
+> - PostgreSQL 데이터베이스 초기화 스크립트(`docker/init.sql`)에 `floor_qr_map` 테이블 정의 및 **시드 데이터(INSERT) 약 117개 노드** 추가 완료. Docker 최초 기동 시 자동 적재.
 > - 격자 생성기(`scratch/generate_all_qr_codes.py`) 실행 시 1,819개의 물리 격자 좌표 및 논리 스팟(`spot_XX`, `sg2_in_XX_A/B`, `sg2_out_00_A/B`) 정보를 PostgreSQL DB로 자동 적재 연동 완료.
 > - 관제탑(`control_tower_node.py`) 및 모의 로봇 에뮬레이터(`run_full_simulation_robot.py`) 기동 시 하드코딩된 목적지 명칭 대신 `floor_qr_map` 데이터베이스를 실시간으로 쿼리하여 물리 coordinates와 바닥 QR 마커 식별자를 해석(Resolution)하는 구조 구현 및 검증 완료.
 
@@ -378,7 +378,7 @@ PostgreSQL에 다음과 같은 공간 격자 맵 정보 관리 테이블을 정�
   * 최우선 순위로 충전소(`GO_TO_CHARGING`) 이송 태스크를 예약 및 할당하여 충전 구역으로 이동시키고, 충전 완료(예: 80% 이상) 시에만 작업 대기 상태로 복귀시키는 자동 스케줄링 구현.
 
 ### 11.4 물리적 창고 포화(Full) 및 교착 상태(Deadlock) 제어 (Throttling)
-* **현재 구성**: 창고 스팟(10개) 및 대기 구역(6개)이 포화된 경우에 대한 인바운드 분류 속도 제어 로직이 없음.
+* **현재 구성**: 창고 스팟(10개) 및 대기 구역(4개)이 포화된 경우에 대한 인바운드 분류 속도 제어 로직이 없음.
 * **개선 방향**: 
   * 스팟 점유 상태를 상시 카운트하여 여유 공간이 임계치 이하(예: 1~2개)인 경우, 컨베이어 입고 분류 로봇(`bg2`)의 작동 속도를 낮추거나 일시 정지(Hold)시키는 **쓰로틀링(Throttling) 메커니즘** 구현.
   * 과거 미처리 패키지를 오늘 날짜로 롤오버(Roll-over) 또는 강제 완료(Force-completed)하여 일자 전환 시의 데드락을 사전 차단.
@@ -583,10 +583,17 @@ PC A의 AMR 제어 노드가 PC B의 데이터베이스와 Redis에 접근할 �
 
 시뮬레이터와 관제탑을 PC 2대로 분산하여 기동하는 실운영 환경에서, 네트워크 안정성과 물리적 설비 간 정합성을 완벽하게 보장하기 위해 즉각 적용할 수 있는 설계 및 개선 방안들입니다.
 
-### 15.1 DB 및 Redis 접속 주소의 동적 파라미터화 (Configuration Dynamic Parametrization)
-* **내용**: 현재 `'localhost'`로 하드코딩된 PostgreSQL 및 Redis 접속 호스트 정보를 외부 주입식으로 변경합니다.
-* **개선 방향**:
-  * ROS 2 파라미터(`declare_parameter` 및 `get_parameter`)를 선언하여 Launch 파일이나 실행 옵션으로 DB/Redis IP를 주입받아, 분산 운용 시 소스코드 수정과 재빌드 없이 기동할 수 있도록 유지보수성을 극대화합니다.
+### 15.1 DB 및 Redis 접속 주소의 동적 파라미터화 (Configuration Dynamic Parametrization) - [완료]
+> [!NOTE]
+> **적용 완료**: 2026년 6월 9일 구현 완료.
+> - `control_tower_node.py`의 PostgreSQL 및 Redis 접속 정보를 `os.environ.get()` 기반 환경변수 주입으로 변경.
+> - 지원 환경변수: `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `REDIS_HOST`, `REDIS_PORT`
+> - 기본값은 `localhost`로 유지하여 기존 로컬 실행 환경과의 호환성을 보장합니다.
+
+* **내용**: 기존에 `'localhost'`로 하드코딩되어 있던 PostgreSQL 및 Redis 접속 호스트 정보를 환경변수(`os.environ.get`) 기반 외부 주입식으로 변경하였습니다.
+* **구현 방법**:
+  * 환경변수를 통한 주입으로, Docker Compose 및 분산 운용 시 소스코드 수정과 재빌드 없이 기동할 수 있도록 유지보수성을 극대화합니다.
+  * 향후 필요 시 ROS 2 파라미터(`declare_parameter` 및 `get_parameter`) 방식으로 Launch 파일에서도 주입 가능하도록 확장 검토.
 
 ### 15.2 노이즈성 QR코드 오인식 예외 처리 및 유효성 검증 필터 (QR Decoding Sanity Check)
 * **내용**: 비전 카메라의 난반사나 오인식으로 잘못 해독된 노이즈 문자열이 DB에 유령 패키지로 신규 등록되는 문제를 방지합니다.
@@ -644,6 +651,123 @@ PC A의 AMR 제어 노드가 PC B의 데이터베이스와 Redis에 접근할 �
   * AMR PC가 송신하는 소수점 아래 세 자리 좌표 문자열(예: `FLOOR_X_-3.000_Y_-9.000`)과 대시보드 2D 맵의 격자 매핑용 키(예: `FLOOR_X_-3.0_Y_-9.0`) 불일치로 마커가 렌더링되지 않던 버그를 [dashboard_server.py](file:///home/rokey/cobot3_ws/scratch/dashboard_server.py#L74)에 `normalize_qr_id` 문자열 규격화 함수를 추가 적용하여 해결했습니다.
 
 
+---
 
+## 🔍 17. 코드 리뷰 및 Isaac Sim 연동 성능 병목 진단 (2026-06-09)
 
+코드 리뷰, 문서 교차 검증, 성능 분석, Isaac Sim 연동 디버깅을 통해 발견된 이슈와 조치 결과를 기록합니다.
+
+### 17.1 코드 버그 수정 (4건 완료, 1건 미수정)
+
+> [!NOTE]
+> **적용 완료**: 2026년 6월 9일 커밋 `ad942a4`
+> - `init.sql`에 `floor_qr_map` 시드 데이터 약 117개 노드 INSERT 추가 (논리 스팟 27개 + 주행 경로 격자 약 90개)
+> - `control_tower_node.py`에 `threading.Lock(trigger_lock)` 도입하여 `pre_fetch_triggered`/`rotation_triggered` 세트 Race Condition 해결
+> - Redis 배터리 `float()` 파싱에 개별 AMR 단위 `try-except` 가드 적용
+> - PostgreSQL/Redis 접속 호스트를 `os.environ.get()` 기반 환경변수 7개로 동적 파라미터화 (`POSTGRES_HOST`, `REDIS_HOST` 등)
+
+* **`floor_qr_map` 시드 데이터 누락 [Critical → 해결]**: `init.sql`에 `CREATE TABLE`만 있고 `INSERT`가 없어 `trigger_workstation_move` 함수가 좌표를 전부 `(0.0, 0.0, 0.0)`으로 전송하던 문제. Docker 최초 기동 시 자동 적재되도록 수정.
+* **멀티스레드 Race Condition [Medium → 해결]**: `MultiThreadedExecutor` 환경에서 `pre_fetch_triggered`/`rotation_triggered` 세트에 Lock 없이 접근하던 문제. `threading.Lock` 도입 및 `set.remove()` → `set.discard()` 변경으로 `KeyError` 방지.
+* **Redis `float()` 변환 예외 [Medium → 해결]**: `float(val.get("battery", 100.0))`에 빈 문자열 입력 시 한 AMR 오류로 전체 AMR 상태 로딩이 실패하던 문제. 개별 AMR 단위 안전 파싱으로 개선.
+* **`localhost` 하드코딩 [Conditional → 해결]**: PostgreSQL/Redis 접속 정보를 환경변수 주입 방식으로 변경. 기본값 `localhost` 유지로 기존 로컬 환경 호환성 보장.
+* **`AMR_01` 하드코딩 [Conditional → 미수정]**: 8곳에서 `assigned_amr='AMR_01'` 또는 `reserved_by = 'AMR_01'`이 하드코딩됨. Fleet Management 알고리즘(가용 AMR 선택, 큐 기반 할당) 설계가 필요하여 단순 패치로 해결 불가. 향후 11장 Fleet 최적화와 연계하여 구현 예정.
+
+### 17.2 마크다운 문서 동기화 (5건 완료, 1건 미수정)
+
+* **`PHYSICAL_LAYOUT.md`**: `floor_qr_map`이 "정확히 적재되어 있다"는 허위 기술을 init.sql 시드 데이터 추가 후 사실에 맞게 갱신.
+* **`README.md`**: init.sql 적재 범위에 `floor_qr_map` 약 117개 노드 설명 추가, Docker 환경변수 사용법(`POSTGRES_HOST`, `REDIS_HOST`) 추가.
+* **`SYSTEM_IMPROVEMENT_PLAN.md` 9장**: init.sql 자동 적재 범위를 "시드 데이터(INSERT) 약 117개 노드 추가 완료. Docker 최초 기동 시 자동 적재"로 명확화.
+* **`SYSTEM_IMPROVEMENT_PLAN.md` 11.4**: 출고 대기 스팟 개수 "6개" → "4개"로 수정 (코드 기준 `stage_01` ~ `stage_04`).
+* **Look-ahead 트리거 시점 [미수정]**: 문서에는 "7번째 슬롯"이라 했지만 코드는 3번째 슬롯에서 발동. 코드를 7번째로 변경할지, 문서를 3번째로 변경할지 **정책 결정 필요**.
+
+### 17.3 성능 병목 진단 결과
+
+외부에서 지적된 4가지 성능 이슈를 코드 대조 검증한 결과:
+
+| 지적 항목 | 실제 확인 결과 | 심각도 |
+| :--- | :--- | :--- |
+| **1초 DB Polling** | `publish_fleet_states_callback()`이 매초 PostgreSQL SELECT 2회 + Redis 조회 실행. 현재 규모(10 WS, 150 PKG)에서는 문제없으나 패키지 1000개+ 시 주의 | 🟡 중간 |
+| **WebSocket 0.5초 브로드캐스팅** | **이미 1.5초로 완화 완료** (`dashboard_server.py:172`). `grid_cells` 캐싱도 적용됨 | 🟢 완화됨 |
+| **Python GIL 병목** | `psycopg2`/`redis-py` C 확장이 I/O 대기 중 GIL 자동 해제. 5대 AMR 규모에서 무시 가능 | 🟢 미미 |
+| **Docker Bridge NAT** | ROS2 노드는 Docker 밖에서 실행, Docker 안에는 PostgreSQL/Redis만 존재. DDS 트래픽은 Bridge 미경유 | 🟢 해당없음 |
+
+### 17.4 `/fleet/*` 토픽 불필요 발행 문제 - [진행 중]
+
+* **현상**: 관제탑이 4개 토픽(`/fleet/amr_states`, `/fleet/workstation_states`, `/fleet/package_states`, `/fleet/task_events`)을 1Hz로 발행하지만, **현재 구독자가 단 하나도 없음**.
+  * 대시보드(`dashboard_server.py`)는 ROS2 토픽이 아닌 **PostgreSQL/Redis를 직접 조회**하여 데이터를 가져옴.
+  * AMR 제어 코드(`fleet_manager_bridge_node.py`)는 `/fleet/*` 토픽을 구독하지 않고 **Action Server** 방식으로만 동작.
+* **낭비 리소스**: 아무도 받지 않는 토픽을 위해 매초 PostgreSQL SELECT 2회 + `json.dumps()` 3회 + DDS 멀티캐스트 4패킷 발생.
+* **개선 방향**:
+  * **조건부 발행**: `self.amr_states_pub.get_subscription_count() > 0`일 때만 DB 조회 및 발행하여 평소에는 자원 절약, `ros2 topic echo` 디버깅 시에만 자동 활성화.
+  * **패키지 상태 요약화**: `/fleet/package_states`에 전체 패키지 목록 대신 요약 통계(`{"total": 150, "waiting": 30, "completed": 120}`)만 발행하여 DDS 페이로드 축소.
+
+### 17.5 Isaac Sim 연동 시 프레임 드롭 원인 분석 및 Dispatch Throttle 설계 - [진행 중]
+
+> [!IMPORTANT]
+> **핵심 원인**: 관제탑 스케줄러가 AMR 5대 운용 한도를 고려하지 않고 여러 작업대 이송을 연쇄 발행하는 구조.
+> 문제는 "동일 WS 중복 발행"이 아니라 **"서로 다른 WS 작업이 매초 여러 개 연쇄 발행"**되는 것.
+
+#### 문제 진단
+
+* **동일 WS 중복 발행**: `trigger_workstation_move()` 내부에서 `MOVING_TO_*`, `PROCESSING`, `reserved_by` 상태로 차단되므로 **완전 중복은 발생하기 어려움** ✅
+* **실제 문제**: 초기 상태에서 인바운드 라인 A/B, 포장존, staging, warehouse 조건이 동시에 만족하면, `check_completed_workstations()`와 `dispatch_workstations_keepalive()`가 서로 다른 작업대들에 대해 **빠르게 5~6개 이송 명령을 연쇄 발행** ⚠️
+* **Bridge 구조**: `fleet_manager_bridge_node.py`는 `/manage_workstation` Action Goal이 들어올 때마다 **제한 없이** `bridge_queue/commands/CMD_xxx.json`을 즉시 생성 (backpressure 없음)
+* **결과**: `bridge_queue/commands`에 CMD가 짧은 시간에 누적 → Isaac controller의 polling/planner/status/file I/O 부하 증가 → 물리 시뮬레이션 프레임 드롭
+
+#### 문제 코드 책임 범위
+
+| 우선순위 | 코드 | 파일 | 문제 |
+| :--- | :--- | :--- | :--- |
+| **1순위** | Control Tower 스케줄러 | `control_tower_node.py` | `check_completed_workstations()`, `dispatch_workstations_keepalive()`, `trigger_workstation_move()` 호출 전역 제어(dispatch gate) 부재 |
+| **2순위** | Fleet Manager Bridge | `fleet_manager_bridge_node.py` | 들어온 ManageWorkstation Goal을 제한 없이 CMD 파일로 생성, in-flight command 상한/backpressure 없음 |
+| **낮음** | Isaac Sim AMR Controller | `amr_controller.py` | 수동 CMD 1개에서는 정상. 다수 CMD 누적 시 처리량 부담을 받는 쪽이지, 원인 발생 지점은 아님 |
+| **해당없음** | DDS 트래픽 | — | 관제탑이 `/tf`, `/camera`, `/pointcloud` 등 고대역폭 토픽을 발행하지 않음. `/fleet/*` 1Hz JSON 토픽도 주 원인 아님 |
+
+#### 운영 목표 정책
+
+```
+MAX_ACTIVE_WORKSTATION_MOVES = 5  (AMR 최대 5대 동시 운용)
+```
+
+* 동일 WS 중복 방지: **유지**
+* 서로 다른 WS 연쇄 발행: **허용하되 최대 5개까지만**
+* `bridge_queue` CMD 폭주: **방지** (active/in-flight CMD ≤ 5)
+* AMR 5대 병렬성: **유지**
+
+#### Dispatch Gate 설계 (1순위: Control Tower)
+
+`trigger_workstation_move()` 호출 전 아래 조건을 반드시 확인:
+1. 현재 active workstation move 개수 < `MAX_ACTIVE_WORKSTATION_MOVES`
+2. 사용 가능한 AMR 개수 > 0
+3. 해당 workstation이 이미 `MOVING`/`PROCESSING`/`reserved` 상태가 아님
+4. `target_location`이 이미 다른 작업에 의해 예약되지 않음
+5. 동일 AMR에 이미 active task가 없음
+6. 이번 scheduler tick에서 새로 dispatch한 개수까지 포함해 5개를 넘지 않음
+
+```python
+# 제안 구현 구조 (의사 코드)
+MAX_ACTIVE_WORKSTATION_MOVES = 5
+
+def can_dispatch_new_move(self):
+    active_count = self.get_active_workstation_move_count()  # DB에서 MOVING_TO_* / PROCESSING 상태 카운트
+    available_amr = self.get_available_amr_count()            # Redis에서 available AMR 카운트
+    if active_count >= MAX_ACTIVE_WORKSTATION_MOVES:
+        return False
+    if available_amr <= 0:
+        return False
+    return True
+
+# 한 scheduler tick 안에서 local counter도 사용
+dispatched_this_tick = 0
+for candidate in candidates:
+    if active_count + dispatched_this_tick >= MAX_ACTIVE_WORKSTATION_MOVES:
+        break
+    if self.trigger_workstation_move(...):
+        dispatched_this_tick += 1
+```
+
+#### Bridge Backpressure 설계 (2순위: Fleet Manager Bridge)
+
+* `fleet_manager_bridge_node.py`에서 `commands` + `status` 기준 in-flight CMD가 5개 이상이면 새 Goal을 WAITING/REJECT/BUSY 처리
+* 주 수정 지점은 Control Tower이므로 Bridge는 2차 방어선으로 구현
 

@@ -69,12 +69,17 @@ class ControlTowerNode(Node):
         self.rotation_triggered = set()
         self.trigger_lock = threading.Lock()
 
-        # 5. 주기적 상태 체크 및 스케줄러 타이머 구동 (1초마다 실행)
+        # 5. Dispatch Throttle: 최대 동시 작업대 이송 수 제한 (AMR 5대 운용 기준)
+        self.MAX_ACTIVE_WORKSTATION_MOVES = 5
+        self.active_moves = set()  # 현재 진행 중인 이송 작업의 workstation_id 집합
+        self.active_moves_lock = threading.Lock()
+
+        # 6. 주기적 상태 체크 및 스케줄러 타이머 구동 (1초마다 실행)
         self.scheduler_timer = self.create_timer(1.0, self.task_scheduler_loop)
         # fleet 상태 브로드캐스트 타이머 구동 (1초마다 실행)
         self.fleet_states_timer = self.create_timer(1.0, self.publish_fleet_states_callback)
         
-        self.get_logger().info('ROS2 서비스 서버, 액션 클라이언트 및 Fleet 퍼블리셔 준비 완료.')
+        self.get_logger().info(f'ROS2 서비스 서버, 액션 클라이언트, Fleet 퍼블리셔, Dispatch Throttle(MAX={self.MAX_ACTIVE_WORKSTATION_MOVES}) 준비 완료.')
 
 
     def init_databases(self):
@@ -396,6 +401,61 @@ class ControlTowerNode(Node):
         elif task_type == 'RETRIEVE_EMPTY_WORKSTATION':
             return 20
         return 30
+
+    # ==========================================
+    # Dispatch Throttle Gate (최대 5대 AMR 동시 이송 제한)
+    # ==========================================
+
+    def get_active_workstation_move_count(self):
+        """현재 진행 중인 작업대 이송 수를 DB 상태 + 로컬 추적 기반으로 카운트"""
+        db_count = 0
+        with self.get_db_connection() as conn:
+            if conn:
+                try:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT COUNT(*) FROM workstations "
+                            "WHERE current_location LIKE 'MOVING_TO_%%' "
+                            "OR (status = 'PROCESSING' AND reserved_by IS NOT NULL);"
+                        )
+                        db_count = cursor.fetchone()[0]
+                except Exception as e:
+                    self.get_logger().error(f'Active move count 조회 실패: {str(e)}')
+
+        # 로컬 추적 세트와 DB 중 더 큰 값 사용 (안전 마진)
+        with self.active_moves_lock:
+            local_count = len(self.active_moves)
+
+        return max(db_count, local_count)
+
+    def can_dispatch_new_move(self, dispatched_this_tick=0):
+        """새 작업대 이송 명령을 발행할 수 있는지 판단하는 Dispatch Gate"""
+        active_count = self.get_active_workstation_move_count()
+        total = active_count + dispatched_this_tick
+
+        if total >= self.MAX_ACTIVE_WORKSTATION_MOVES:
+            self.get_logger().info(
+                f'[Dispatch Gate] 이송 한도 도달 ({total}/{self.MAX_ACTIVE_WORKSTATION_MOVES}). '
+                f'신규 이송 보류.')
+            return False
+        return True
+
+    def register_active_move(self, workstation_id):
+        """이송 시작 시 로컬 추적 세트에 등록"""
+        with self.active_moves_lock:
+            self.active_moves.add(workstation_id)
+            self.get_logger().info(
+                f'[Dispatch Throttle] {workstation_id} 이송 등록. '
+                f'Active: {len(self.active_moves)}/{self.MAX_ACTIVE_WORKSTATION_MOVES} '
+                f'({self.active_moves})')
+
+    def unregister_active_move(self, workstation_id):
+        """이송 완료/실패 시 로컬 추적 세트에서 제거"""
+        with self.active_moves_lock:
+            self.active_moves.discard(workstation_id)
+            self.get_logger().info(
+                f'[Dispatch Throttle] {workstation_id} 이송 해제. '
+                f'Active: {len(self.active_moves)}/{self.MAX_ACTIVE_WORKSTATION_MOVES}')
 
     def push_amr_task(self, task_dict):
         """AMR 작업 명령을 Redis 대기 큐(Sorted Set)에 집어넣음"""
@@ -816,6 +876,23 @@ class ControlTowerNode(Node):
         if not task_id:
             task_id = f"AUTO_{str(uuid.uuid4())[:8]}"
 
+        # Dispatch Gate: 동시 이송 한도 초과 시 보류
+        if not self.can_dispatch_new_move():
+            self.get_logger().warn(
+                f'[Dispatch Gate] {workstation_id} 이송 보류 (한도 초과). '
+                f'target={target}')
+            return False
+
+        # 동일 WS가 이미 이송 중인지 로컬 추적으로도 확인
+        with self.active_moves_lock:
+            if workstation_id in self.active_moves:
+                self.get_logger().warn(
+                    f'[Dispatch Gate] {workstation_id}는 이미 이송 진행 중. 중복 방지.')
+                return False
+
+        # 이송 시작 등록
+        self.register_active_move(workstation_id)
+
         actual_target = target
         actual_start = start
 
@@ -956,6 +1033,7 @@ class ControlTowerNode(Node):
             )
             # Reset workstation status in PG
             self.recover_workstation_move_db_state(workstation_id, actual_start, actual_target)
+            self.unregister_active_move(workstation_id)
             return
         
         # task_events 토픽 발행 (ASSIGNED)
@@ -1028,6 +1106,7 @@ class ControlTowerNode(Node):
                 assigned_amr='AMR_01'
             )
             self.recover_workstation_move_db_state(workstation_id, start, target)
+            self.unregister_active_move(workstation_id)
             return
 
         self.get_logger().info(f'작업대 {workstation_id} 이송 목표 수락됨. 이동 진행 중...')
@@ -1060,6 +1139,9 @@ class ControlTowerNode(Node):
                     except Exception as e:
                         self.get_logger().error(f'도착지 DB 최종 반영 실패: {str(e)}')
 
+            # Dispatch Throttle: 이송 완료 해제
+            self.unregister_active_move(workstation_id)
+
             # task_events 토픽 발행 (COMPLETED)
             self.publish_task_event(
                 task_id=task_id,
@@ -1079,6 +1161,7 @@ class ControlTowerNode(Node):
         else:
             self.get_logger().error(f'[실패] 작업대 {workstation_id} 이송 중 에러 발생')
             self.recover_workstation_move_db_state(workstation_id, start, target)
+            self.unregister_active_move(workstation_id)
 
             # task_events 토픽 발행 (FAILED)
             self.publish_task_event(
