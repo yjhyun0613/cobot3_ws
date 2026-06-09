@@ -3,6 +3,7 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.action import ActionClient
 import os
+import threading
 
 # 커스텀 ROS2 인터페이스 임포트
 from cobot3_interfaces.srv import GetPackageRoute, CheckWarehouseStatus, ReportInboundProgress
@@ -63,7 +64,12 @@ class ControlTowerNode(Node):
         self.package_states_pub = self.create_publisher(String, '/fleet/package_states', 10)
         self.task_events_pub = self.create_publisher(String, '/fleet/task_events', 10)
 
-        # 4. 주기적 상태 체크 및 스케줄러 타이머 구동 (1초마다 실행)
+        # 4. 포장 피드백 Look-ahead / Rotation 트리거 중복 방지용 세트 및 락
+        self.pre_fetch_triggered = set()
+        self.rotation_triggered = set()
+        self.trigger_lock = threading.Lock()
+
+        # 5. 주기적 상태 체크 및 스케줄러 타이머 구동 (1초마다 실행)
         self.scheduler_timer = self.create_timer(1.0, self.task_scheduler_loop)
         # fleet 상태 브로드캐스트 타이머 구동 (1초마다 실행)
         self.fleet_states_timer = self.create_timer(1.0, self.publish_fleet_states_callback)
@@ -82,21 +88,29 @@ class ControlTowerNode(Node):
 
         try:
             # PostgreSQL 연결 풀 생성 (ThreadedConnectionPool)
+            # 환경변수로 호스트를 주입받아 Docker 컨테이너 환경에서도 유연하게 접속
+            pg_host = os.environ.get('POSTGRES_HOST', 'localhost')
+            pg_port = int(os.environ.get('POSTGRES_PORT', '5432'))
+            pg_user = os.environ.get('POSTGRES_USER', 'rokey')
+            pg_pass = os.environ.get('POSTGRES_PASSWORD', 'rokey_pass')
+            pg_db = os.environ.get('POSTGRES_DB', 'warehouse_db')
             self.pg_conn_pool = ThreadedConnectionPool(
                 minconn=1,
                 maxconn=20,
-                host='localhost',
-                port=5432,
-                user='rokey',
-                password='rokey_pass',
-                database='warehouse_db'
+                host=pg_host,
+                port=pg_port,
+                user=pg_user,
+                password=pg_pass,
+                database=pg_db
             )
-            self.get_logger().info('PostgreSQL Threaded Connection Pool 생성 완료.')
+            self.get_logger().info(f'PostgreSQL Threaded Connection Pool 생성 완료 (host={pg_host}).')
 
             # Redis 연결
+            redis_host = os.environ.get('REDIS_HOST', 'localhost')
+            redis_port = int(os.environ.get('REDIS_PORT', '6379'))
             self.redis_client = redis.Redis(
-                host='localhost',
-                port=6379,
+                host=redis_host,
+                port=redis_port,
                 decode_responses=True
             )
             self.get_logger().info('Redis 인메모리 데이터베이스 연결 완료.')
@@ -1137,10 +1151,7 @@ class ControlTowerNode(Node):
 
         self.get_logger().info(f'[포장 피드백] 현재 완료 슬롯 수: {completed_slots}/8, 최근 완료: {last_packed_slot}')
 
-        if not hasattr(self, 'pre_fetch_triggered'):
-            self.pre_fetch_triggered = set()
-        if not hasattr(self, 'rotation_triggered'):
-            self.rotation_triggered = set()
+        # pre_fetch_triggered / rotation_triggered 세트는 __init__에서 초기화됨
 
         # 현재 포장 중인 작업대 조회
         workstation_id = ""
@@ -1164,8 +1175,13 @@ class ControlTowerNode(Node):
             return
 
         # [Look-ahead 최적화] 3번째 칸 포장 완료 시 다음 작업대 B구역으로 사전 호출
-        if completed_slots == 3 and workstation_id not in self.pre_fetch_triggered:
-            self.pre_fetch_triggered.add(workstation_id)
+        # Lock을 사용하여 멀티스레드 환경에서 중복 트리거 방지 (Race Condition 해결)
+        should_pre_fetch = False
+        with self.trigger_lock:
+            if completed_slots == 3 and workstation_id not in self.pre_fetch_triggered:
+                self.pre_fetch_triggered.add(workstation_id)
+                should_pre_fetch = True
+        if should_pre_fetch:
             self.get_logger().info(f'[Look-ahead] 3번째 칸 포장 완료 감지! 작업대 {workstation_id}에 대해 다음 작업대 B구역 사전 호출을 시작합니다.')
             
             with self.get_db_connection() as conn:
@@ -1213,8 +1229,12 @@ class ControlTowerNode(Node):
                         self.get_logger().error(f'[Look-ahead] 다음 작업대 조회 중 오류: {str(e)}')
 
         # [180도 회전 최적화] 4번째 칸 포장 완료 시 제자리 180도 회전 수행 및 로봇 대기 유도
-        if completed_slots == 4 and workstation_id not in self.rotation_triggered:
-            self.rotation_triggered.add(workstation_id)
+        should_rotate = False
+        with self.trigger_lock:
+            if completed_slots == 4 and workstation_id not in self.rotation_triggered:
+                self.rotation_triggered.add(workstation_id)
+                should_rotate = True
+        if should_rotate:
             self.get_logger().info(f'[Rotation Trigger] 작업대 {workstation_id}의 4번째 슬롯 포장 감지! 180도 회전 태스크 추가 및 일시 정지 상태 적용.')
             with self.get_db_connection() as conn:
                 if conn:
@@ -1257,10 +1277,9 @@ class ControlTowerNode(Node):
             self.get_logger().info(f'생성된 출고 ID 리스트: {result.final_output_ids}')
 
             # Trigger가 초기화되도록 세트에서 제거
-            if hasattr(self, 'pre_fetch_triggered') and workstation_id in self.pre_fetch_triggered:
-                self.pre_fetch_triggered.remove(workstation_id)
-            if hasattr(self, 'rotation_triggered') and workstation_id in self.rotation_triggered:
-                self.rotation_triggered.remove(workstation_id)
+            with self.trigger_lock:
+                self.pre_fetch_triggered.discard(workstation_id)
+                self.rotation_triggered.discard(workstation_id)
 
             with self.get_db_connection() as conn:
                 if conn:
@@ -1398,12 +1417,18 @@ class ControlTowerNode(Node):
                         # Try hash first
                         val = self.redis_client.hgetall(key)
                         if val:
+                            # 안전한 배터리 값 파싱 (ValueError/빈 문자열 대응)
+                            try:
+                                battery_raw = val.get("battery", "100.0")
+                                battery_float = float(battery_raw) if battery_raw and str(battery_raw).strip() else 100.0
+                            except (ValueError, TypeError):
+                                battery_float = 100.0
                             amr_states[amr_id] = {
                                 "state": val.get("state", "IDLE"),
                                 "current_qr_id": val.get("current_qr_id", ""),
                                 "target_qr_id": val.get("target_qr_id", ""),
                                 "carrying_workstation_id": val.get("carrying_workstation_id", None) or None,
-                                "battery": float(val.get("battery", 100.0)),
+                                "battery": battery_float,
                                 "available": val.get("available", "true").lower() in ["true", "1", "yes"]
                             }
                         else:

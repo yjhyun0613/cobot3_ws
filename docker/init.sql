@@ -96,5 +96,143 @@ INSERT INTO warehouse_locations (spot_id, workstation_id, status) VALUES
 ('stage_04', NULL, 'EMPTY');
 
 
--- 8. 초기 패키지 데이터 (웹 대시보드 CSV 업로드를 통해 동적으로 적재됩니다.)
+-- 8. 바닥 QR 격자 맵 시드 데이터 (floor_qr_map)
+-- 좌표 출처: PHYSICAL_LAYOUT.md (맵 중심: 3.0, 0.0 / X 크기 13.5m, Y 크기 20m)
+-- 관제탑 노드의 trigger_workstation_move 함수가 이 테이블에서 물리 좌표를 조회합니다.
+
+-- 8-1. 메인 보관 창고 스팟 (spot_01 ~ spot_10)
+INSERT INTO floor_qr_map (qr_id, x_coord, y_coord, location_name, location_type, description) VALUES
+('FLOOR_X_1.5_Y_3.0',   1.5,   3.0, 'spot_01', 'PARKING_SPOT', '메인 창고 1행 1열'),
+('FLOOR_X_0.0_Y_3.0',   0.0,   3.0, 'spot_02', 'PARKING_SPOT', '메인 창고 1행 2열'),
+('FLOOR_X_1.5_Y_0.0',   1.5,   0.0, 'spot_03', 'PARKING_SPOT', '메인 창고 2행 1열'),
+('FLOOR_X_0.0_Y_0.0',   0.0,   0.0, 'spot_04', 'PARKING_SPOT', '메인 창고 2행 2열'),
+('FLOOR_X_1.5_Y_-3.0',  1.5,  -3.0, 'spot_05', 'PARKING_SPOT', '메인 창고 3행 1열'),
+('FLOOR_X_0.0_Y_-3.0',  0.0,  -3.0, 'spot_06', 'PARKING_SPOT', '메인 창고 3행 2열'),
+('FLOOR_X_1.5_Y_-6.0',  1.5,  -6.0, 'spot_07', 'PARKING_SPOT', '메인 창고 4행 1열'),
+('FLOOR_X_0.0_Y_-6.0',  0.0,  -6.0, 'spot_08', 'PARKING_SPOT', '메인 창고 4행 2열'),
+('FLOOR_X_1.5_Y_-9.0',  1.5,  -9.0, 'spot_09', 'PARKING_SPOT', '메인 창고 5행 1열'),
+('FLOOR_X_0.0_Y_-9.0',  0.0,  -9.0, 'spot_10', 'PARKING_SPOT', '메인 창고 5행 2열');
+
+-- 8-2. 입고 분류 라인 A/B (sg2_in_01 ~ sg2_in_03)
+INSERT INTO floor_qr_map (qr_id, x_coord, y_coord, location_name, location_type, description) VALUES
+('FLOOR_X_7.5_Y_1.5',   7.5,   1.5, 'sg2_in_01_A', 'LOADING_SPOT', '1번 입고라인 Active 버퍼 (오늘)'),
+('FLOOR_X_6.0_Y_1.5',   6.0,   1.5, 'sg2_in_01_B', 'LOADING_SPOT', '1번 입고라인 Standby 버퍼 (오늘)'),
+('FLOOR_X_7.5_Y_-3.0',  7.5,  -3.0, 'sg2_in_02_A', 'LOADING_SPOT', '2번 입고라인 Active 버퍼 (내일)'),
+('FLOOR_X_6.0_Y_-3.0',  6.0,  -3.0, 'sg2_in_02_B', 'LOADING_SPOT', '2번 입고라인 Standby 버퍼 (내일)'),
+('FLOOR_X_7.5_Y_-7.5',  7.5,  -7.5, 'sg2_in_03_A', 'LOADING_SPOT', '3번 입고라인 Active 버퍼 (모레)'),
+('FLOOR_X_6.0_Y_-7.5',  6.0,  -7.5, 'sg2_in_03_B', 'LOADING_SPOT', '3번 입고라인 Standby 버퍼 (모레)');
+
+-- 8-3. 출고 대기 창고 / 스테이징 구역 (stage_01 ~ stage_04)
+INSERT INTO floor_qr_map (qr_id, x_coord, y_coord, location_name, location_type, description) VALUES
+('FLOOR_X_4.5_Y_9.0',   4.5,   9.0, 'stage_01', 'STAGING_SPOT', '출고 대기 창고 스팟 1'),
+('FLOOR_X_4.5_Y_7.5',   4.5,   7.5, 'stage_02', 'STAGING_SPOT', '출고 대기 창고 스팟 2'),
+('FLOOR_X_7.5_Y_9.0',   7.5,   9.0, 'stage_03', 'STAGING_SPOT', '출고 대기 창고 스팟 3'),
+('FLOOR_X_7.5_Y_7.5',   7.5,   7.5, 'stage_04', 'STAGING_SPOT', '출고 대기 창고 스팟 4');
+
+-- 8-4. 출고 포장 라인 A/B (sg2_out_00)
+INSERT INTO floor_qr_map (qr_id, x_coord, y_coord, location_name, location_type, description) VALUES
+('FLOOR_X_0.0_Y_9.0',   0.0,   9.0, 'sg2_out_00_A', 'PACKAGING_SPOT', '출고 포장 A라인 Active 버퍼'),
+('FLOOR_X_0.0_Y_7.5',   0.0,   7.5, 'sg2_out_00_B', 'PACKAGING_SPOT', '출고 포장 B라인 Standby 버퍼');
+
+-- 8-5. AMR 충전 위치 (charging_01 ~ charging_05)
+INSERT INTO floor_qr_map (qr_id, x_coord, y_coord, location_name, location_type, description) VALUES
+('FLOOR_X_-3.0_Y_-9.0', -3.0,  -9.0, 'charging_01', 'CHARGING_SPOT', 'AMR 충전기 스팟 1'),
+('FLOOR_X_-3.0_Y_-7.5', -3.0,  -7.5, 'charging_02', 'CHARGING_SPOT', 'AMR 충전기 스팟 2'),
+('FLOOR_X_-3.0_Y_-6.0', -3.0,  -6.0, 'charging_03', 'CHARGING_SPOT', 'AMR 충전기 스팟 3'),
+('FLOOR_X_-3.0_Y_-4.5', -3.0,  -4.5, 'charging_04', 'CHARGING_SPOT', 'AMR 충전기 스팟 4'),
+('FLOOR_X_-3.0_Y_-3.0', -3.0,  -3.0, 'charging_05', 'CHARGING_SPOT', 'AMR 충전기 스팟 5');
+
+-- 8-6. AMR 주행 경로 격자 (PATHWAY / STATIC_OBSTACLE) - 1.5m 간격
+INSERT INTO floor_qr_map (qr_id, x_coord, y_coord, location_name, location_type, description) VALUES
+('FLOOR_X_-3.0_Y_9.0',  -3.0,  9.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_-1.5_Y_9.0',  -1.5,  9.0, NULL, 'STATIC_OBSTACLE', 'SG2_OUT 포장 로봇 영역'),
+('FLOOR_X_1.5_Y_9.0',    1.5,  9.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_3.0_Y_9.0',    3.0,  9.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_6.0_Y_9.0',    6.0,  9.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_9.0_Y_9.0',    9.0,  9.0, NULL, 'STATIC_OBSTACLE', '컨베이어 벨트'),
+('FLOOR_X_-1.5_Y_7.5',  -1.5,  7.5, NULL, 'STATIC_OBSTACLE', 'SG2_OUT 포장 로봇 영역'),
+('FLOOR_X_1.5_Y_7.5',    1.5,  7.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_3.0_Y_7.5',    3.0,  7.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_6.0_Y_7.5',    6.0,  7.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_9.0_Y_7.5',    9.0,  7.5, NULL, 'STATIC_OBSTACLE', '컨베이어 벨트'),
+('FLOOR_X_-3.0_Y_6.0',  -3.0,  6.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_-1.5_Y_6.0',  -1.5,  6.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_0.0_Y_6.0',    0.0,  6.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_1.5_Y_6.0',    1.5,  6.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_3.0_Y_6.0',    3.0,  6.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_4.5_Y_6.0',    4.5,  6.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_6.0_Y_6.0',    6.0,  6.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_7.5_Y_6.0',    7.5,  6.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_9.0_Y_6.0',    9.0,  6.0, NULL, 'STATIC_OBSTACLE', '컨베이어 벨트'),
+('FLOOR_X_-3.0_Y_4.5',  -3.0,  4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_-1.5_Y_4.5',  -1.5,  4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_0.0_Y_4.5',    0.0,  4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_1.5_Y_4.5',    1.5,  4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_3.0_Y_4.5',    3.0,  4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_4.5_Y_4.5',    4.5,  4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_6.0_Y_4.5',    6.0,  4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_7.5_Y_4.5',    7.5,  4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_9.0_Y_4.5',    9.0,  4.5, NULL, 'STATIC_OBSTACLE', '컨베이어 벨트'),
+('FLOOR_X_-3.0_Y_3.0',  -3.0,  3.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_-1.5_Y_3.0',  -1.5,  3.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_3.0_Y_3.0',    3.0,  3.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_4.5_Y_3.0',    4.5,  3.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_6.0_Y_3.0',    6.0,  3.0, NULL, 'STATIC_OBSTACLE', 'SG2_IN_1 입고 로봇 영역'),
+('FLOOR_X_7.5_Y_3.0',    7.5,  3.0, NULL, 'STATIC_OBSTACLE', 'SG2_IN_1 입고 로봇 영역'),
+('FLOOR_X_9.0_Y_3.0',    9.0,  3.0, NULL, 'STATIC_OBSTACLE', '컨베이어 벨트'),
+('FLOOR_X_-3.0_Y_1.5',  -3.0,  1.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_-1.5_Y_1.5',  -1.5,  1.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_0.0_Y_1.5',    0.0,  1.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_1.5_Y_1.5',    1.5,  1.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_3.0_Y_1.5',    3.0,  1.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_4.5_Y_1.5',    4.5,  1.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_9.0_Y_1.5',    9.0,  1.5, NULL, 'STATIC_OBSTACLE', '컨베이어 벨트'),
+('FLOOR_X_-3.0_Y_0.0',  -3.0,  0.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_-1.5_Y_0.0',  -1.5,  0.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_3.0_Y_0.0',    3.0,  0.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_4.5_Y_0.0',    4.5,  0.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_6.0_Y_0.0',    6.0,  0.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_7.5_Y_0.0',    7.5,  0.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_9.0_Y_0.0',    9.0,  0.0, NULL, 'STATIC_OBSTACLE', '컨베이어 벨트'),
+('FLOOR_X_-3.0_Y_-1.5', -3.0, -1.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_-1.5_Y_-1.5', -1.5, -1.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_0.0_Y_-1.5',   0.0, -1.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_1.5_Y_-1.5',   1.5, -1.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_3.0_Y_-1.5',   3.0, -1.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_4.5_Y_-1.5',   4.5, -1.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_6.0_Y_-1.5',   6.0, -1.5, NULL, 'STATIC_OBSTACLE', 'SG2_IN_2 입고 로봇 영역'),
+('FLOOR_X_7.5_Y_-1.5',   7.5, -1.5, NULL, 'STATIC_OBSTACLE', 'SG2_IN_2 입고 로봇 영역'),
+('FLOOR_X_9.0_Y_-1.5',   9.0, -1.5, NULL, 'STATIC_OBSTACLE', '컨베이어 벨트'),
+('FLOOR_X_-1.5_Y_-3.0', -1.5, -3.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_3.0_Y_-3.0',   3.0, -3.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_4.5_Y_-3.0',   4.5, -3.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_9.0_Y_-3.0',   9.0, -3.0, NULL, 'STATIC_OBSTACLE', '컨베이어 벨트'),
+('FLOOR_X_-1.5_Y_-4.5', -1.5, -4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_0.0_Y_-4.5',   0.0, -4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_1.5_Y_-4.5',   1.5, -4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_3.0_Y_-4.5',   3.0, -4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_4.5_Y_-4.5',   4.5, -4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_6.0_Y_-4.5',   6.0, -4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_7.5_Y_-4.5',   7.5, -4.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_9.0_Y_-4.5',   9.0, -4.5, NULL, 'STATIC_OBSTACLE', '컨베이어 벨트'),
+('FLOOR_X_-1.5_Y_-6.0', -1.5, -6.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_3.0_Y_-6.0',   3.0, -6.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_4.5_Y_-6.0',   4.5, -6.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_6.0_Y_-6.0',   6.0, -6.0, NULL, 'STATIC_OBSTACLE', 'SG2_IN_3 입고 로봇 영역'),
+('FLOOR_X_7.5_Y_-6.0',   7.5, -6.0, NULL, 'STATIC_OBSTACLE', 'SG2_IN_3 입고 로봇 영역'),
+('FLOOR_X_9.0_Y_-6.0',   9.0, -6.0, NULL, 'STATIC_OBSTACLE', '컨베이어 벨트'),
+('FLOOR_X_-1.5_Y_-7.5', -1.5, -7.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_0.0_Y_-7.5',   0.0, -7.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_1.5_Y_-7.5',   1.5, -7.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_3.0_Y_-7.5',   3.0, -7.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_4.5_Y_-7.5',   4.5, -7.5, NULL, 'PATHWAY', NULL),
+('FLOOR_X_9.0_Y_-7.5',   9.0, -7.5, NULL, 'STATIC_OBSTACLE', '컨베이어 벨트'),
+('FLOOR_X_-1.5_Y_-9.0', -1.5, -9.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_3.0_Y_-9.0',   3.0, -9.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_4.5_Y_-9.0',   4.5, -9.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_6.0_Y_-9.0',   6.0, -9.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_7.5_Y_-9.0',   7.5, -9.0, NULL, 'PATHWAY', NULL),
+('FLOOR_X_9.0_Y_-9.0',   9.0, -9.0, NULL, 'STATIC_OBSTACLE', '컨베이어 벨트');
+
+-- 9. 초기 패키지 데이터 (웹 대시보드 CSV 업로드를 통해 동적으로 적재됩니다.)
 
