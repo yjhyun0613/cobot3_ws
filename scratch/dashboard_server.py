@@ -40,8 +40,9 @@ from datetime import datetime, timedelta
 import asyncio
 from typing import List
 
-# grid_cells DB 캐시 (서버 시작 후 1회만 쿼리)
+# DB 정적 데이터 캐시 (서버 시작 후 1회만 쿼리)
 _grid_cells_cache = None
+_locations_cache = None
 
 class ConnectionManager:
     def __init__(self):
@@ -85,27 +86,40 @@ def normalize_qr_id(qr_id: str) -> str:
         pass
     return qr_id
 
-# DB 연결 헬퍼 함수
+from psycopg2 import pool
+db_pool = None
+global_redis = None
+
 def get_db_connections():
-    try:
-        pg_conn = psycopg2.connect(
-            host='localhost',
-            port=5432,
-            user='rokey',
-            password='rokey_pass',
-            database='warehouse_db'
-        )
-        pg_conn.autocommit = True
-        
-        redis_client = redis.Redis(
-            host='localhost',
-            port=6379,
-            decode_responses=True
-        )
-        return pg_conn, redis_client
-    except Exception as e:
-        print(f"DB Connection Error: {e}")
-        return None, None
+    global db_pool, global_redis
+    if db_pool is None:
+        try:
+            db_pool = pool.ThreadedConnectionPool(1, 20, host='localhost', port=5432, user='rokey', password='rokey_pass', database='warehouse_db')
+        except Exception as e:
+            print(f"DB Pool Error: {e}")
+            
+    if global_redis is None:
+        try:
+            global_redis = redis.Redis(host='localhost', port=6379, decode_responses=True)
+        except Exception as e:
+            print(f"Redis Error: {e}")
+            
+    pg_conn = None
+    if db_pool:
+        try:
+            pg_conn = db_pool.getconn()
+            pg_conn.autocommit = True
+        except Exception as e:
+            print(f"Get Conn Error: {e}")
+    return pg_conn, global_redis
+
+def release_db_connection(pg_conn):
+    global db_pool
+    if db_pool and pg_conn:
+        try:
+            db_pool.putconn(pg_conn)
+        except:
+            pass
 
 def get_active_dates(redis_client):
     today_date = redis_client.get('system:today_date')
@@ -261,14 +275,17 @@ def get_status():
                 })
 
             # 3.5. Fetch floor QR location mappings
-            cursor.execute("""
-                SELECT qr_id, location_name, x_coord, y_coord, location_type 
-                FROM floor_qr_map 
-                WHERE location_name IS NOT NULL;
-            """)
-            locations = {}
-            for qr, loc_name, x, y, loc_type in cursor.fetchall():
-                locations[loc_name] = {"x": x, "y": y, "type": loc_type, "qr_id": qr}
+            global _locations_cache
+            if _locations_cache is None:
+                cursor.execute("""
+                    SELECT qr_id, location_name, x_coord, y_coord, location_type 
+                    FROM floor_qr_map 
+                    WHERE location_name IS NOT NULL;
+                """)
+                _locations_cache = {}
+                for qr, loc_name, x, y, loc_type in cursor.fetchall():
+                    _locations_cache[loc_name] = {"x": x, "y": y, "type": loc_type, "qr_id": qr}
+            locations = _locations_cache
                 
         # 4. Redis Active Queue Tasks (Sorted Set, 내림차순 조회)
         redis_tasks = []
@@ -392,7 +409,7 @@ def get_status():
             except Exception as de:
                 print(f"Device status check error: {de}")
 
-        pg_conn.close()
+        release_db_connection(pg_conn)
         return {
             "workstations": workstations,
             "spots": spots,
@@ -407,7 +424,7 @@ def get_status():
         }
     except Exception as e:
         if pg_conn:
-            pg_conn.close()
+            release_db_connection(pg_conn)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/upload_packages")
@@ -456,7 +473,7 @@ async def upload_packages(request: Request):
                 """, (pkg_id, cust_name, route_zone, status, qr_id))
                 success_count += 1
                 
-        pg_conn.close()
+        release_db_connection(pg_conn)
         return {"success": True, "message": f"Successfully loaded {success_count} packages."}
     except HTTPException as he:
         raise he
@@ -492,11 +509,11 @@ def reset_db():
         global _grid_cells_cache
         _grid_cells_cache = None
             
-        pg_conn.close()
+        release_db_connection(pg_conn)
         return {"success": True, "message": "데이터베이스와 바닥 QR 격자 맵이 성공적으로 초기화 및 복구되었습니다."}
     except Exception as e:
         if pg_conn:
-            pg_conn.close()
+            release_db_connection(pg_conn)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -595,7 +612,7 @@ def start_next_day():
         redis_client.set('system:inbound_started', 'false')
         
         if pg_conn:
-            pg_conn.close()
+            release_db_connection(pg_conn)
             
         msg = f"성공적으로 다음 영업일({next_date})로 전환되었습니다."
         if shift_count > 0:
@@ -603,7 +620,7 @@ def start_next_day():
         return {"success": True, "message": msg}
     except Exception as e:
         if pg_conn:
-            pg_conn.close()
+            release_db_connection(pg_conn)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/start_business")
@@ -624,7 +641,7 @@ def start_business():
                 cursor.execute("SELECT COUNT(*) FROM packages WHERE status = 'WAITING';")
                 count = cursor.fetchone()[0]
                 has_packages = count > 0
-            pg_conn.close()
+            release_db_connection(pg_conn)
 
         if not has_packages:
             return {
@@ -666,7 +683,7 @@ def start_business():
         }
     except Exception as e:
         if pg_conn:
-            pg_conn.close()
+            release_db_connection(pg_conn)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/simulate")
@@ -681,7 +698,7 @@ def simulate_inbound():
             cursor.execute("SELECT package_id, customer_name, route_zone, qr_id FROM packages WHERE status = 'WAITING' LIMIT 1;")
             pkg_row = cursor.fetchone()
             if not pkg_row:
-                pg_conn.close()
+                release_db_connection(pg_conn)
                 return {"success": False, "message": "더 이상 적재할 대기 패키지가 없습니다."}
             
             pkg_id, cust_name, zone, pkg_qr = pkg_row
@@ -754,7 +771,7 @@ def simulate_inbound():
                     }
                     push_priority_task(redis_client, task_deploy)
                 else:
-                    pg_conn.close()
+                    release_db_connection(pg_conn)
                     return {"success": False, "message": f"{target_robot}_A 에 배치할 빈 작업대가 없습니다."}
 
             # 3. 해당 작업대의 다음 빈 슬롯 찾기
@@ -771,7 +788,7 @@ def simulate_inbound():
                     break
             
             if slot_num is None:
-                pg_conn.close()
+                release_db_connection(pg_conn)
                 return {"success": False, "message": f"작업대 {ws_id}의 모든 슬롯이 찼습니다!"}
                 
             # 4. 데이터베이스 업데이트 (패키지 정보)
@@ -961,7 +978,7 @@ def simulate_inbound():
                 
                 swap_triggered = True
 
-        pg_conn.close()
+        release_db_connection(pg_conn)
         msg = f"상자 {pkg_id}를 {target_robot} 라인의 작업대 {ws_id} {slot_num}번 슬롯에 적재했습니다."
         if lookahead_triggered:
             msg += " (★ Look-ahead 예비 작업대 호출 트리거 발동!)"
@@ -973,7 +990,7 @@ def simulate_inbound():
         return {"success": True, "message": msg}
     except Exception as e:
         if pg_conn:
-            pg_conn.close()
+            release_db_connection(pg_conn)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1018,7 +1035,7 @@ def simulate_packaging():
                         }
                         push_priority_task(redis_client, task_deploy)
                         
-                    pg_conn.close()
+                    release_db_connection(pg_conn)
                     return {"success": True, "message": f"대기 중이던 작업대 {ws_id}를 활성 포장존(sg2_out_00_A)으로 승격 배치했습니다."}
                 
                 # 1-2. 포장 구역(A/B)에 작업대가 아예 없으면, 창고/대기소에서 완충된 작업대를 가져옴 (오늘 날짜 물량만, staging 구역 우선)
@@ -1034,7 +1051,7 @@ def simulate_packaging():
                 """, (today_date,))
                 warehouse_ws = cursor.fetchone()
                 if not warehouse_ws:
-                    pg_conn.close()
+                    release_db_connection(pg_conn)
                     return {"success": False, "message": "포장할 작업대가 없습니다. 먼저 적재 시뮬레이션으로 작업대를 완충시켜 주세요."}
                 
                 ws_id, ws_loc, ws_qr = warehouse_ws
@@ -1064,7 +1081,7 @@ def simulate_packaging():
                     }
                     push_priority_task(redis_client, task_fetch)
                 
-                pg_conn.close()
+                release_db_connection(pg_conn)
                 return {"success": True, "message": f"작업대 {ws_id}를 창고({ws_loc})에서 활성 포장존(sg2_out_00_A)으로 이송했습니다."}
             
             ws_id, ws_qr = ws_row
@@ -1081,7 +1098,7 @@ def simulate_packaging():
             pkg_row = cursor.fetchone()
             
             if not pkg_row:
-                pg_conn.close()
+                release_db_connection(pg_conn)
                 return {"success": False, "message": f"작업대 {ws_id}에 포장할 패키지가 없습니다."}
             
             pkg_id, slot_num, cust_name = pkg_row
@@ -1243,7 +1260,7 @@ def simulate_packaging():
                 
                 swap_triggered = True
         
-        pg_conn.close()
+        release_db_connection(pg_conn)
         msg = f"📦 {pkg_id} (슬롯 {slot_num}, {cust_name}) 포장 완료! 출고ID: {outbound_id} [{completed_count}/8]"
         if lookahead_triggered:
             msg += " (★ Look-ahead: 다음 포장 작업대 사전 호출!)"
@@ -1253,7 +1270,7 @@ def simulate_packaging():
         return {"success": True, "message": msg}
     except Exception as e:
         if pg_conn:
-            pg_conn.close()
+            release_db_connection(pg_conn)
         raise HTTPException(status_code=500, detail=str(e))
 
 # HTML 대시보드 마크업 제공
@@ -1420,7 +1437,6 @@ def index():
             border: 1px solid var(--border-color);
             border-radius: 20px;
             padding: 1.5rem;
-            backdrop-filter: blur(10px);
             box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
         }
 
@@ -1983,7 +1999,7 @@ def index():
             box-shadow: inset 0 0 8px rgba(255, 0, 127, 0.35), 0 0 4px rgba(255, 0, 127, 0.15);
             background: rgba(255, 0, 127, 0.05);
         }
-        .amr-marker {
+        .amr-icon {
             position: absolute;
             width: 26px;
             height: 26px;
@@ -1996,13 +2012,10 @@ def index():
             font-weight: 900;
             color: #fff;
             z-index: 20;
-            animation: pulse-marker 1.2s infinite;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 5px currentColor;
             pointer-events: auto;
-        }
-        @keyframes pulse-marker {
-            0%   { box-shadow: 0 0 5px currentColor; transform: translate(-50%, -50%) scale(1); }
-            50%  { box-shadow: 0 0 16px currentColor; transform: translate(-50%, -50%) scale(1.2); }
-            100% { box-shadow: 0 0 5px currentColor; transform: translate(-50%, -50%) scale(1); }
+            transition: left 0.3s linear, top 0.3s linear;
         }
 
         /* Start Business Button and Device Status Badges */
@@ -2112,7 +2125,7 @@ def index():
         </div>
 
         <!-- Day Transition Banner (Hidden by default) -->
-        <div id="day-transition-banner" style="display: none; background: linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(239, 68, 68, 0.15) 100%); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 16px; padding: 20px; margin-bottom: 2rem; align-items: center; justify-content: space-between; backdrop-filter: blur(12px); box-shadow: 0 8px 32px 0 rgba(245, 158, 11, 0.15); animation: pulse-border-orange 2s infinite;">
+        <div id="day-transition-banner" style="display: none; background: linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(239, 68, 68, 0.15) 100%); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 16px; padding: 20px; margin-bottom: 2rem; align-items: center; justify-content: space-between; box-shadow: 0 8px 32px 0 rgba(245, 158, 11, 0.15); animation: pulse-border-orange 2s infinite;">
             <div style="display: flex; align-items: center; gap: 16px;">
                 <div style="font-size: 2.2rem; animation: bounce 2s infinite;">🎉</div>
                 <div>
@@ -2131,7 +2144,7 @@ def index():
         <div class="panel-card" style="margin-bottom: 2rem;">
             <h2>Warehouse 2D Live Grid Plan <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal; margin-left: 10px;">실시간 체스판 격자 배치도 (1.5m Grid)</span></h2>
             
-            <div id="floor-plan-container" style="display: flex; flex-direction: column; gap: 16px; background: rgba(15, 23, 42, 0.45); border-radius: 16px; border: 1px solid var(--border-color); padding: 20px; color: var(--text-color); align-items: center; justify-content: center; backdrop-filter: blur(12px); box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);">
+            <div id="floor-plan-container" style="display: flex; flex-direction: column; gap: 16px; background: rgba(15, 23, 42, 0.45); border-radius: 16px; border: 1px solid var(--border-color); padding: 20px; color: var(--text-color); align-items: center; justify-content: center; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);">
                 <!-- Legend Row -->
                 <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-bottom: 5px;">
                     <div style="display: flex; align-items: center; gap: 6px;">
@@ -2389,8 +2402,8 @@ def index():
                 }
             });
 
-            // 3. 기존 AMR 마커 삭제
-            document.querySelectorAll('.amr-marker').forEach(el => el.remove());
+            // 3. 기존 AMR 마커 삭제 방지 (최적화를 위해 재사용)
+            if (!window.amrDomElements) window.amrDomElements = {};
 
             // 4. 워크스테이션(선반) 위치에 WS 배지 스타일링 반영 (has-ws 클래스 추가)
             if (data.workstations) {
@@ -2437,17 +2450,19 @@ def index():
                         const cellEl = locCellMap[qrId];
                         if (cellEl) {
                             // AMR 마커 동적 생성 및 panel에 absolute positioning으로 얹음
-                            const amrEl = document.createElement('div');
-                            amrEl.className = 'amr-marker';
+                            let amrEl = window.amrDomElements[amrId];
+                            if (!amrEl) {
+                                amrEl = document.createElement('div');
+                                amrEl.className = 'amr-icon';
+                                panel.appendChild(amrEl);
+                                window.amrDomElements[amrId] = amrEl;
+                            }
                             amrEl.textContent = amrId.replace('AMR_', '');
                             amrEl.title = `${amrId}\nState: ${amr.state}\nBattery: ${amr.battery}%\nCarrying: ${amr.carrying_workstation_id || 'None'}`;
                             
-                            // 셀의 absolute 위치를 그대로 가져오고 정중앙 오프셋을 맞추기 위해 translate(-50%, -50%)를 고려하여 style 탑/레프트 배정
-                            // 셀의 top, left는 28px 셀의 top-left이므로, 마커는 26px 크기에 transform translate로 중앙 보정
                             amrEl.style.left = `${parseFloat(cellEl.style.left) + 14}px`;
                             amrEl.style.top = `${parseFloat(cellEl.style.top) + 14}px`;
                             
-                            // AMR 기본 색상을 핫핑크(#ff007f)로 지정하여 초록색 컨베이어 벨트 등과 겹치는 가시성 문제 해결
                             const bat = parseFloat(amr.battery);
                             let color = '#ff007f'; 
                             if (bat <= 20) {
@@ -2459,8 +2474,6 @@ def index():
                             amrEl.style.backgroundColor = color;
                             amrEl.style.color = color === '#f59e0b' ? '#000' : '#fff';
                             amrEl.style.boxShadow = `0 0 10px ${color}`;
-                            
-                            panel.appendChild(amrEl);
 
                             // 주행 흔적(Trace fading trail) 활성화
                             if (!cellEl.classList.contains('path-active')) {
@@ -2684,6 +2697,10 @@ def index():
                 }
             }
 
+        // State hash to prevent unnecessary DOM rebuilds
+        let lastDataHash = { spots: '', workstations: '', redis_tasks: '', packages: '' };
+
+        function updateUI(data) {
             // Update the 2D floor plan
             updateFloorPlan(data);
 
@@ -2699,137 +2716,154 @@ def index():
                 }
             }
 
+            const spotsStr = JSON.stringify(data.spots || []);
+            const wsStr = JSON.stringify(data.workstations || []);
+            const tasksStr = JSON.stringify(data.redis_tasks || []);
+            const pkgsStr = JSON.stringify(data.packages || []);
+
             // 3-1. Render Warehouse spots & Staging spots
-            const spotsContainer = document.getElementById('spots-list');
-            const stagingContainer = document.getElementById('staging-list');
-            
-            if (spotsContainer) spotsContainer.innerHTML = '';
-            if (stagingContainer) stagingContainer.innerHTML = '';
-            
-            data.spots.forEach(spot => {
-                const isOccupied = spot.status === 'OCCUPIED';
-                const item = document.createElement('div');
-                item.className = `spot-item ${isOccupied ? 'occupied' : 'empty'}`;
-                item.innerHTML = `
-                    <div class="spot-id">${spot.spot_id.toUpperCase()}</div>
-                    <div class="spot-ws">${spot.workstation_id || '—'}</div>
-                    <div class="spot-status-badge">${isOccupied ? 'OCCUPIED' : 'EMPTY'}</div>
-                `;
+            if (spotsStr !== lastDataHash.spots) {
+                const spotsContainer = document.getElementById('spots-list');
+                const stagingContainer = document.getElementById('staging-list');
                 
-                if (spot.spot_id.startsWith('spot_')) {
-                    if (spotsContainer) spotsContainer.appendChild(item);
-                } else if (spot.spot_id.startsWith('stage_')) {
-                    if (stagingContainer) stagingContainer.appendChild(item);
-                }
-            });
+                if (spotsContainer) spotsContainer.innerHTML = '';
+                if (stagingContainer) stagingContainer.innerHTML = '';
+                
+                (data.spots || []).forEach(spot => {
+                    const isOccupied = spot.status === 'OCCUPIED';
+                    const item = document.createElement('div');
+                    item.className = `spot-item ${isOccupied ? 'occupied' : 'empty'}`;
+                    item.innerHTML = `
+                        <div class="spot-id">${spot.spot_id.toUpperCase()}</div>
+                        <div class="spot-ws">${spot.workstation_id || '—'}</div>
+                        <div class="spot-status-badge">${isOccupied ? 'OCCUPIED' : 'EMPTY'}</div>
+                    `;
+                    
+                    if (spot.spot_id.startsWith('spot_')) {
+                        if (spotsContainer) spotsContainer.appendChild(item);
+                    } else if (spot.spot_id.startsWith('stage_')) {
+                        if (stagingContainer) stagingContainer.appendChild(item);
+                    }
+                });
+                lastDataHash.spots = spotsStr;
+            }
 
             // 3-2. Render Workstations
-            const wsContainer = document.getElementById('ws-list');
-            if (wsContainer) {
-                wsContainer.innerHTML = '';
-                data.workstations.forEach(ws => {
-                    const isMoving = ws.current_location.startsWith('MOVING_');
-                    const card = document.createElement('div');
-                    card.className = 'ws-card';
-                    
-                    let slotsHTML = '';
-                    ws.slots.forEach(slot => {
-                        const isFull = slot.status === 'FULL';
-                        slotsHTML += `
-                            <div class="ws-slot ${isFull ? 'full' : ''}">
-                                <div>Slot ${slot.slot_number}</div>
-                                <div class="ws-slot-name">${slot.customer || 'EMPTY'}</div>
+            if (wsStr !== lastDataHash.workstations) {
+                const wsContainer = document.getElementById('ws-list');
+                if (wsContainer) {
+                    wsContainer.innerHTML = '';
+                    (data.workstations || []).forEach(ws => {
+                        const isMoving = ws.current_location.startsWith('MOVING_');
+                        const card = document.createElement('div');
+                        card.className = 'ws-card';
+                        
+                        let slotsHTML = '';
+                        ws.slots.forEach(slot => {
+                            const isFull = slot.status === 'FULL';
+                            slotsHTML += `
+                                <div class="ws-slot ${isFull ? 'full' : ''}">
+                                    <div>Slot ${slot.slot_number}</div>
+                                    <div class="ws-slot-name">${slot.customer || 'EMPTY'}</div>
+                                </div>
+                            `;
+                        });
+
+                        card.innerHTML = `
+                            <div class="ws-header">
+                                <span class="ws-id">${ws.workstation_id}</span>
+                                <span class="ws-loc ${isMoving ? 'moving' : ''}">${ws.current_location}</span>
+                            </div>
+                            <div class="ws-slots-grid">
+                                ${slotsHTML}
                             </div>
                         `;
+                        wsContainer.appendChild(card);
                     });
-
-                    card.innerHTML = `
-                        <div class="ws-header">
-                            <span class="ws-id">${ws.workstation_id}</span>
-                            <span class="ws-loc ${isMoving ? 'moving' : ''}">${ws.current_location}</span>
-                        </div>
-                        <div class="ws-slots-grid">
-                            ${slotsHTML}
-                        </div>
-                    `;
-                    wsContainer.appendChild(card);
-                });
+                }
+                lastDataHash.workstations = wsStr;
             }
 
             // 3-3. Render Redis tasks queue
-            const tasksContainer = document.getElementById('tasks-list');
-            const redisCountEl = document.getElementById('redis-count');
-            if (tasksContainer && redisCountEl) {
-                tasksContainer.innerHTML = '';
-                
-                const count = data.redis_tasks.length;
-                redisCountEl.innerText = `${count} task${count !== 1 ? 's' : ''} active`;
+            if (tasksStr !== lastDataHash.redis_tasks) {
+                const tasksContainer = document.getElementById('tasks-list');
+                const redisCountEl = document.getElementById('redis-count');
+                if (tasksContainer && redisCountEl) {
+                    tasksContainer.innerHTML = '';
+                    
+                    const count = (data.redis_tasks || []).length;
+                    redisCountEl.innerText = `${count} task${count !== 1 ? 's' : ''} active`;
 
-                if (count === 0) {
-                    tasksContainer.innerHTML = `
-                        <div style="text-align: center; color: var(--text-muted); font-size: 0.85rem; padding: 10px;">
-                            큐에 현재 대기 중인 AMR 이송 명령이 없습니다.
-                        </div>
-                    `;
-                } else {
-                    data.redis_tasks.forEach(task => {
-                        const item = document.createElement('div');
-                        item.className = 'task-item';
-                        
-                        const score = task.priority_score || 0;
-                        let badgeBg = 'rgba(255,255,255,0.1)';
-                        let badgeColor = 'var(--text-muted)';
-                        if (score >= 90) {
-                            badgeBg = 'rgba(239, 68, 68, 0.2)';
-                            badgeColor = '#ef4444';
-                        } else if (score >= 80) {
-                            badgeBg = 'rgba(245, 158, 11, 0.2)';
-                            badgeColor = '#f59e0b';
-                        } else if (score >= 50) {
-                            badgeBg = 'rgba(59, 130, 246, 0.2)';
-                            badgeColor = '#3b82f6';
-                        }
-
-                        item.innerHTML = `
-                            <div>
-                                <div class="task-name" style="display: flex; align-items: center; gap: 6px;">
-                                    ${task.task_type || 'TASK'}
-                                    <span style="font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; background: ${badgeBg}; color: ${badgeColor}; font-weight: 700;">
-                                        P-${score}
-                                    </span>
-                                </div>
-                                <div class="task-desc">${task.description || ''}</div>
-                            </div>
-                            <div style="font-size: 0.72rem; color: var(--text-muted); text-align: right;">
-                                <div>QR: ${task.workstation_qr_id || 'N/A'}</div>
-                                <div style="font-size: 0.55rem; opacity: 0.7; margin-top: 2px;">UUID: ${task.uuid ? task.uuid.substring(0, 8) : 'N/A'}</div>
+                    if (count === 0) {
+                        tasksContainer.innerHTML = `
+                            <div style="text-align: center; color: var(--text-muted); font-size: 0.85rem; padding: 10px;">
+                                큐에 현재 대기 중인 AMR 이송 명령이 없습니다.
                             </div>
                         `;
-                        tasksContainer.appendChild(item);
-                    });
+                    } else {
+                        (data.redis_tasks || []).forEach(task => {
+                            const item = document.createElement('div');
+                            item.className = 'task-item';
+                            
+                            const score = task.priority_score || 0;
+                            let badgeBg = 'rgba(255,255,255,0.1)';
+                            let badgeColor = 'var(--text-muted)';
+                            if (score >= 90) {
+                                badgeBg = 'rgba(239, 68, 68, 0.2)';
+                                badgeColor = '#ef4444';
+                            } else if (score >= 80) {
+                                badgeBg = 'rgba(245, 158, 11, 0.2)';
+                                badgeColor = '#f59e0b';
+                            } else if (score >= 50) {
+                                badgeBg = 'rgba(59, 130, 246, 0.2)';
+                                badgeColor = '#3b82f6';
+                            }
+
+                            item.innerHTML = `
+                                <div>
+                                    <div class="task-name" style="display: flex; align-items: center; gap: 6px;">
+                                        ${task.task_type || 'TASK'}
+                                        <span style="font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; background: ${badgeBg}; color: ${badgeColor}; font-weight: 700;">
+                                            P-${score}
+                                        </span>
+                                    </div>
+                                    <div class="task-desc">${task.description || ''}</div>
+                                </div>
+                                <div style="font-size: 0.72rem; color: var(--text-muted); text-align: right;">
+                                    <div>QR: ${task.workstation_qr_id || 'N/A'}</div>
+                                    <div style="font-size: 0.55rem; opacity: 0.7; margin-top: 2px;">UUID: ${task.uuid ? task.uuid.substring(0, 8) : 'N/A'}</div>
+                                </div>
+                            `;
+                            tasksContainer.appendChild(item);
+                        });
+                    }
                 }
+                lastDataHash.redis_tasks = tasksStr;
             }
 
             // 3-4. Render Packages table
-            const tbody = document.getElementById('package-tbody');
-            if (tbody) {
-                tbody.innerHTML = '';
-                data.packages.forEach(pkg => {
-                    const row = document.createElement('tr');
-                    
-                    let statusClass = pkg.status.toLowerCase();
-                    row.innerHTML = `
-                        <td style="font-weight: 600; color:#fff;">${pkg.package_id}</td>
-                        <td>${pkg.qr_id || '—'}</td>
-                        <td>${pkg.customer_name}</td>
-                        <td>${pkg.route_zone}</td>
-                        <td><span class="status-pill ${statusClass}">${pkg.status}</span></td>
-                        <td>${pkg.workstation_id || '—'}</td>
-                        <td>${pkg.slot_number || '—'}</td>
-                        <td style="font-family: monospace; color: var(--primary); font-size: 0.75rem;">${pkg.outbound_id || '—'}</td>
-                    `;
-                    tbody.appendChild(row);
-                });
+            if (pkgsStr !== lastDataHash.packages) {
+                const tbody = document.getElementById('package-tbody');
+                if (tbody) {
+                    tbody.innerHTML = '';
+                    (data.packages || []).forEach(pkg => {
+                        const row = document.createElement('tr');
+                        
+                        let statusClass = pkg.status.toLowerCase();
+                        row.innerHTML = `
+                            <td style="font-weight: 600; color:#fff;">${pkg.package_id}</td>
+                            <td>${pkg.qr_id || '—'}</td>
+                            <td>${pkg.customer_name}</td>
+                            <td>${pkg.route_zone}</td>
+                            <td><span class="status-pill ${statusClass}">${pkg.status}</span></td>
+                            <td>${pkg.workstation_id || '—'}</td>
+                            <td>${pkg.slot_number || '—'}</td>
+                            <td style="font-family: monospace; color: var(--primary); font-size: 0.75rem;">${pkg.outbound_id || '—'}</td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                }
+                lastDataHash.packages = pkgsStr;
             }
         }
 

@@ -27,7 +27,7 @@
 
 ## 📅 2026년 6월 8일 (월요일)
 
-* **19:45** - **20m × 20m 신규 맵 물리 좌표계 동기화 및 마크다운 일괄 개편 (12.1)**:
+* **19:45** - **13.5m × 20m 신규 맵 물리 좌표계 동기화 및 마크다운 일괄 개편 (12.1)**:
   - 개편된 맵 스케일(중심 3.0, 0.0 / X 크기 13.5m, Y 크기 20m)에 따라 메인 창고 스팟(10개), 출고 대기 창고(4개), 포장 작업대(2개 - sg2_out_00_A/B 각각 0.0, 9.0 및 0.0, 7.5), AMR 충전소(5개), SG2 로봇 불가 진입 영역, 컨베이어벨트 구역(청록색 테마 지정)의 물리 좌표계를 완벽히 동기화했습니다.
   - 관련 모든 마크다운 문서(`PROJECT_REPORT.md`, `PHYSICAL_LAYOUT.md`, `SYSTEM_IMPROVEMENT_PLAN.md`, `README.md`)의 시스템 사양 및 좌표 데이터들을 일괄 갱신했습니다.
 
@@ -243,11 +243,15 @@
 * **14:20** - **중복 입고 검사 오류 수정 및 시뮬레이터 무한 루프 버그 해결**
   - **관제탑 노드 (`control_tower_node.py`)**: `CheckWarehouseStatus` 호출 시 기존의 `customer_name` 기반 조회 방식을 `package_id` 기반의 정확한 조회 방식으로 변경하였습니다. 이를 통해 동일 수령인의 완료된 과거 택배 이력으로 인해 신규 입고 패키지가 중복 보관 중인 것으로 오인하여 직송을 유발하던 문제를 해결했습니다.
   - **시뮬레이터 (`run_full_simulation_robot.py`)**: 관제탑으로부터 직송 지시(`is_already_in_warehouse=True`)를 받았을 때, 데이터베이스 내 해당 패키지의 상태를 `IN_WAREHOUSE`로 갱신하여 다음 루프의 분류 대상(WAITING)에서 제외되도록 수정함으로써, 동일 패키지에 대해 적재 요청을 무한히 반복하는 교착 현상을 방지했습니다.
-  - 변경 패키지 빌드(`colcon build --packages-select cobot3`) 및 정상 시나리오 운행 테스트를 통해 흐름 검증을 마쳤습니다.
-
-* **15:40** - **포장 완료 후 180도 회전 완료 시의 포장 프로세스 중복 트리거(Double-trigger) 버그 수정**
-  - **현상**: 포장 로봇이 4번째 슬롯 포장 완료 후 작업대 180도 제자리 회전(`ROTATE_WORKSTATION`)을 수행하고 복귀(`sg2_out_00_A`)할 때, 이송 완료 콜백(`workstation_move_completed_callback`)에서 목적지가 `sg2_out_00_A`라는 이유로 포장 액션(`trigger_packaging_process`)을 중복 호출하는 버그가 있었음. 이로 인해 동일 작업대에 대해 두 개의 포장 시퀀스가 동시에 실행되어 DB 스팟 중복 점유(`spot_01`, `spot_03` 동시 점유 등) 및 상태 꼬임 유발.
-  - **해결**: 이송 요청 및 완료 콜백 인터페이스(`workstation_move_response_callback`, `workstation_move_completed_callback`)에 출발지(`start`) 인자를 추가로 전달하도록 구조 변경. 최종 도착 완료 시 출발지가 `sg2_out_00_A_ROTATING`이거나 `ROTATING` 키워드를 포함하는 제자리 회전 동작인 경우 포장 공정이 다시 트리거되지 않도록 방어 로직 적용.
+  - 변경 패키지 빌드(`colcon build --packages-select cobot3`) 및 정상 시나리오 운행 테스트를 통해 흐름* **17:15** - **13.5m × 20m 신규 소형 맵 (World3.usd) 격자 QR 개편 완료**
+  - **격자 좌표계 개편**: 중심 `(0,0)` 기준 `1.5m` 간격의 X, Y: `[-9.0, 9.0]` (총 169개) 신규 격자점을 연산 및 구축.
+  - **사용자 커스텀 논리 스팟 반영**: 사용자가 지정한 정밀 위치 데이터에 기초하여 메인 창고(`spot_01` ~ `spot_10`), 출고 대기 창고(`stage_01` ~ `stage_06`), 포장 작업대(`sg2_out_00_A/B`), 입고라인(오늘/내일/모레 A/B) 및 AMR 충전소(`charging_01` ~ `charging_05`)의 X, Y 좌표를 1.5m 간격 노드에 매핑.
+  - **빌드 스크립트 작성 및 갱신**:
+    - `scratch/update_20x20_grid_assets.py` 및 `scratch/add_20x20_qr_to_usd.py` 파이썬 스크립트를 작성하여 169개 QR 이미지 생성, PostgreSQL `floor_qr_map` 테이블 리셋 및 Bulk Insert, `World3.usd` 내의 3D QR Plane 메쉬 동적 생성을 자동화.
+    - 데이터베이스 환경 리셋 스크립트(`scratch/reset_db.py`)가 최신 격자 생성 스크립트를 연동하도록 호출 파이프라인 갱신 완료.
+  - **모니터링 대시보드 및 테스트 도구 연동**:
+    - 2D 웹 대시보드(`scratch/dashboard_server.py`)의 2D 격자 컨테이너 크기(392x392px) 및 X_MIN/Y_MAX 변환 상수를 `[-9.0, 9.0]` 범위에 맞추어 개편.
+    - AMR 가상 주행 송신기(`scratch/amr_redis_test_publisher.py`) 내의 테스트 웨이포인트 좌표도 신형 13.5m x 20m 규격에 맞게 전면 갱신.��료 시 출발지가 `sg2_out_00_A_ROTATING`이거나 `ROTATING` 키워드를 포함하는 제자리 회전 동작인 경우 포장 공정이 다시 트리거되지 않도록 방어 로직 적용.
   - **검증**: `colcon build` 후 150개 대용량 패키지 기반 시나리오 테스트를 다시 기동하여, 포장 로봇 및 AMR이 이중 트리거 없이 깔끔하게 1회씩만 작동하고 주차 스팟(`warehouse_locations`)에 작업대들이 중복 할당 없이 1:1로 정확하게 EMPTY/OCCUPIED 매핑이 갱신되는 것을 완벽히 검증 및 확인 완료.
 
 * **16:35** - **Docker Adminer 컨테이너 포트 충돌(8080) 해결**

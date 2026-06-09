@@ -96,6 +96,6 @@ A/B 2개의 정사각형 격자를 병합한 직사각형 작업 공간 형태�
 
 ## 🛠️ 2. 시스템 적용 상태
 이 좌표 정보는 다음과 같이 시스템 전체에 연계되어 상시 반영되어 있습니다.
-1. **데이터베이스 초기화 (`docker/init.sql`)**: `floor_qr_map` 테이블 및 `warehouse_locations` 정보가 위 3.0 중심 좌표계의 양/음수 값으로 정확히 적재되어 있습니다.
-2. **QR코드 생성기 (`generate_all_qr_codes.py`)**: 생성된 바닥 QR코드 파일이 새로운 20x20m 스케일 및 물리 매핑에 동기화되었습니다.
+1. **데이터베이스 초기화 (`docker/init.sql`)**: Docker 최초 기동 시 `floor_qr_map` 테이블에 논리 스팟(spot, sg2_in, sg2_out, stage, charging) 27개와 AMR 주행 경로 격자(PATHWAY/STATIC_OBSTACLE) 약 90개가 자동으로 적재됩니다. `warehouse_locations` 정보도 위 3.0 중심 좌표계의 양/음수 값으로 정확히 적재되어 있습니다.
+2. **QR코드 생성기 (`generate_all_qr_codes.py`)**: 생성된 바닥 QR코드 파일이 새로운 13.5m x 20m 스케일 및 물리 매핑에 동기화되었습니다. 추가 격자 노드가 필요할 경우 이 스크립트를 실행하여 DB에 보충 적재할 수 있습니다.
 3. **대시보드 UI (`dashboard_server.py`)**: 3.0, 0.0 중심 기반의 상대 좌표 변환이 Grid 맵 스타일 및 실시간 소켓 업데이트 내에 매핑되어 100% 정상 작동합니다.

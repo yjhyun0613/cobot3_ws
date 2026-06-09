@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -28,6 +29,7 @@ ACTION_NAME = 'manage_workstation'
 MOVE_PACKAGE_ACTION_NAME = 'move_package'
 FEEDBACK_PERIOD_SEC = 0.25
 TASK_TIMEOUT_SEC = 300.0
+BRIDGE_EXECUTOR_THREADS = max(1, int(os.environ.get('AMR_BRIDGE_EXECUTOR_THREADS', '2')))
 
 
 def ensure_dirs():
@@ -84,13 +86,14 @@ class FleetManagerBridgeNode(Node):
                 MOVE_PACKAGE_ACTION_NAME,
                 self.execute_move_package_callback,
             )
-        self.get_logger().info(f'AMR Fleet Bridge ActionServer ready: /{ACTION_NAME}')
+        self.get_logger().info(f'AMR Fleet Bridge V18 ActionServer ready: /{ACTION_NAME}')
         if MovePackage is not None:
-            self.get_logger().info(f'AMR Fleet Bridge ActionServer ready: /{MOVE_PACKAGE_ACTION_NAME}')
+            self.get_logger().info(f'AMR Fleet Bridge V18 ActionServer ready: /{MOVE_PACKAGE_ACTION_NAME}')
         else:
             self.get_logger().warn('MovePackage action interface not available. /move_package server not started.')
         self.get_logger().info(f'Bridge queue dir: {BRIDGE_QUEUE_DIR}')
-        self.get_logger().info('Run Isaac Sim controller inside Isaac Sim Script Editor.')
+        self.get_logger().info(f'Bridge executor threads: {BRIDGE_EXECUTOR_THREADS}')
+        self.get_logger().info('Run Isaac Sim GPU controller inside Isaac Sim Script Editor.')
 
     def execute_move_package_callback(self, goal_handle):
         """Logical MovePackage action server.
@@ -248,7 +251,7 @@ class FleetManagerBridgeNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = FleetManagerBridgeNode()
-    executor = MultiThreadedExecutor(num_threads=4)
+    executor = MultiThreadedExecutor(num_threads=BRIDGE_EXECUTOR_THREADS)
     executor.add_node(node)
 
     try:

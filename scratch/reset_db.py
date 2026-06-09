@@ -67,25 +67,8 @@ def reset_database():
         print(f"[ERROR] Redis 연결 실패: {e}")
         sys.exit(1)
 
-    # 3. 바닥 QR 격자 재생성
-    print("3.1 바닥 169개 QR 공간 맵 재생성 시작...")
-    import subprocess
-    ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    qr_script = os.path.join(ws_root, "scratch", "update_20x20_grid_assets.py")
-    try:
-        result = subprocess.run(
-            [sys.executable, qr_script],
-            cwd=ws_root,
-            capture_output=True, text=True, timeout=120
-        )
-        if result.returncode != 0:
-            print(f"[ERROR] 바닥 QR 재생성 실패:\n{result.stderr}")
-            sys.exit(1)
-        print(result.stdout)
-        print("바닥 QR 공간 맵 복구 완료.")
-    except Exception as e:
-        print(f"[ERROR] 바닥 QR 재생성 실패: {e}")
-        sys.exit(1)
+    # 3. 바닥 QR 격자 재생성은 생략 (init.sql의 정상 데이터 유지)
+    print("3.1 바닥 QR 공간 맵은 기존 정상 데이터를 유지합니다.")
 
     print("=== [Reset Test Env] 초기화 완료! 깨끗한 상태로 테스트 가능합니다. ===")
 

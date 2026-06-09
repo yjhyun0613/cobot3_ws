@@ -17,11 +17,12 @@ Purpose
 
 Run inside Isaac Sim:
   Window -> Script Editor
-  exec(open('/home/rokey/isaaclab_ws/isaac_aruco/amr/amr_live_existing_stage_true8_controller.py', encoding='utf-8').read())
+  exec(open('/home/rokey/isaaclab_ws/isaac_aruco/amr/amr_live_existing_stage_true8_qr_camera_controller_gpu.py', encoding='utf-8').read())
 """
 
 import json
 import math
+import os
 import re
 import random
 import shutil
@@ -41,6 +42,88 @@ except Exception as _cv_err:
     np = None
     CV2_AVAILABLE = False
     _CV2_IMPORT_ERROR = _cv_err
+
+
+def env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name, None)
+    if value is None:
+        return bool(default)
+    return str(value).strip().lower() not in {"0", "false", "no", "off", "disable", "disabled"}
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except Exception:
+        return int(default)
+
+
+# GPU usage policy. The navigation/planning algorithm is intentionally unchanged.
+# Only OpenCV image pre-processing is moved to CUDA when the installed cv2 build supports it.
+AMR_GPU_ENABLED = env_bool("AMR_GPU_ENABLED", True)
+AMR_QR_GPU_PREPROCESS_ENABLED = env_bool("AMR_QR_GPU_PREPROCESS_ENABLED", True)
+AMR_QR_CUDA_DEVICE_ID = env_int("AMR_QR_CUDA_DEVICE_ID", 0)
+AMR_OPENCV_CPU_THREADS = env_int("AMR_OPENCV_CPU_THREADS", 1)
+
+_OPENCV_RUNTIME_CONFIGURED = False
+_OPENCV_CUDA_CHECKED = False
+_OPENCV_CUDA_AVAILABLE = False
+_OPENCV_CUDA_STATUS = "not_checked"
+
+
+def configure_opencv_runtime():
+    global _OPENCV_RUNTIME_CONFIGURED
+    if _OPENCV_RUNTIME_CONFIGURED or not CV2_AVAILABLE:
+        return
+    _OPENCV_RUNTIME_CONFIGURED = True
+    try:
+        cv2.setUseOptimized(True)
+    except Exception:
+        pass
+    try:
+        if AMR_OPENCV_CPU_THREADS >= 0:
+            cv2.setNumThreads(AMR_OPENCV_CPU_THREADS)
+    except Exception:
+        pass
+
+
+def opencv_cuda_available() -> bool:
+    global _OPENCV_CUDA_CHECKED, _OPENCV_CUDA_AVAILABLE, _OPENCV_CUDA_STATUS
+    if _OPENCV_CUDA_CHECKED:
+        return _OPENCV_CUDA_AVAILABLE
+    _OPENCV_CUDA_CHECKED = True
+    _OPENCV_CUDA_AVAILABLE = False
+
+    if not CV2_AVAILABLE:
+        _OPENCV_CUDA_STATUS = "cv2_unavailable"
+        return False
+    if not AMR_GPU_ENABLED or not AMR_QR_GPU_PREPROCESS_ENABLED:
+        _OPENCV_CUDA_STATUS = "disabled_by_env"
+        return False
+    if not hasattr(cv2, "cuda"):
+        _OPENCV_CUDA_STATUS = "cv2_cuda_module_missing"
+        return False
+
+    try:
+        count = int(cv2.cuda.getCudaEnabledDeviceCount())
+    except Exception as e:
+        _OPENCV_CUDA_STATUS = f"cuda_check_failed:{e}"
+        return False
+
+    if count <= 0:
+        _OPENCV_CUDA_STATUS = "no_cuda_device_or_opencv_built_without_cuda"
+        return False
+
+    try:
+        cv2.cuda.setDevice(max(0, min(AMR_QR_CUDA_DEVICE_ID, count - 1)))
+    except Exception as e:
+        _OPENCV_CUDA_STATUS = f"cuda_set_device_failed:{e}"
+        return False
+
+    _OPENCV_CUDA_AVAILABLE = True
+    _OPENCV_CUDA_STATUS = f"available:{count}_device(s)"
+    return True
+
 
 try:
     import omni.replicator.core as rep
@@ -95,16 +178,44 @@ RACK_PRIM_PATHS = {
 # If target_x/target_y from Control Tower is 0/empty, target_location falls back to this map.
 # Adjust these values to match your factory layout if needed.
 LOCATION_TARGETS = {
-    "sg2_in_01_A": (-6.0, 4.0, 0.0),
-    "sg2_in_01_B": (-6.0, 2.5, 0.0),
-    "sg2_in_02_A": (-3.0, 4.0, 0.0),
-    "sg2_in_02_B": (-3.0, 2.5, 0.0),
-    "sg2_in_03_A": (0.0, 4.0, 0.0),
-    "sg2_in_03_B": (0.0, 2.5, 0.0),
-    "sg2_out_00_A": (6.0, 4.0, 0.0),
-    "sg2_out_00_B": (6.0, 2.5, 0.0),
-    "staging": (8.0, -2.0, 0.0),
-    "warehouse": (0.0, -5.0, 0.0),
+    # 1. 메인 보관 창고 (Main Warehouse Spots)
+    "spot_01": (1.5, 3.0, 0.0),
+    "spot_02": (0.0, 3.0, 0.0),
+    "spot_03": (1.5, 0.0, 0.0),
+    "spot_04": (0.0, 0.0, 0.0),
+    "spot_05": (1.5, -3.0, 0.0),
+    "spot_06": (0.0, -3.0, 0.0),
+    "spot_07": (1.5, -6.0, 0.0),
+    "spot_08": (0.0, -6.0, 0.0),
+    "spot_09": (1.5, -9.0, 0.0),
+    "spot_10": (0.0, -9.0, 0.0),
+
+    # 2. 입고 분류 라인 (Inbound Line A/B)
+    "sg2_in_01_A": (7.5, 1.5, 0.0),
+    "sg2_in_01_B": (6.0, 1.5, 0.0),
+    "sg2_in_02_A": (7.5, -3.0, 0.0),
+    "sg2_in_02_B": (6.0, -3.0, 0.0),
+    "sg2_in_03_A": (7.5, -7.5, 0.0),
+    "sg2_in_03_B": (6.0, -7.5, 0.0),
+
+    # 3. 출고 대기 창고 / 스테이징 구역
+    "stage_01": (4.5, 9.0, 0.0),
+    "stage_02": (4.5, 7.5, 0.0),
+    "stage_03": (7.5, 9.0, 0.0),
+    "stage_04": (7.5, 7.5, 0.0),
+
+    # 4. 출고 포장 라인 (Outbound Line A/B)
+    "sg2_out_00_A": (0.0, 9.0, 0.0),
+    "sg2_out_00_B": (0.0, 7.5, 0.0),
+
+    # 5. AMR 충전 위치
+    "charging_01": (-3.0, -9.0, 0.0),
+    "charging_02": (-3.0, -7.5, 0.0),
+    "charging_03": (-3.0, -6.0, 0.0),
+    "charging_04": (-3.0, -4.5, 0.0),
+    "charging_05": (-3.0, -3.0, 0.0),
+
+    "warehouse": (0.0, 0.0, 0.0), # Fallback default
 }
 
 
@@ -127,7 +238,7 @@ REDIS_STATUS_ENABLED = True
 REDIS_HOST = "192.168.100.20"
 REDIS_PORT = 6379
 REDIS_KEY_PREFIX = "amr:"
-REDIS_PUBLISH_PERIOD_SEC = 0.10  # 10 Hz
+REDIS_PUBLISH_PERIOD_SEC = float(os.environ.get("AMR_REDIS_PUBLISH_PERIOD_SEC", "0.20"))  # optimized default: 5 Hz
 REDIS_CONNECT_TIMEOUT_SEC = 0.08
 REDIS_RECONNECT_PERIOD_SEC = 3.0
 REDIS_BATTERY_DEFAULT = "85.0"
@@ -146,15 +257,35 @@ AMR_CARRY_SPEED_MPS = 0.90
 LIFT_HEIGHT_M = 0.10
 LIFT_DURATION_SEC = 0.45
 PLACE_DURATION_SEC = 0.45
+
+# AMR lift visual behavior:
+# - Floating top moves upward.
+# - Four supports extend in Z while keeping their lower end visually anchored.
+# - Base deck and bolts stay fixed.
+AMR_LIFT_TOP_MOVE_NAMES = {
+    "LiftDeckFloatingTop",
+    "LiftDeckFrontAmberGlow",
+    "LiftDeckRearAmberGlow",
+    "LiftDeckLeftBlueEdge",
+    "LiftDeckRightBlueEdge",
+}
+AMR_LIFT_SUPPORT_NAMES = {
+    "LiftSupport_0",
+    "LiftSupport_1",
+    "LiftSupport_2",
+    "LiftSupport_3",
+}
+AMR_LIFT_BASE_XFORM_CACHE = {}
 ROTATE_DURATION_SEC = 1.20
 ROTATE_WORKSTATION_TARGETS = {"ROTATE_WORKSTATION", "ROTATE", "ROTATE_180", "WORKSTATION_ROTATE", "TURN_WORKSTATION"}
+ROTATE_LOCATION_KEYWORDS = {"ROTATING", "ROTATE_WORKSTATION", "ROTATE_180"}
 ROTATE_WORKSTATION_DELTA_RAD = math.pi
 
 MAX_TIME_HORIZON = 80
 RESERVATION_HORIZON = 35
 GOAL_HOLD_STEPS = 4
 LOOKAHEAD_STEPS = 2
-DECISION_PERIOD_SEC = 0.08
+DECISION_PERIOD_SEC = 0.15
 COMMAND_SCAN_PERIOD_SEC = 0.20
 STATUS_PERIOD_SEC = 0.25
 LOG_PERIOD_SEC = 5.0
@@ -163,11 +294,16 @@ LOG_PERIOD_SEC = 5.0
 # QR camera localization parameters
 # ============================================================
 # This does not change the 8-way planner. It only changes how AMR current_cell is observed.
-QR_CAMERA_LOCALIZATION_ENABLED = True
-QR_CAMERA_SCAN_PERIOD_SEC = 0.35
-QR_CAMERA_RESOLUTION = (640, 480)
-QR_DETECTOR_EVERY_N_SCANS = 1
-QR_LOG_PERIOD_SEC = 3.0
+QR_CAMERA_LOCALIZATION_ENABLED = False
+QR_CAMERA_SCAN_PERIOD_SEC = float(os.environ.get("AMR_QR_CAMERA_SCAN_PERIOD_SEC", "0.45"))
+QR_CAMERA_RESOLUTION = (
+    int(os.environ.get("AMR_QR_CAMERA_WIDTH", "320")),
+    int(os.environ.get("AMR_QR_CAMERA_HEIGHT", "240")),
+)
+QR_DETECTOR_EVERY_N_SCANS = int(os.environ.get("AMR_QR_DETECTOR_EVERY_N_SCANS", "1"))
+QR_LOG_PERIOD_SEC = 5.0
+QR_SCAN_ROUND_ROBIN_ENABLED = True
+QR_SCAN_MAX_AMRS_PER_CYCLE = 1
 # If True, the demo keeps moving even when the QR is temporarily missed.
 # The log will clearly say source=TRANSFORM_FALLBACK.
 QR_ALLOW_TRANSFORM_FALLBACK = False
@@ -190,6 +326,11 @@ RACK_DISABLE_RIGID_BODY_WHILE_CARRIED = True
 # We keep rack physics/collision disabled and use the software planner for obstacles.
 RACK_DISABLE_PHYSICS_AT_STARTUP = True
 RACK_KEEP_COLLISION_DISABLED_AFTER_PLACE = True
+
+# Performance mode:
+# Do not move heavy rack USD subtree every frame while carried.
+# The rack is hidden during carry and teleported once at the final target.
+LIGHTWEIGHT_CARRY_MODE = False
 
 # When an AMR passes through or very near a rack/workstation, diagonal movement is forbidden.
 # This represents the 4-leg workstation constraint: entering/exiting under the workstation must be done
@@ -249,6 +390,9 @@ FRONT_REFERENCE_KEYWORDS = [
 
 # Camera prim search keywords under each AMR. Keep these broad because the USD naming may vary.
 QR_CAMERA_NAME_KEYWORDS = ["downward", "qr", "camera"]
+
+# Keep the same QR detection algorithm. This only changes where RGB->BGR conversion runs.
+QR_PREPROCESS_BACKEND = "CUDA_RGB2BGR_IF_AVAILABLE"
 
 RANDOM_DRIVE_ENABLED = False
 RANDOM_GOAL_MIN_RADIUS_CELL = 4
@@ -560,6 +704,17 @@ def set_collision_enabled_subtree(root_prim, enabled: bool):
         print(f"RACK COLLISION LOCK WARNING | {root_prim.GetPath()} enabled={enabled} err={e}")
 
 
+def set_prim_visibility(prim, visible: bool):
+    try:
+        imageable = UsdGeom.Imageable(prim)
+        if visible:
+            imageable.MakeVisible()
+        else:
+            imageable.MakeInvisible()
+    except Exception as e:
+        print(f"VISIBILITY WARNING | {prim.GetPath()} visible={visible} err={e}")
+
+
 def hard_disable_physics_subtree(root_prim, disable_collision: bool = True):
     """Make an imported rack purely script-controlled.
 
@@ -655,6 +810,99 @@ def set_object_center_xy(obj, x: float, y: float, z: float):
     set_translate(obj.prim, float(x), float(y), float(z))
 
 
+def _get_or_add_translate_op(prim):
+    xf = UsdGeom.Xformable(prim)
+    for op in xf.GetOrderedXformOps():
+        if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+            return op
+    return xf.AddTranslateOp()
+
+
+def _get_or_add_scale_op(prim):
+    xf = UsdGeom.Xformable(prim)
+    for op in xf.GetOrderedXformOps():
+        if op.GetOpType() == UsdGeom.XformOp.TypeScale:
+            return op
+    return xf.AddScaleOp()
+
+
+AMR_LIFT_PRIMS_CACHE = {}
+
+def set_amr_lift_height(amr, height_m: float):
+    """
+    Visual lift animation.
+
+    LiftDeckFloatingTop moves upward by height_m.
+    LiftSupport_0~3 extend upward:
+      - lower side stays visually fixed
+      - upper side follows the floating top
+    """
+    h = max(0.0, float(height_m))
+    moved_top = 0
+    stretched_support = 0
+
+    amr_path = str(amr.obj.prim.GetPath())
+    if amr_path not in AMR_LIFT_PRIMS_CACHE:
+        prims = []
+        for prim in Usd.PrimRange(amr.obj.prim):
+            if prim.IsValid() and (prim.GetName() in AMR_LIFT_TOP_MOVE_NAMES or prim.GetName() in AMR_LIFT_SUPPORT_NAMES):
+                prims.append(prim)
+        AMR_LIFT_PRIMS_CACHE[amr_path] = prims
+
+    for prim in AMR_LIFT_PRIMS_CACHE[amr_path]:
+        if not prim.IsValid():
+            continue
+
+        name = prim.GetName()
+        path = str(prim.GetPath())
+
+        try:
+            translate_op = _get_or_add_translate_op(prim)
+            old_t = translate_op.Get()
+            if old_t is None:
+                old_t = Gf.Vec3d(0.0, 0.0, 0.0)
+
+            scale_op = None
+            old_s = None
+            if name in AMR_LIFT_SUPPORT_NAMES:
+                scale_op = _get_or_add_scale_op(prim)
+                old_s = scale_op.Get()
+                if old_s is None:
+                    old_s = Gf.Vec3f(1.0, 1.0, 1.0)
+
+            if path not in AMR_LIFT_BASE_XFORM_CACHE:
+                AMR_LIFT_BASE_XFORM_CACHE[path] = {
+                    "translate": Gf.Vec3d(old_t[0], old_t[1], old_t[2]),
+                    "scale": Gf.Vec3f(old_s[0], old_s[1], old_s[2]) if old_s is not None else None,
+                }
+
+            base = AMR_LIFT_BASE_XFORM_CACHE[path]
+            base_t = base["translate"]
+
+            if name in AMR_LIFT_TOP_MOVE_NAMES:
+                translate_op.Set(Gf.Vec3d(base_t[0], base_t[1], base_t[2] + h))
+                moved_top += 1
+
+            elif name in AMR_LIFT_SUPPORT_NAMES:
+                base_s = base["scale"]
+                if base_s is None:
+                    base_s = Gf.Vec3f(1.0, 1.0, 1.0)
+
+                # USD Cube default visual height is usually 2 * scale_z.
+                # To keep the bottom fixed and move the top up by h:
+                #   translate_z += h / 2
+                #   scale_z     += h / 2
+                translate_op.Set(Gf.Vec3d(base_t[0], base_t[1], base_t[2] + h * 0.5))
+                scale_op.Set(Gf.Vec3f(base_s[0], base_s[1], base_s[2] + h * 0.5))
+                stretched_support += 1
+
+        except Exception as e:
+            print(f"AMR LIFT VISUAL WARNING | {amr.name} {path} height={h:.3f} err={e}")
+
+    return moved_top, stretched_support
+
+
+
 def qr_cell_to_world(cell: GridCell) -> Tuple[float, float]:
     mapped = GLOBAL_QR_CELL_WORLD_MAP.get(cell)
     if mapped is not None:
@@ -714,7 +962,7 @@ def set_amr_yaw_to_movement(amr) -> bool:
     desired_front_yaw = normalize_angle_rad(desired_front_yaw - AMR_VISUAL_HEADING_CLOCKWISE_OFFSET_RAD)
 
     current_root_yaw = get_root_yaw_rad(amr.obj.prim)
-    current_front_yaw = get_amr_visual_front_yaw_rad(amr)
+    current_front_yaw = None  # performance: avoid per-frame BBoxCache calculation
 
     if current_front_yaw is not None:
         # Dynamic visual correction:
@@ -871,9 +1119,12 @@ class QRCameraReader:
         self.last_qr_id = ""
         self.last_error = ""
         self.scan_count = 0
+        self.cuda_preprocess_enabled = False
+        self.cuda_disabled_reason = ""
         self.setup()
 
     def setup(self):
+        configure_opencv_runtime()
         if not CV2_AVAILABLE:
             self.last_error = f"cv2 unavailable: {_CV2_IMPORT_ERROR}"
             return
@@ -881,11 +1132,14 @@ class QRCameraReader:
             self.last_error = f"omni.replicator.core unavailable: {_REPLICATOR_IMPORT_ERROR}"
             return
         try:
+            self.cuda_preprocess_enabled = opencv_cuda_available()
+            self.cuda_disabled_reason = _OPENCV_CUDA_STATUS
             self.render_product = rep.create.render_product(self.camera_path, QR_CAMERA_RESOLUTION)
             self.annotator = rep.AnnotatorRegistry.get_annotator("rgb")
             self.annotator.attach([self.render_product])
             self.ready = True
-            print(f"QR CAMERA READY | {self.amr_name} camera={self.camera_path} res={QR_CAMERA_RESOLUTION}")
+            backend = "opencv_cuda_rgb2bgr" if self.cuda_preprocess_enabled else f"opencv_cpu_rgb2bgr({_OPENCV_CUDA_STATUS})"
+            print(f"QR CAMERA READY | {self.amr_name} camera={self.camera_path} res={QR_CAMERA_RESOLUTION} preprocess={backend} cv_threads={AMR_OPENCV_CPU_THREADS}")
         except Exception as e:
             self.last_error = str(e)
             print(f"QR CAMERA SETUP FAILED | {self.amr_name} camera={self.camera_path} err={e}")
@@ -901,17 +1155,36 @@ class QRCameraReader:
                 data = data.get("data", None)
             if data is None:
                 return None
-            arr = np.array(data)
+            arr = np.asarray(data)
             if arr.size == 0:
                 return None
             if arr.ndim == 3 and arr.shape[2] == 4:
                 arr = arr[:, :, :3]
             if arr.dtype != np.uint8:
-                arr = arr.astype(np.uint8)
+                arr = arr.astype(np.uint8, copy=False)
+            if not arr.flags.c_contiguous:
+                arr = np.ascontiguousarray(arr)
             return arr
         except Exception as e:
             self.last_error = str(e)
             return None
+
+    def rgb_to_bgr_for_qr(self, frame):
+        # QRCodeDetector is still the same detector. Only RGB->BGR conversion is moved
+        # to cv2.cuda when the local OpenCV build supports CUDA.
+        if self.cuda_preprocess_enabled:
+            try:
+                gpu_frame = cv2.cuda_GpuMat()
+                gpu_frame.upload(frame)
+                gpu_bgr = cv2.cuda.cvtColor(gpu_frame, cv2.COLOR_RGB2BGR)
+                return gpu_bgr.download(), "CUDA"
+            except Exception as e:
+                self.cuda_preprocess_enabled = False
+                self.cuda_disabled_reason = f"cuda_runtime_failed:{e}"
+                self.last_error = self.cuda_disabled_reason
+                print(f"QR CUDA PREPROCESS DISABLED | {self.amr_name} reason={self.cuda_disabled_reason}")
+
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), "CPU"
 
     def decode(self) -> Optional[str]:
         self.scan_count += 1
@@ -923,8 +1196,7 @@ class QRCameraReader:
             return None
 
         try:
-            # QRCodeDetector expects BGR or grayscale; RGB generally works, but BGR is safer.
-            bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            bgr, _backend = self.rgb_to_bgr_for_qr(frame)
 
             decoded = ""
             if hasattr(self.detector, "detectAndDecodeMulti"):
@@ -1279,7 +1551,9 @@ class ExistingStageTrue8Controller:
         self.last_decision_at = 0.0
         self.last_command_scan_at = 0.0
         self.last_qr_scan_at = 0.0
+        self.qr_round_robin_index = 0
         self.last_log_at = 0.0
+        self.redis_last_payloads: Dict[str, Dict[str, str]] = {}
         self.collision_counts = {
             "CELL": 0,
             "EDGE_SWAP": 0,
@@ -1299,11 +1573,12 @@ class ExistingStageTrue8Controller:
             name="existing_stage_true8_amr_controller",
         )
 
-        print("\nExistingStageTrue8Controller V17 started")
+        print("\nExistingStageTrue8Controller V19-GPU started")
+        print(f"OpenCV CUDA status: {_OPENCV_CUDA_STATUS}; GPU enabled={AMR_GPU_ENABLED}; QR GPU preprocess={AMR_QR_GPU_PREPROCESS_ENABLED}")
         print(f"AMRs loaded: {list(self.amrs.keys())}")
         print(f"Racks loaded: {list(self.racks.keys())}")
         print(f"Bridge queue: {BRIDGE_QUEUE_DIR}")
-        print("Press Play. Control Tower commands will move existing /World AMR/RACK prims. V17: ManageWorkstation move/rotate + Redis status + no workstation QR scan.\n")
+        print("Press Play. Control Tower commands will move existing /World AMR/RACK prims. V19: optimized QR camera 320x240 + round-robin decode + Redis 5Hz + V18 compatibility.\n")
         if REDIS_STATUS_ENABLED:
             print(f"REDIS STATUS TARGET | {REDIS_HOST}:{REDIS_PORT} key_prefix={REDIS_KEY_PREFIX} period={REDIS_PUBLISH_PERIOD_SEC}s")
 
@@ -1368,7 +1643,7 @@ class ExistingStageTrue8Controller:
 
         GLOBAL_VALID_QR_CELLS = set(self.valid_qr_cells)
         GLOBAL_QR_CELL_WORLD_MAP = dict(self.qr_cell_world_map)
-        print(f"QR MAP LOADED V17 | ids={len(self.qr_prim_map)} valid_qr_cells={len(self.valid_qr_cells)} exact_centers={len(self.qr_cell_world_map)}")
+        print(f"QR MAP LOADED V19 | ids={len(self.qr_prim_map)} valid_qr_cells={len(self.valid_qr_cells)} exact_centers={len(self.qr_cell_world_map)}")
         if QR_ONLY_NAVIGATION and not self.valid_qr_cells:
             print("QR MAP WARNING | QR_ONLY_NAVIGATION is enabled but no QR cells were loaded. Planner will fall back to unrestricted grid.")
         if not CV2_AVAILABLE:
@@ -1548,7 +1823,23 @@ class ExistingStageTrue8Controller:
         return True
 
     def update_qr_localization(self, now: float):
-        for amr in self.amrs.values():
+        amr_list = list(self.amrs.values())
+        if not amr_list:
+            return
+
+        # FPS optimization: do not decode all five camera render products on every QR cycle.
+        # Each AMR keeps its last valid QR/cell; only a small round-robin subset is decoded per cycle.
+        # This keeps QR-based navigation while reducing camera readback + OpenCV workload.
+        if QR_SCAN_ROUND_ROBIN_ENABLED:
+            count = max(1, min(int(QR_SCAN_MAX_AMRS_PER_CYCLE), len(amr_list)))
+            selected = []
+            for _ in range(count):
+                selected.append(amr_list[self.qr_round_robin_index % len(amr_list)])
+                self.qr_round_robin_index += 1
+        else:
+            selected = amr_list
+
+        for amr in selected:
             # Avoid changing discrete planner cell while interpolating between cells.
             if amr.is_moving():
                 continue
@@ -1847,7 +2138,7 @@ class ExistingStageTrue8Controller:
             self.last_decision_at = now
 
         self.update_motion(dt)
-        self.detect_collisions()
+        # self.detect_collisions()  # performance: disabled per-frame collision logging
         self.publish_redis_status_if_due(now)
 
         if now - self.last_log_at >= LOG_PERIOD_SEC:
@@ -1882,6 +2173,7 @@ class ExistingStageTrue8Controller:
         self.last_redis_publish_at = now
 
         ok_count = 0
+        skipped_count = 0
         for amr in self.amrs.values():
             mapping = {
                 "state": self.amr_state_for_redis(amr),
@@ -1891,15 +2183,23 @@ class ExistingStageTrue8Controller:
                 "battery": REDIS_BATTERY_DEFAULT,
             }
             key = f"{REDIS_KEY_PREFIX}{amr.name}"
+
+            # Redis optimization: if nothing changed, do not write the same hash every cycle.
+            # A full refresh is still forced at the reduced publish period by status changes.
+            if self.redis_last_payloads.get(key) == mapping:
+                skipped_count += 1
+                continue
+
             if self.redis_client.hset(key, mapping):
+                self.redis_last_payloads[key] = dict(mapping)
                 ok_count += 1
 
-        if ok_count == 0 and now - self.last_redis_log_at >= REDIS_RECONNECT_PERIOD_SEC:
+        if ok_count == 0 and skipped_count == 0 and now - self.last_redis_log_at >= REDIS_RECONNECT_PERIOD_SEC:
             self.last_redis_log_at = now
             print(f"REDIS STATUS WAITING | {REDIS_HOST}:{REDIS_PORT} err={self.redis_client.last_error}")
-        elif ok_count > 0 and now - self.last_redis_log_at >= 10.0:
+        elif ok_count > 0 and now - self.last_redis_log_at >= 15.0:
             self.last_redis_log_at = now
-            print(f"REDIS STATUS SENT | amrs={ok_count} host={REDIS_HOST}:{REDIS_PORT}")
+            print(f"REDIS STATUS SENT | changed_amrs={ok_count} skipped_unchanged={skipped_count} host={REDIS_HOST}:{REDIS_PORT}")
 
     # --------------------------------------------------------
     # Command queue
@@ -1961,7 +2261,9 @@ class ExistingStageTrue8Controller:
             print(f"COMMAND REJECTED | unknown workstation_id={workstation_id}")
             return None
 
+        start_location = str(data.get("start_location", ""))
         target_location = str(data.get("target_location", ""))
+        start_location_key = start_location.strip().upper()
         target_location_key = target_location.strip().upper()
         tx = data.get("target_x", None)
         ty = data.get("target_y", None)
@@ -1971,22 +2273,26 @@ class ExistingStageTrue8Controller:
         if rack is None:
             return None
 
-        action_mode = "ROTATE_WORKSTATION" if target_location_key in ROTATE_WORKSTATION_TARGETS else "MOVE_WORKSTATION"
+        rotate_by_target = target_location_key in ROTATE_WORKSTATION_TARGETS
+        rotate_by_location = any(keyword in start_location_key for keyword in ROTATE_LOCATION_KEYWORDS) or any(keyword in target_location_key for keyword in ROTATE_LOCATION_KEYWORDS)
+        action_mode = "ROTATE_WORKSTATION" if (rotate_by_target or rotate_by_location) else "MOVE_WORKSTATION"
 
         if action_mode == "ROTATE_WORKSTATION":
             target_xy = get_object_center_xy(rack.obj)
             target_cell = rack.cell
             rotate_start_yaw = get_root_yaw_rad(rack.obj.prim)
             rotate_target_yaw = normalize_angle_rad(rotate_start_yaw + ROTATE_WORKSTATION_DELTA_RAD)
+            reason = "target_location" if rotate_by_target else "ROTATING_LOCATION"
             print(
-                f"ROTATE_WORKSTATION COMMAND | command={command_id} "
+                f"ROTATE_WORKSTATION COMMAND | command={command_id} reason={reason} "
+                f"start_location={start_location} target_location={target_location} "
                 f"rack={rack_key} cell={target_cell} start_yaw={rotate_start_yaw:.3f} target_yaw={rotate_target_yaw:.3f}"
             )
         else:
             if tx is not None and ty is not None and (abs(float(tx)) > 1e-6 or abs(float(ty)) > 1e-6):
                 target_xy = (float(tx), float(ty))
             else:
-                loc = LOCATION_TARGETS.get(target_location, LOCATION_TARGETS.get("warehouse", (0.0, -5.0, 0.0)))
+                loc = LOCATION_TARGETS.get(target_location, LOCATION_TARGETS.get("warehouse", (0.0, 0.0, 0.0)))
                 target_xy = (float(loc[0]), float(loc[1]))
                 yaw = float(loc[2])
 
@@ -2095,14 +2401,22 @@ class ExistingStageTrue8Controller:
             elif task.phase == "LIFTING":
                 alpha = min((now - task.phase_start) / LIFT_DURATION_SEC, 1.0)
                 ax, ay = get_object_center_xy(amr.obj)
+                set_amr_lift_height(amr, LIFT_HEIGHT_M * alpha)
 
                 if RACK_DISABLE_RIGID_BODY_WHILE_CARRIED and not rack.physics_locked:
-                    hard_disable_physics_subtree(rack.obj.prim, disable_collision=True)
                     rack.physics_locked = True
-                    print(f"RACK HARD ATTACHED | {rack.key} physics/collision removed for carry")
+                    print(f"RACK HARD ATTACHED | {rack.key} physics/collision already disabled")
 
-                # Hard root lock: rack root follows AMR root center exactly during lift.
-                set_object_center_xy(rack.obj, ax, ay, rack.obj.base_z + LIFT_HEIGHT_M * alpha)
+                # Performance: avoid moving heavy rack USD subtree every frame while lifting.
+                if LIGHTWEIGHT_CARRY_MODE:
+                    if alpha <= 0.05:
+                        set_prim_visibility(rack.obj.prim, False)
+                    # Do not move rack root here.
+                    pass
+                else:
+                    # Hard root lock: rack root follows AMR root center exactly during lift.
+                    set_object_center_xy(rack.obj, ax, ay, rack.obj.base_z + LIFT_HEIGHT_M * alpha)
+
                 if alpha >= 1.0:
                     task.rack_attach_dx = 0.0
                     task.rack_attach_dy = 0.0
@@ -2133,10 +2447,12 @@ class ExistingStageTrue8Controller:
 
             elif task.phase == "ROTATING":
                 alpha = min((now - task.phase_start) / ROTATE_DURATION_SEC, 1.0)
-                ax, ay = get_object_center_xy(amr.obj)
-                set_object_center_xy(rack.obj, ax, ay, rack.obj.base_z + LIFT_HEIGHT_M)
-                yaw_now = normalize_angle_rad(task.rotate_start_yaw + ROTATE_WORKSTATION_DELTA_RAD * alpha)
-                set_yaw_if_possible(rack.obj.prim, yaw_now)
+                set_amr_lift_height(amr, LIFT_HEIGHT_M)  # keep floating top/supports up during rotation
+                if not LIGHTWEIGHT_CARRY_MODE:
+                    ax, ay = get_object_center_xy(amr.obj)
+                    set_object_center_xy(rack.obj, ax, ay, rack.obj.base_z + LIFT_HEIGHT_M)
+                    yaw_now = normalize_angle_rad(task.rotate_start_yaw + ROTATE_WORKSTATION_DELTA_RAD * alpha)
+                    set_yaw_if_possible(rack.obj.prim, yaw_now)
                 if alpha >= 1.0:
                     set_yaw_if_possible(rack.obj.prim, task.rotate_target_yaw)
                     task.phase = "PLACING"
@@ -2153,21 +2469,25 @@ class ExistingStageTrue8Controller:
 
             elif task.phase == "PLACING":
                 alpha = min((now - task.phase_start) / PLACE_DURATION_SEC, 1.0)
-                ax, ay = get_object_center_xy(amr.obj)
-                set_object_center_xy(rack.obj, ax, ay, rack.obj.base_z + LIFT_HEIGHT_M * (1.0 - alpha))
+                if not LIGHTWEIGHT_CARRY_MODE:
+                    ax, ay = get_object_center_xy(amr.obj)
+                    set_object_center_xy(rack.obj, ax, ay, rack.obj.base_z + LIFT_HEIGHT_M * (1.0 - alpha))
                 if alpha >= 1.0:
                     set_object_center_xy(rack.obj, task.target_xy[0], task.target_xy[1], rack.obj.base_z)
+                    if LIGHTWEIGHT_CARRY_MODE:
+                        set_prim_visibility(rack.obj.prim, True)
                     if abs(task.target_yaw) > 1e-6:
                         set_yaw_if_possible(rack.obj.prim, task.target_yaw)
                     rack.cell = task.target_cell
                     rack.carried_by = None
                     rack.assigned = False
+                    set_amr_lift_height(amr, 0.0)  # reset floating top/supports after placing
                     # Keep rack physics disabled after placement for demo stability.
                     # The planner still treats placed racks as software obstacles.
                     if not RACK_KEEP_COLLISION_DISABLED_AFTER_PLACE:
                         set_collision_enabled_subtree(rack.obj.prim, True)
                     else:
-                        hard_disable_physics_subtree(rack.obj.prim, disable_collision=True)
+                        pass  # performance: avoid repeated hard_disable_physics_subtree after place
                     amr.carrying_rack = None
                     amr.task_id = None
                     amr.state = "IDLE"
@@ -2574,9 +2894,9 @@ class ExistingStageTrue8Controller:
                     # Hard transform lock: rack root follows AMR root every frame.
                     # Re-disable physics defensively because Live/PhysX can recompose APIs from referenced layers.
                     if not rack.physics_locked:
-                        hard_disable_physics_subtree(rack.obj.prim, disable_collision=True)
                         rack.physics_locked = True
                     set_object_center_xy(rack.obj, x, y, rack.obj.base_z + LIFT_HEIGHT_M)
+                    set_amr_lift_height(amr, LIFT_HEIGHT_M)  # keep floating top/supports up while carrying
                     rack.cell = amr.move_to if alpha >= 1.0 else amr.cell
 
             if alpha >= 1.0:

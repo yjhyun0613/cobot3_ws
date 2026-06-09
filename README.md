@@ -162,24 +162,16 @@ cd ~/cobot3_ws
 
 ---
 
-## 🎨 5. NVIDIA Isaac Sim 3D 시뮬레이터 연동
+## 🎨 5. NVIDIA Isaac Sim 3D 시뮬레이터 연동 (분산 가동 모드)
 
-관제 시스템의 모든 물류 이송 상태를 NVIDIA Isaac Sim 3D 가상 창고 환경에서 실시간으로 렌더링할 수 있습니다.
+본 관제 시스템은 고성능 물리 시뮬레이션 환경(Isaac Sim)과 스케줄러/데이터베이스 서버의 리소스를 분리하기 위해 **2대 노트북 분산 가동 환경**으로 설계 및 고도화되었습니다. 내 PC에서는 시뮬레이션이나 USD 조작 스크립트를 일체 실행하지 않고, 오직 관제탑과 데이터베이스/대시보드만 가동합니다.
 
-* **맵 파일**: `src/cobot3/resource/floor_with_con,storage.usd` (바닥 QR, 컨베이어, 스토리지, 작업대 선반 기설치)
-* **실행 방법** (관제탑 + 로봇 시뮬레이터가 구동 중인 상태에서 별도 터미널):
-  * **일반 동기화 모드 (단순 3D 뷰어 모니터링 시)**:
-    ```bash
-    cd ~/cobot3_ws
-    isaac-python scratch/isaac_amr_connector.py
-    ```
-  * **물리 시뮬레이션 모드 (실제 AMR 컨트롤러가 랙을 물리적으로 들어올리는 연동 시)**:
-    * PhysX 물리 연산과 커넥터의 작업대 강제 위치 동기화 간의 충돌을 방지하기 위해 `--only-amr` (또는 `-o`) 옵션을 추가하여 실행합니다.
-    ```bash
-    cd ~/cobot3_ws
-    isaac-python scratch/isaac_amr_connector.py --only-amr
-    ```
-* Isaac Sim 3D 뷰어에서 5대의 AMR과 10대의 이동식 작업대가 Redis/PostgreSQL 데이터와 30Hz로 동기화되어 실시간 주행 및 리프트 동작이 렌더링됩니다.
+* **상대방 PC (아이작 심 & AMR 실제 제어 머신)**:
+  * 물리 맵 파일(`floor_with_con,storage.usd`)과 실시간 AMR 제어 컨트롤러(`amr_live_existing_stage_true8_qr_camera_controller_gpu.py`), Bridge 노드(`fleet_manager_bridge_node_gpu.py`)를 실행합니다.
+  * 실행 및 설정 상세 지침은 [src/amr/amr.md](file:///home/rokey/cobot3_ws/src/amr/amr.md)를 참고하십시오.
+* **내 PC (관제 및 DB 머신)**:
+  * 로컬 시뮬레이션 및 USD 검사/생성/커넥터 스크립트(`isaac_amr_connector.py`, `run_full_simulation_robot.py` 등)는 소스 코드 다이어트 및 리소스 낭비 방지를 위해 **완전히 삭제**되었습니다.
+  * 오직 Docker DB, Redis, 관제탑 노드, FastAPI 대시보드 서버만 구동하며, 상대방 PC와 CycloneDDS 통신망 및 Redis 커넥션(`192.168.100.20:6379`)을 통해 실시간으로 명령을 주고받고 로봇 상태 정보를 업데이트합니다.
 
 ---
 

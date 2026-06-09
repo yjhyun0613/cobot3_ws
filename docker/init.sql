@@ -67,18 +67,30 @@ INSERT INTO robots (robot_id, robot_type, qr_id) VALUES
 ('sg2_in_03', 'MANIPULATOR', 'ROBOT_sg2_in_03'),
 ('sg2_out_00', 'MANIPULATOR', 'ROBOT_sg2_out_00');
 
--- 작업대 등록 (WS01 ~ WS10)
+-- -- 작업대 등록 (WS01 ~ WS10)
+-- INSERT INTO workstations (workstation_id, current_location, qr_id) VALUES
+-- ('WS01', 'spot_01', 'WORKSTATION_WS01'),
+-- ('WS02', 'spot_02', 'WORKSTATION_WS02'),
+-- ('WS03', 'spot_03', 'WORKSTATION_WS03'),
+-- ('WS04', 'spot_04', 'WORKSTATION_WS04'),
+-- ('WS05', 'spot_05', 'WORKSTATION_WS05'),
+-- ('WS06', 'spot_06', 'WORKSTATION_WS06'),
+-- ('WS07', 'spot_07', 'WORKSTATION_WS07'),
+-- ('WS08', 'spot_08', 'WORKSTATION_WS08'),
+-- ('WS09', 'spot_09', 'WORKSTATION_WS09'),
+-- ('WS10', 'spot_10', 'WORKSTATION_WS10');
+
 INSERT INTO workstations (workstation_id, current_location, qr_id) VALUES
-('WS01', 'spot_01', 'WORKSTATION_WS01'),
-('WS02', 'spot_02', 'WORKSTATION_WS02'),
-('WS03', 'spot_03', 'WORKSTATION_WS03'),
-('WS04', 'spot_04', 'WORKSTATION_WS04'),
+('WS01', 'spot_09', 'WORKSTATION_WS01'),
+('WS02', 'spot_10', 'WORKSTATION_WS02'),
+('WS03', 'spot_07', 'WORKSTATION_WS03'),
+('WS04', 'spot_08', 'WORKSTATION_WS04'),
 ('WS05', 'spot_05', 'WORKSTATION_WS05'),
 ('WS06', 'spot_06', 'WORKSTATION_WS06'),
-('WS07', 'spot_07', 'WORKSTATION_WS07'),
-('WS08', 'spot_08', 'WORKSTATION_WS08'),
-('WS09', 'spot_09', 'WORKSTATION_WS09'),
-('WS10', 'spot_10', 'WORKSTATION_WS10');
+('WS07', 'spot_03', 'WORKSTATION_WS07'),
+('WS08', 'spot_04', 'WORKSTATION_WS08'),
+('WS09', 'spot_01', 'WORKSTATION_WS09'),
+('WS10', 'spot_02', 'WORKSTATION_WS10');
 
 
 -- 창고 스팟 등록 및 작업대 주차 (spot_01 ~ spot_10)

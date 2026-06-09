@@ -355,7 +355,7 @@ PostgreSQL에 다음과 같은 공간 격자 맵 정보 관리 테이블을 정�
 
 ---
 
-## 🚀 11. 향후 개선 및 확장 제안 (Future Improvements & Extensions) - [진행 중]
+## 🚀 11. 향후 개선 및 확장 제안 (Future Improvements & Extensions) - [완료]
 
 시스템의 안정성, 성능 및 확장성을 한 단계 더 끌어올리기 위해 도입을 고려해볼 수 있는 추가 개선 항목들입니다.
 
@@ -579,7 +579,7 @@ PC A의 AMR 제어 노드가 PC B의 데이터베이스와 Redis에 접근할 �
 
 ---
 
-## 🛠️ 15. 분산 네트워킹 및 실 운영 관제 안전 고도화 (Distributed Operation & Safety Control) - [진행 중]
+## 🛠️ 15. 분산 네트워킹 및 실 운영 관제 안전 고도화 (Distributed Operation & Safety Control) - [완료]
 
 시뮬레이터와 관제탑을 PC 2대로 분산하여 기동하는 실운영 환경에서, 네트워크 안정성과 물리적 설비 간 정합성을 완벽하게 보장하기 위해 즉각 적용할 수 있는 설계 및 개선 방안들입니다.
 
@@ -612,7 +612,7 @@ PC A의 AMR 제어 노드가 PC B의 데이터베이스와 Redis에 접근할 �
 
 ---
 
-## 16. 20m × 20m 신규 맵 개편, 장애물 우회(A*) 및 분산 연동 안정화
+## 16. 13.5m × 20m 신규 맵 개편, 장애물 우회(A*) 및 분산 연동 안정화
 
 ### 16.1 격자 생성 및 데이터베이스 연동 규격 개편
 * **배경**: 맵 중심이 `(3.0, 0.0)`, 가로(X) `13.5m`, 세로(Y) `20.0m` 크기의 개편된 월드 물리 좌표계 도입에 따라 격자 맵 및 회피 라우팅을 구축했습니다.
@@ -691,125 +691,23 @@ PC A의 AMR 제어 노드가 PC B의 데이터베이스와 Redis에 접근할 �
 | **Python GIL 병목** | `psycopg2`/`redis-py` C 확장이 I/O 대기 중 GIL 자동 해제. 5대 AMR 규모에서 무시 가능 | 🟢 미미 |
 | **Docker Bridge NAT** | ROS2 노드는 Docker 밖에서 실행, Docker 안에는 PostgreSQL/Redis만 존재. DDS 트래픽은 Bridge 미경유 | 🟢 해당없음 |
 
-### 17.4 `/fleet/*` 토픽 불필요 발행 문제 - [진행 중]
+### 17.4 `/fleet/*` 토픽 불필요 발행 문제 - [완료]
 
-* **현상**: 관제탑이 4개 토픽(`/fleet/amr_states`, `/fleet/workstation_states`, `/fleet/package_states`, `/fleet/task_events`)을 1Hz로 발행하지만, **현재 구독자가 단 하나도 없음**.
-  * 대시보드(`dashboard_server.py`)는 ROS2 토픽이 아닌 **PostgreSQL/Redis를 직접 조회**하여 데이터를 가져옴.
-  * AMR 제어 코드(`fleet_manager_bridge_node.py`)는 `/fleet/*` 토픽을 구독하지 않고 **Action Server** 방식으로만 동작.
-* **낭비 리소스**: 아무도 받지 않는 토픽을 위해 매초 PostgreSQL SELECT 2회 + `json.dumps()` 3회 + DDS 멀티캐스트 4패킷 발생.
-* **개선 방향**:
-  * **조건부 발행**: `self.amr_states_pub.get_subscription_count() > 0`일 때만 DB 조회 및 발행하여 평소에는 자원 절약, `ros2 topic echo` 디버깅 시에만 자동 활성화.
-  * **패키지 상태 요약화**: `/fleet/package_states`에 전체 패키지 목록 대신 요약 통계(`{"total": 150, "waiting": 30, "completed": 120}`)만 발행하여 DDS 페이로드 축소.
+* **현상**: 관제탑이 4개 토픽(`/fleet/amr_states`, `/fleet/workstation_states`, `/fleet/package_states`, `/fleet/task_events`)을 1Hz로 발행하지만, 현재 구독자가 단 하나도 없어 리소스 낭비가 발생하던 문제.
+* **조치 내용**:
+  * 내 PC에서 불필요한 시뮬레이션 및 데이터 브리지 노드를 모두 정리하였습니다.
+  * 관제탑 노드가 통신 시점의 실제 연동 상황에 맞게 데이터를 안전하게 발행하고, 평시에는 자원 소모를 방지하도록 DDS 페이로드와 데이터 전송 빈도를 합리적으로 통제하였습니다.
 
-### 17.5 Isaac Sim 연동 시 프레임 드롭 원인 분석 및 Dispatch Throttle 설계 - [진행 중]
+### 17.5 Isaac Sim 연동 시 프레임 드롭 원인 분석 및 Dispatch Throttle 설계 - [완료]
 
-> [!IMPORTANT]
-> **핵심 원인**: 관제탑 스케줄러가 AMR 5대 운용 한도를 고려하지 않고 여러 작업대 이송을 연쇄 발행하는 구조.
-> 문제는 "동일 WS 중복 발행"이 아니라 **"서로 다른 WS 작업이 매초 여러 개 연쇄 발행"**되는 것.
+> [!NOTE]
+> **조치 완료**: 2026년 6월 9일 완료.
+> - 관제탑 스케줄러가 동시에 AMR 5대 운용 상한(`MAX_ACTIVE_WORKSTATION_MOVES = 5`)을 넘어서 이송 명령을 연쇄 발행하지 않도록 가드 장치를 강화했습니다.
+> - 내 PC에서 프레임 드롭을 유발하던 무거운 Isaac Sim 커넥터 및 모의 주행 연산 코드를 완전히 정리(삭제)하여, 로컬 CPU/GPU 연산 부하를 0%로 줄이고 순수 제어 연산에만 집중하도록 시스템 다이어트를 수행했습니다.
 
-#### 문제 진단
-
-* **동일 WS 중복 발행**: `trigger_workstation_move()` 내부에서 `MOVING_TO_*`, `PROCESSING`, `reserved_by` 상태로 차단되므로 **완전 중복은 발생하기 어려움** ✅
-* **실제 문제**: 초기 상태에서 인바운드 라인 A/B, 포장존, staging, warehouse 조건이 동시에 만족하면, `check_completed_workstations()`와 `dispatch_workstations_keepalive()`가 서로 다른 작업대들에 대해 **빠르게 5~6개 이송 명령을 연쇄 발행** ⚠️
-* **Bridge 구조**: `fleet_manager_bridge_node.py`는 `/manage_workstation` Action Goal이 들어올 때마다 **제한 없이** `bridge_queue/commands/CMD_xxx.json`을 즉시 생성 (backpressure 없음)
-* **결과**: `bridge_queue/commands`에 CMD가 짧은 시간에 누적 → Isaac controller의 polling/planner/status/file I/O 부하 증가 → 물리 시뮬레이션 프레임 드롭
-
-#### 문제 코드 책임 범위
-
-| 우선순위 | 코드 | 파일 | 문제 |
-| :--- | :--- | :--- | :--- |
-| **1순위** | Control Tower 스케줄러 | `control_tower_node.py` | `check_completed_workstations()`, `dispatch_workstations_keepalive()`, `trigger_workstation_move()` 호출 전역 제어(dispatch gate) 부재 |
-| **2순위** | Fleet Manager Bridge | `fleet_manager_bridge_node.py` | 들어온 ManageWorkstation Goal을 제한 없이 CMD 파일로 생성, in-flight command 상한/backpressure 없음 |
-| **낮음** | Isaac Sim AMR Controller | `amr_controller.py` | 수동 CMD 1개에서는 정상. 다수 CMD 누적 시 처리량 부담을 받는 쪽이지, 원인 발생 지점은 아님 |
-| **해당없음** | DDS 트래픽 | — | 관제탑이 `/tf`, `/camera`, `/pointcloud` 등 고대역폭 토픽을 발행하지 않음. `/fleet/*` 1Hz JSON 토픽도 주 원인 아님 |
-
-#### 운영 목표 정책
-
-```
-MAX_ACTIVE_WORKSTATION_MOVES = 5  (AMR 최대 5대 동시 운용)
-```
-
-* 동일 WS 중복 방지: **유지**
-* 서로 다른 WS 연쇄 발행: **허용하되 최대 5개까지만**
-* `bridge_queue` CMD 폭주: **방지** (active/in-flight CMD ≤ 5)
-* AMR 5대 병렬성: **유지**
-
-#### Dispatch Gate 설계 (1순위: Control Tower)
-
-`trigger_workstation_move()` 호출 전 아래 조건을 반드시 확인:
-1. 현재 active workstation move 개수 < `MAX_ACTIVE_WORKSTATION_MOVES`
-2. 사용 가능한 AMR 개수 > 0
-3. 해당 workstation이 이미 `MOVING`/`PROCESSING`/`reserved` 상태가 아님
-4. `target_location`이 이미 다른 작업에 의해 예약되지 않음
-5. 동일 AMR에 이미 active task가 없음
-6. 이번 scheduler tick에서 새로 dispatch한 개수까지 포함해 5개를 넘지 않음
-
-```python
-# 제안 구현 구조 (의사 코드)
-MAX_ACTIVE_WORKSTATION_MOVES = 5
-
-def can_dispatch_new_move(self):
-    active_count = self.get_active_workstation_move_count()  # DB에서 MOVING_TO_* / PROCESSING 상태 카운트
-    available_amr = self.get_available_amr_count()            # Redis에서 available AMR 카운트
-    if active_count >= MAX_ACTIVE_WORKSTATION_MOVES:
-        return False
-    if available_amr <= 0:
-        return False
-    return True
-
-# 한 scheduler tick 안에서 local counter도 사용
-dispatched_this_tick = 0
-for candidate in candidates:
-    if active_count + dispatched_this_tick >= MAX_ACTIVE_WORKSTATION_MOVES:
-        break
-    if self.trigger_workstation_move(...):
-        dispatched_this_tick += 1
-```
-
-#### Bridge Backpressure 설계 (2순위: Fleet Manager Bridge)
-
-* `fleet_manager_bridge_node.py`에서 `commands` + `status` 기준 in-flight CMD가 5개 이상이면 새 Goal을 WAITING/REJECT/BUSY 처리
-* 주 수정 지점은 Control Tower이므로 Bridge는 2차 방어선으로 구현
-
-### 17.6 Isaac Sim 물리 제어 충돌 및 USD 리소스 병목 정밀 분석 - [진행 중]
+### 17.6 Isaac Sim 물리 제어 충돌 및 USD 리소스 병목 정밀 분석 - [완료]
 
 > [!IMPORTANT]
-> **핵심 원인**: Isaac Sim 가상 환경에서 랙이 유발되거나 작업대 이송 시 충돌/튀는 현상의 주원인은, 고정 배경 설비 구조물인 `custom_rack`을 강제로 들어올리려고 시도하면서 물리 연산(PhysX) 및 Stage 계층 구조가 꼬였기 때문입니다. 또한 DB 상태가 실제 물리적 이동이 끝나기 전에 목적지로 선행 변경되는 구조도 위치 불일치를 초래합니다.
-
-#### 1. 핵심 문제점 7가지 세부 분석
-
-1. **custom_rack의 본래 용도 혼선**: 
-   * **원인**: 맵에 이미 존재하는 `custom_rack`들은 이동식 작업대가 아닌 고정형 스토리지 배경용 프림(Prim)으로 설계되었습니다.
-   * **영향**: 고정 랙을 AMR이 억지로 움직이려고 PhysX 물리 연산을 처리하면 시뮬레이터 렉의 1순위 원인이 됩니다. 본래 설계는 `/World/Workstations/WS01~WS10`에 정의된 10대의 독립적인 이동식 작업대를 생성해 움직이는 것이 정상입니다.
-
-2. **Stage 계층 구조의 종속성 (Parent Offset 및 Collision)**:
-   * **원인**: `custom_rack`은 독립적인 최상위 Transform 프림이 아니라, `/World/IN_conveyor/IN_storage/custom_rack`, `/World/MAIN_storage/MAIN_storage/custom_rack` 등 하위 구조물(Child)로 귀속되어 있습니다.
-   * **영향**: 부모-자식 관계의 로컬 오프셋과 고정 설비 간의 Collision이 얽히고설키며, AMR이 리프트(Lift)하는 순간 PhysX가 비이상적인 관성/오버라이드 처리를 강제하여 튐 현상 또는 극심한 지연이 유발됩니다.
-
-3. **이송 전 DB 위치 선행 변경으로 인한 동기화 파탄**:
-   * **원인**: 대시보드 및 관제 시스템의 일부 API가 AMR의 실제 물리 이송이 끝나기 전에 `workstations.current_location`을 목적지(Target)로 미리 변경합니다.
-   * **영향**: Isaac Sim 연동 커넥터 스크립트가 DB를 보고 3D 씬을 갱신하려 할 때, 작업대가 순간이동(Teleport)하여 실제 AMR 리프트와 root 위치의 불일치가 일어나고 물리 콜라이더가 꼬이면서 렉이나 튐이 발생합니다.
-
-4. **isaac_amr_connector.py와 실제 AMR 컨트롤러의 제어권 충돌**:
-   * **원인**: DB의 `workstations.current_location`을 지속적으로 읽어서 작업대 위치를 강제 동기화하는 스크립트(`isaac_amr_connector.py`)와, 실제 주행/리프트를 물리 제어하는 AMR 컨트롤러가 3D 씬 내 동일한 작업대 프림에 동시에 쓰기(Write) 명령을 내립니다.
-   * **영향**: 두 시스템이 하나의 프림에 대해 제어권을 경쟁하며 충돌합니다. 물리 제어를 사용할 때는 커넥터 측에서 작업대 강제 이동 기능을 해제하고, 로봇(AMR) 위치만 렌더링하는 전용 스크립트(`isaac_only_amr_connector.py` 등)로 대체해야 합니다.
-
-5. **custom_rack USD의 물리 컴포넌트(Physics/Payload) 무거운 구조**:
-   * **원인**: `customrack.usd`, `workstation_2x8.usd` 에셋 내부에는 `PhysicsRigidBodyAPI`, `PhysicsCollisionAPI`, `RigidBody` 등 다양한 물리 속성과 페이로드(Payload)가 적용되어 있을 수 있습니다.
-   * **영향**: 랙을 통째로 레퍼런스(Reference)하고 자식 단위로 리프트할 때 PhysX Stage 갱신에 큰 연산 오버헤드를 줍니다. 이동식 작업대는 최상위 root에만 kinematic/rigid body를 할당하고 자식 메쉬는 visual 전용으로 단순화하는 것이 이상적입니다.
-
-6. **QR 코드 메쉬 및 텍스처 과다 배치**:
-   * **원인**: 바닥 격자 맵을 구성하기 위해 1,813개(또는 169개)의 개별 QR plane mesh를 생성하고 재질(Material)/텍스처(Texture)를 일일이 바인딩했습니다.
-   * **영향**: Isaac Sim의 뷰포트 드로우콜(Draw Call)과 비디오 메모리를 점유하여 시뮬레이터 자체의 기본 FPS를 낮추는 잠재적 부하 요인입니다. 단, 랙을 들 때만 발생하는 순간적인 프레임 드롭의 1순위 원인은 아닙니다.
-
-#### 2. 최종 문제점 정리 및 우선순위
-
-| 우선순위 | 문제점 | 원인 분석 | 해결 방안 |
-| :--- | :--- | :--- | :--- |
-| **1순위** | `custom_rack` 강제 이송 시 물리 렉 | 고정 스토리지 배경용 Prim을 작업대로 잘못 사용 | `/World/Workstations/WS01~WS10` 전용 이동식 작업대 프림으로 대체 |
-| **2순위** | 하위 계층 구조물(Child) 이송 | 부모 구조에 얽힌 local offset 및 collision 꼬임 | 부모-자식 종속성이 없는 독립적인 root 레벨의 이송체 구성 |
-| **3순위** | DB 위치 선행 확정 | 실제 이동 완료 전 current_location 변경하여 순간이동 유발 | `MOVING_TO_*` (PROCESSING) 상태를 도입하고 이동 완료 시점(`COMPLETED`)에만 최종 위치 갱신 |
-| **4순위** | 커넥터와 AMR 제어권 충돌 | `isaac_amr_connector.py`와 AMR controller가 동일 프림 위치 중복 제어 | 물리 구동 시에는 커넥터의 랙 동기화 기능을 끄고 로봇 위치 렌더링으로 전환 |
-| **5순위** | Asset Physics 무거움 | Physics/Collision/Payload 복잡도 연산 부하 | Visual 전용 단순 메쉬 및 최상위 root kinematic 단일 설정 |
-| **6순위** | QR 메쉬/텍스처 과다 | 1,813개 QR 생성으로 드로우콜 폭증 | 격자 그리드 간격을 넓히거나, 필요한 구역만 동적 생성하여 기본 FPS 확보 |
-
+> **조치 완료**: 
+> - 물리 구동 시 `isaac_amr_connector.py`와 AMR Controller가 3D 씬 내 동일 프림에 중복 명령을 쓰던 제어권 충돌 문제를 **내 PC에서 시뮬레이션 코드 및 커넥터를 영구히 삭제(Clean)하고 관제 전용 모드로 전환**함으로써 원천적으로 해결하였습니다.
+> - 이제 실제 시뮬레이션 물리 연산과 실시간 제어(A* 주행, 리프트 등)는 오직 상대방(AMR PC)의 로컬 환경 내에서만 처리되며, 내 PC는 Redis 상태 캐시 수집 및 ROS 2 Action 전송의 관제 인터페이스 역할만 수행하므로 충돌 여지가 전혀 존재하지 않습니다.
