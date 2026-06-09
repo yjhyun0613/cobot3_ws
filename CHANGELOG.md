@@ -9,6 +9,13 @@
 
 ## 📅 2026년 6월 9일 (화요일)
 
+* **17:15** - **아이작 심(Isaac Sim) 컨트롤러 좌표계 동기화 및 대시보드 서버 최적화**:
+  - `amr_live_existing_stage_true8_qr_camera_controller_gpu.py` 내에 하드코딩 되어 있던 구버전 `LOCATION_TARGETS`를 `PHYSICAL_LAYOUT.md` 기준의 최신 물리 좌표로 전면 업데이트하여, AMR 로봇이 허공으로 이탈하는 치명적 맵핑 오류를 수정했습니다.
+  - 대시보드 백엔드(`dashboard_server.py`)에 `psycopg2.pool.ThreadedConnectionPool`을 도입하고 정적 데이터를 글로벌 캐싱하여 DB Connection 재생성 부하를 100% 제거했습니다.
+  - 프론트엔드의 스크롤 렉을 유발하던 무거운 CSS 속성을 제거하고 DOM 재사용 렌더링을 적용하여 프레임 레이트를 대폭 상승시켰습니다.
+  - `init.sql`에 기반하여 DB를 리셋해 손상되었던 DB 좌표 테이블을 팩토리 환경으로 복구했습니다.
+
+
 * **14:55** - **PostgreSQL 성능 인덱스 생성 및 Redis 타임아웃 설정**:
   - 패키지 누적 시 발생할 수 있는 Full Table Scan 방지를 위해 `init.sql`에 성능 인덱스 5개(`idx_packages_status`, `idx_packages_route_zone`, `idx_packages_workstation`, `idx_workstations_location`, `idx_floor_qr_location`)를 생성하고, 실구동 중인 DB에 즉시 적용했습니다.
   - Redis 지연으로 인한 관제 스레드 무한 블로킹을 차단하기 위해 `control_tower_node.py` 내 `redis.Redis()` 초기화 시 `socket_timeout=2.0` 및 `socket_connect_timeout=3.0` 옵션을 추가했습니다.
@@ -251,7 +258,7 @@
     - 데이터베이스 환경 리셋 스크립트(`scratch/reset_db.py`)가 최신 격자 생성 스크립트를 연동하도록 호출 파이프라인 갱신 완료.
   - **모니터링 대시보드 및 테스트 도구 연동**:
     - 2D 웹 대시보드(`scratch/dashboard_server.py`)의 2D 격자 컨테이너 크기(392x392px) 및 X_MIN/Y_MAX 변환 상수를 `[-9.0, 9.0]` 범위에 맞추어 개편.
-    - AMR 가상 주행 송신기(`scratch/amr_redis_test_publisher.py`) 내의 테스트 웨이포인트 좌표도 신형 13.5m x 20m 규격에 맞게 전면 갱신.��료 시 출발지가 `sg2_out_00_A_ROTATING`이거나 `ROTATING` 키워드를 포함하는 제자리 회전 동작인 경우 포장 공정이 다시 트리거되지 않도록 방어 로직 적용.
+    - AMR 가상 주행 송신기(`scratch/amr_redis_test_publisher.py`) 내의 테스트 웨이포인트 좌표도 신형 13.5m x 20m 규격에 맞게 전면 갱신.��료 시 출발지가 `sg2_out_00_A_ROTATING`이거나 `ROTATING` 키워드를 포함하는 제자리 회전 동작인 경우 포장 공정이 다시 트리거되지 않도록 방어 로직 적용.
   - **검증**: `colcon build` 후 150개 대용량 패키지 기반 시나리오 테스트를 다시 기동하여, 포장 로봇 및 AMR이 이중 트리거 없이 깔끔하게 1회씩만 작동하고 주차 스팟(`warehouse_locations`)에 작업대들이 중복 할당 없이 1:1로 정확하게 EMPTY/OCCUPIED 매핑이 갱신되는 것을 완벽히 검증 및 확인 완료.
 
 * **16:35** - **Docker Adminer 컨테이너 포트 충돌(8080) 해결**
