@@ -389,8 +389,21 @@ PostgreSQL에 다음과 같은 공간 격자 맵 정보 관리 테이블을 정�
   * 격자 맵(`floor_qr_map`) 상의 주요 병목 구간 및 교차로 마커를 **세마포어(Semaphore)** 또는 **공간 예약제(Space Reservation)** 방식으로 관리.
   * 특정 구역에 AMR이 진입하기 전 관제탑에 해당 Node 점유 권한을 획득하게 함으로써 다중 로봇 간 교차 주행 및 병목을 중앙 제어.
 
+### 11.6 bg2 분류 로봇의 로컬 캐시 조회 및 배치 동기화 도입 (bg2 Local Caching Optimization) - [완료]
+> [!NOTE]
+> **적용 완료**: 2026년 6월 9일 구현 완료.
+> - `mock_sg2_devices.py` 및 `run_full_simulation_robot.py` 내의 입고 시뮬레이션 루프(`inbound_sim_loop`)에 로컬 캐시 동기화 로직 적용.
+> - 영업 개시(`day_status == 'RUNNING'`) 감지 시 PostgreSQL 데이터베이스로부터 당일 패키지 목록을 일괄 캐싱(`load_package_cache()`).
+> - 스캔 시 관제탑 ROS 2 서비스 질의를 생략하고 로컬 메모리 캐시에서 즉시 목적지 판별.
+> - 캐시 미스 또는 조회 오류 발생 시 안전 회차 라인(4번 라인 / Bypass)으로 분류하여 패키지 상태를 즉시 `IN_WAREHOUSE`로 업데이트.
 
-
+### 11.7 대시보드 기기 연동 및 택배 명단 등록 기반 영업 개시 인터록 (Safety Start Interlock) - [완료]
+> [!NOTE]
+> **적용 완료**: 2026년 6월 9일 구현 완료.
+> - 대시보드 서버(`dashboard_server.py`)의 `reset_db()` 및 `start_next_day()` API 기본 상태를 `'WAITING_FOR_START'`로 변경.
+> - `get_status()` API가 Redis에 등록된 기기 하트비트(`device:<name>:heartbeat`)와 AMR 인스턴스를 수집해 `device_status`로 전달하도록 갱신.
+> - 대시보드 UI 상단에 **[영업 시작]** 버튼 추가 및 각 실시간 기기 연결 상태(bg2, sg2들, AMR)를 보여주는 배지 스트립 배치.
+> - 모든 필수 하드웨어 기기가 정상 연결(Online)되고 오늘자 물량 CSV 업로드(WAITING 패키지 존재) 시에만 [영업 시작] 버튼이 활성화(ready)되어 영업일 가동을 승인하는 인터록 안전 장치 구현 완료.
 
 ---
 

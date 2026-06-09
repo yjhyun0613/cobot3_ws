@@ -375,6 +375,23 @@ def get_status():
                 _grid_cells_cache = []
         grid_cells = _grid_cells_cache
 
+        # 3.7. Device connection statuses
+        device_status = {
+            "bg2": True,
+            "sg2_in_01": True,
+            "sg2_in_02": True,
+            "sg2_in_03": True,
+            "sg2_out_00": True,
+            "amr": False
+        }
+        if redis_client:
+            try:
+                # Check for active AMRs
+                amr_keys = redis_client.keys("amr:*")
+                device_status["amr"] = len([k for k in amr_keys if k != "queue:amr_tasks"]) > 0
+            except Exception as de:
+                print(f"Device status check error: {de}")
+
         pg_conn.close()
         return {
             "workstations": workstations,
@@ -385,7 +402,8 @@ def get_status():
             "day_status": day_status,
             "completed_day": completed_day,
             "amr_states": amr_states,
-            "grid_cells": grid_cells
+            "grid_cells": grid_cells,
+            "device_status": device_status
         }
     except Exception as e:
         if pg_conn:
@@ -452,31 +470,35 @@ def reset_db():
         raise HTTPException(status_code=500, detail="Database connection failed")
         
     try:
-        # 1. PostgreSQL 초기화 실행
-        init_sql_path = os.path.join(os.path.dirname(__file__), '../docker/init.sql')
-        if not os.path.exists(init_sql_path):
-            init_sql_path = 'docker/init.sql' # Fallback
-            
-        with open(init_sql_path, 'r') as f:
-            sql_queries = f.read()
-            
-        with pg_conn.cursor() as cursor:
-            cursor.execute(sql_queries)
-            cursor.execute("TRUNCATE TABLE packages CASCADE;")
-            
-        # 2. Redis 상태 및 큐 초기화
+        # 1. reset_db.py 스크립트 실행하여 DB와 Redis 완전 초기화 및 바닥 QR 격자 맵 복구
+        import subprocess
+        import sys
+        ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        reset_script = os.path.join(ws_root, "scratch", "reset_db.py")
+        result = subprocess.run(
+            [sys.executable, reset_script],
+            cwd=ws_root,
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode != 0:
+            raise Exception(f"reset_db.py 실행 실패: {result.stderr}")
+
+        # 2. Redis 상태 및 기본값 기입
         if redis_client:
-            redis_client.delete('queue:amr_tasks')
             redis_client.set('system:today_date', '2026-06-06')
-            redis_client.set('system:day_status', 'RUNNING')
-            redis_client.delete('system:completed_day')
+            redis_client.set('system:day_status', 'WAITING_FOR_START')
+
+        # 3. grid_cells 캐시 초기화
+        global _grid_cells_cache
+        _grid_cells_cache = None
             
         pg_conn.close()
-        return {"success": True, "message": "데이터베이스가 성공적으로 초기화되었습니다."}
+        return {"success": True, "message": "데이터베이스와 바닥 QR 격자 맵이 성공적으로 초기화 및 복구되었습니다."}
     except Exception as e:
         if pg_conn:
             pg_conn.close()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/start_next_day")
 def start_next_day():
@@ -570,7 +592,7 @@ def start_next_day():
                         push_priority_task(redis_client, task_data)
                         shift_count += 1
 
-        redis_client.set('system:day_status', 'RUNNING')
+        redis_client.set('system:day_status', 'WAITING_FOR_START')
         redis_client.delete('system:completed_day')
         redis_client.set('system:inbound_started', 'false')
         
@@ -581,6 +603,69 @@ def start_next_day():
         if shift_count > 0:
             msg += f" (작업대 {shift_count}개 물리 이송 태스크 발행 완료)"
         return {"success": True, "message": msg}
+    except Exception as e:
+        if pg_conn:
+            pg_conn.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/start_business")
+def start_business():
+    pg_conn, redis_client = get_db_connections()
+    if not redis_client:
+        raise HTTPException(status_code=500, detail="Redis connection failed")
+    try:
+        # 1. 오늘 날짜 구하기
+        today_date = redis_client.get('system:today_date')
+        if not today_date:
+            today_date = '2026-06-06'
+
+        # 2. 오늘 분류할 대기 패키지가 데이터베이스에 존재하는지 검사 (선택 사항)
+        has_packages = False
+        if pg_conn:
+            with pg_conn.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) FROM packages WHERE status = 'WAITING';")
+                count = cursor.fetchone()[0]
+                has_packages = count > 0
+            pg_conn.close()
+
+        if not has_packages:
+            return {
+                "success": False, 
+                "message": "오늘 분류할 대기 패키지가 존재하지 않습니다. 먼저 CSV 입고 명단을 업로드해 주세요."
+            }
+
+        # 3. 로봇 기기들의 연결 상태(Heartbeat) 체크 (bg2, sg2는 항상 True로 통과)
+        bg2_online = True
+        sg2_in_01_online = True
+        sg2_in_02_online = True
+        sg2_in_03_online = True
+        sg2_out_00_online = True
+
+        amr_keys = redis_client.keys("amr:*")
+        amr_online = len([k for k in amr_keys if k != "queue:amr_tasks"]) > 0
+
+        offline_devices = []
+        if not bg2_online: offline_devices.append("분류 로봇 (bg2)")
+        if not sg2_in_01_online: offline_devices.append("적재 로봇 1 (sg2_in_01)")
+        if not sg2_in_02_online: offline_devices.append("적재 로봇 2 (sg2_in_02)")
+        if not sg2_in_03_online: offline_devices.append("적재 로봇 3 (sg2_in_03)")
+        if not sg2_out_00_online: offline_devices.append("포장 로봇 (sg2_out_00)")
+        if not amr_online: offline_devices.append("AMR 주행 제어기")
+
+        if offline_devices:
+            return {
+                "success": False,
+                "message": f"연결되지 않은 기기가 있습니다: {', '.join(offline_devices)}. 모든 기기가 정상 연결된 후 영업을 시작할 수 있습니다."
+            }
+
+        # 4. 영업 시작 처리
+        redis_client.set('system:day_status', 'RUNNING')
+        redis_client.set('system:inbound_started', 'true')
+        
+        return {
+            "success": True, 
+            "message": f"성공적으로 영업일({today_date})의 분류 및 이송 작업을 개시했습니다!"
+        }
     except Exception as e:
         if pg_conn:
             pg_conn.close()
@@ -1941,6 +2026,67 @@ def index():
             50%  { box-shadow: 0 0 16px currentColor; transform: translate(-50%, -50%) scale(1.2); }
             100% { box-shadow: 0 0 5px currentColor; transform: translate(-50%, -50%) scale(1); }
         }
+
+        /* Start Business Button and Device Status Badges */
+        .btn-start-business {
+            background: rgba(16, 185, 129, 0.08);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            color: #10b981;
+            opacity: 0.6;
+            cursor: not-allowed;
+            pointer-events: none;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.3s ease;
+        }
+
+        .btn-start-business.ready {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            border: none;
+            color: #0b0f19;
+            opacity: 1;
+            cursor: pointer;
+            pointer-events: auto;
+            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+        }
+
+        .btn-start-business.ready:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(16, 185, 129, 0.5);
+        }
+        
+        .btn-start-business.running {
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            color: #3b82f6;
+            opacity: 0.9;
+            cursor: default;
+            pointer-events: none;
+        }
+
+        .dev-badge {
+            padding: 4px 10px;
+            border-radius: 8px;
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            color: var(--danger);
+            font-size: 0.75rem;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            font-family: monospace;
+        }
+
+        .dev-badge.online {
+            background: rgba(16, 185, 129, 0.12);
+            border-color: rgba(16, 185, 129, 0.35);
+            color: var(--success);
+            box-shadow: 0 0 10px rgba(16, 185, 129, 0.15);
+        }
     </style>
 </head>
 <body>
@@ -1956,20 +2102,35 @@ def index():
             </div>
         </header>
 
-        <div class="controls">
-            <button class="btn-simulate" onclick="simulateInbound()">
-                <span>⚡</span> 시뮬레이션 적재 발생
-            </button>
-            <button class="btn-packaging" onclick="simulatePackaging()" style="background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); border: none; color: #000; box-shadow: 0 4px 15px rgba(245, 158, 11, 0.25);">
-                <span>📦</span> 시뮬레이션 포장 수행
-            </button>
-            <button class="btn-upload" onclick="triggerCSVUpload()">
-                <span>📥</span> CSV 입고 명단 업로드
-            </button>
-            <input type="file" accept=".csv" id="csv-file-input" style="display:none" onchange="uploadCSV()">
-            <button class="btn-reset" onclick="resetDatabase()">
-                <span>🔄</span> 데이터베이스 초기화
-            </button>
+        <div class="controls" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 2rem;">
+            <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center;">
+                <button id="btn-start-business" class="btn-start-business" onclick="startBusiness()" disabled>
+                    <span>▶️</span> 영업 시작
+                </button>
+                <button class="btn-upload" onclick="triggerCSVUpload()">
+                    <span>📥</span> CSV 입고 명단 업로드
+                </button>
+                <input type="file" accept=".csv" id="csv-file-input" style="display:none" onchange="uploadCSV()">
+                <button class="btn-simulate" onclick="simulateInbound()">
+                    <span>⚡</span> 시뮬레이션 적재 발생
+                </button>
+                <button class="btn-packaging" onclick="simulatePackaging()" style="background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); border: none; color: #000; box-shadow: 0 4px 15px rgba(245, 158, 11, 0.25);">
+                    <span>📦</span> 시뮬레이션 포장 수행
+                </button>
+                <button class="btn-reset" onclick="resetDatabase()">
+                    <span>🔄</span> 데이터베이스 초기화
+                </button>
+            </div>
+            
+            <div id="device-status-strip" style="display: flex; gap: 8px; padding: 10px 16px; background: rgba(22, 28, 45, 0.4); border: 1px solid var(--border-color); border-radius: 12px; font-size: 0.78rem; font-weight: 600; align-items: center; flex-wrap: wrap;">
+                <span style="color: var(--text-muted); margin-right: 4px; display: flex; align-items: center; gap: 4px;">📡 기기 상태:</span>
+                <span id="dev-bg2" class="dev-badge">bg2</span>
+                <span id="dev-sg2-in-01" class="dev-badge">sg2_in_01</span>
+                <span id="dev-sg2-in-02" class="dev-badge">sg2_in_02</span>
+                <span id="dev-sg2-in-03" class="dev-badge">sg2_in_03</span>
+                <span id="dev-sg2-out-00" class="dev-badge">sg2_out_00</span>
+                <span id="dev-amr" class="dev-badge">AMR</span>
+            </div>
         </div>
 
         <!-- Day Transition Banner (Hidden by default) -->
@@ -2449,12 +2610,101 @@ def index():
             }
         }
 
-        // 3. 상태 실시간 페치 루프
+        // 2.2. 영업일 시작 트리거
+        async function startBusiness() {
+            try {
+                const response = await fetch('/api/start_business', { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    showToast("▶️ " + data.message);
+                    fetchStatus();
+                } else {
+                    showToast("❌ 시작 실패: " + data.message);
+                }
+            } catch (err) {
+                showToast("❌ API 통신 오류 발생");
+            }
+        }
+
         // 3. 상태 실시간 페치 및 UI 업데이트 루프
         function updateUI(data) {
             // Update global data for map canvas
             locationsData = data.locations;
             workstationsData = data.workstations;
+
+            // 3-0. Update Device status strip & Start Business Button
+            const devBg2 = document.getElementById('dev-bg2');
+            const devSg2In1 = document.getElementById('dev-sg2-in-01');
+            const devSg2In2 = document.getElementById('dev-sg2-in-02');
+            const devSg2In3 = document.getElementById('dev-sg2-in-03');
+            const devSg2Out = document.getElementById('dev-sg2-out-00');
+            const devAmr = document.getElementById('dev-amr');
+            
+            let bg2_ok = false;
+            let sg2_in_01_ok = false;
+            let sg2_in_02_ok = false;
+            let sg2_in_03_ok = false;
+            let sg2_out_ok = false;
+            let amr_ok = false;
+
+            if (data.device_status) {
+                bg2_ok = data.device_status.bg2;
+                sg2_in_01_ok = data.device_status.sg2_in_01;
+                sg2_in_02_ok = data.device_status.sg2_in_02;
+                sg2_in_03_ok = data.device_status.sg2_in_03;
+                sg2_out_ok = data.device_status.sg2_out_00;
+                amr_ok = data.device_status.amr;
+            }
+
+            const toggleBadge = (el, isOnline) => {
+                if (el) {
+                    if (isOnline) {
+                        el.classList.add('online');
+                    } else {
+                        el.classList.remove('online');
+                    }
+                }
+            };
+
+            toggleBadge(devBg2, bg2_ok);
+            toggleBadge(devSg2In1, sg2_in_01_ok);
+            toggleBadge(devSg2In2, sg2_in_02_ok);
+            toggleBadge(devSg2In3, sg2_in_03_ok);
+            toggleBadge(devSg2Out, sg2_out_ok);
+            toggleBadge(devAmr, amr_ok);
+
+            // 오늘 택배 명단이 등록되었는지 확인 (WAITING 상태인 패키지가 존재하는지)
+            const hasWaitingPackages = data.packages && data.packages.some(p => p.status === 'WAITING');
+
+            // 영업시작 버튼 활성화/비활성화 처리
+            const btnStart = document.getElementById('btn-start-business');
+            if (btnStart) {
+                if (data.day_status === 'WAITING_FOR_START') {
+                    const allRobotsOk = bg2_ok && sg2_in_01_ok && sg2_in_02_ok && sg2_in_03_ok && sg2_out_ok && amr_ok;
+                    
+                    if (allRobotsOk && hasWaitingPackages) {
+                        btnStart.disabled = false;
+                        btnStart.className = 'btn-start-business ready';
+                        btnStart.innerHTML = '<span>▶️</span> 영업 시작';
+                    } else {
+                        btnStart.disabled = true;
+                        btnStart.className = 'btn-start-business';
+                        
+                        let reason = [];
+                        if (!allRobotsOk) reason.push('로봇 미연결');
+                        if (!hasWaitingPackages) reason.push('명단 미등록');
+                        btnStart.innerHTML = `<span>▶️</span> 영업 시작 (${reason.join(', ')})`;
+                    }
+                } else if (data.day_status === 'RUNNING') {
+                    btnStart.disabled = true;
+                    btnStart.className = 'btn-start-business running';
+                    btnStart.innerHTML = '<span>⚡</span> 영업 진행 중';
+                } else {
+                    btnStart.disabled = true;
+                    btnStart.className = 'btn-start-business';
+                    btnStart.innerHTML = '<span>⏸️</span> 영업 준비 중';
+                }
+            }
 
             // Update the 2D floor plan
             updateFloorPlan(data);

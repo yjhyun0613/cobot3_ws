@@ -13,6 +13,8 @@ __pycache__/
 .project
 .pydevproject
 src/cobot3/resource/Collected_factory
+src/cobot3/resource/finalfac
+src/cobot3/resource/finalfac.zip
 # OS generated files
 .DS_Store
 .DS_Store?

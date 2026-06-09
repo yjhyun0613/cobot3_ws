@@ -459,6 +459,10 @@ class ControlTowerNode(Node):
                 except Exception as e:
                     self.get_logger().error(f'Redis day_status 조회 실패: {str(e)}')
 
+            if day_status != 'RUNNING':
+                # 영업 중이 아니면 (WAITING_FOR_START 또는 PENDING_TRANSITION) 아무 작업도 수행하지 않음
+                return
+
             # 1. Redis 큐에서 최고 우선순위 AMR 태스크가 있는지 조회 (zpopmax)
             try:
                 task_data = self.redis_client.zpopmax('queue:amr_tasks')
@@ -472,10 +476,6 @@ class ControlTowerNode(Node):
                     self.redis_client.delete('queue:amr_tasks')
                 else:
                     self.get_logger().error(f'Redis Pop 실패: {str(q_err)}')
-
-            if day_status == 'PENDING_TRANSITION':
-                # 하루 작업이 끝나고 대기 중일 때는 신규 이송이나 keepalive를 트리거하지 않음
-                return
 
             # 2. 작업대 8칸이 모두 찼을 때의 이송 스케줄링 체크
             self.check_completed_workstations()

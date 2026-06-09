@@ -8,10 +8,10 @@ export ROS_LOCALHOST_ONLY=0
 
 source /opt/ros/humble/setup.bash
 
-if [ -f "$HOME/amr_ros_ws/install/setup.bash" ]; then
-  source "$HOME/amr_ros_ws/install/setup.bash"
+if [ -f "$HOME/cobot3_ws/install/setup.bash" ]; then
+  source "$HOME/cobot3_ws/install/setup.bash"
 else
-  echo "[ERROR] ~/amr_ros_ws/install/setup.bash not found"
+  echo "[ERROR] ~/cobot3_ws/install/setup.bash not found"
   echo "Build/source cobot3_interfaces first."
   exit 1
 fi
@@ -23,5 +23,4 @@ else
   echo "[WARN] rmw_cyclonedds_cpp not installed. Using default RMW."
 fi
 
-cd "$HOME/isaaclab_ws/isaac_aruco/amr"
-/usr/bin/python3 fleet_manager_bridge_node.py
+/usr/bin/python3 /home/rokey/cobot3_ws/src/cobot3/amr/fleet_manager_bridge_node.py

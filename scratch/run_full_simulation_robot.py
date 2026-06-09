@@ -419,6 +419,10 @@ class MockFullRobotNode(Node):
         self.redis_client = None
         self.connect_db()
 
+        # bg2 분류 로봇용 로컬 패키지 캐시 및 이전 영업 상태 저장용 변수
+        self.package_cache = {}
+        self.prev_day_status = 'WAITING_FOR_START'
+
         # A* Planner 및 예약 테이블 초기화
         self.config = TimeAStarConfig()
         self.planner = TimeAStarPlanner(self.config)
@@ -426,11 +430,11 @@ class MockFullRobotNode(Node):
 
         # 5대 AMR 상태 관리 맵 초기화 (충전소 좌표를 시작점으로 배치)
         initial_charging_spots = [
-            (16, 35),  # AMR_01 (charging_01)
-            (15, 35),  # AMR_02 (charging_02)
-            (14, 35),  # AMR_03 (charging_03)
-            (13, 35),  # AMR_04 (charging_04)
-            (12, 35)   # AMR_05 (charging_05)
+            (0, 0),  # AMR_01 (charging_01)
+            (0, 1),  # AMR_02 (charging_02)
+            (0, 2),  # AMR_03 (charging_03)
+            (0, 3),  # AMR_04 (charging_04)
+            (0, 4)   # AMR_05 (charging_05)
         ]
         self.amrs = {}
         for idx, cell in enumerate(initial_charging_spots, 1):
@@ -536,6 +540,25 @@ class MockFullRobotNode(Node):
             self.get_logger().error(f'Redis 연결 실패: {e}')
             self.redis_client = None
 
+    def load_package_cache(self):
+        """오늘 영업 시작 시 당일 배송지 할당 패키지 정보를 일괄 조회하여 로컬 캐시에 저장"""
+        self.package_cache = {}
+        if not self.pg_conn:
+            return
+        try:
+            with self.pg_conn.cursor() as cursor:
+                cursor.execute("SELECT package_id, qr_id, route_zone FROM packages;")
+                rows = cursor.fetchall()
+                for row in rows:
+                    pkg_id, qr_id, route_zone = row
+                    if pkg_id:
+                        self.package_cache[pkg_id] = route_zone
+                    if qr_id:
+                        self.package_cache[qr_id] = route_zone
+            self.get_logger().info(f'=== [Cache] 로컬 패키지 {len(rows)}개 캐싱 완료 (bg2 Local Cache) ===')
+        except Exception as e:
+            self.get_logger().error(f'로컬 패키지 캐싱 중 오류 발생: {e}')
+
     # ==========================================
     # 📍 위치 이름 ➡️ 그리드 셀 변환 헬퍼
     # ==========================================
@@ -602,6 +625,17 @@ class MockFullRobotNode(Node):
     # ⏱️ 0.45초 시뮬레이션 틱 루프 (A* 주행 업데이트)
     # ==========================================
     def tick_loop(self):
+        # 대시보드 연동을 위한 기기 Heartbeat 게시 (만료 3초)
+        if self.redis_client:
+            try:
+                self.redis_client.setex('device:bg2:heartbeat', 3, 'OK')
+                self.redis_client.setex('device:sg2_in_01:heartbeat', 3, 'OK')
+                self.redis_client.setex('device:sg2_in_02:heartbeat', 3, 'OK')
+                self.redis_client.setex('device:sg2_in_03:heartbeat', 3, 'OK')
+                self.redis_client.setex('device:sg2_out_00:heartbeat', 3, 'OK')
+            except Exception as e:
+                self.get_logger().error(f'Redis heartbeat update error: {e}')
+
         static_obstacles = self.get_static_obstacles()
 
         # 1. 예약 테이블 리빌드
@@ -1077,6 +1111,25 @@ def inbound_sim_loop(node):
             time.sleep(2.0)
             continue
 
+        # 영업 시작 상태인지 감시
+        day_status = 'RUNNING'
+        if node.redis_client:
+            try:
+                val = node.redis_client.get('system:day_status')
+                if val:
+                    day_status = val if isinstance(val, str) else val.decode('utf-8')
+            except Exception as e:
+                node.get_logger().error(f'Redis day_status 조회 실패: {e}')
+        
+        # WAITING_FOR_START -> RUNNING 상태 전환 감지 시 캐시 로드
+        if day_status == 'RUNNING' and node.prev_day_status != 'RUNNING':
+            node.load_package_cache()
+        node.prev_day_status = day_status
+        
+        if day_status != 'RUNNING':
+            time.sleep(1.0)
+            continue
+
         try:
             with node.pg_conn.cursor() as cursor:
                 # 1. WAITING 상태인 패키지 하나 가져오기
@@ -1095,17 +1148,26 @@ def inbound_sim_loop(node):
                 decoded_qr = decode_qr_code(qr_file)
                 node.get_logger().info(f'[Scenario] 🚀 패키지 {pkg_id} 입고 처리 시작 (QR: {decoded_qr})')
 
-                # Step B: GetPackageRoute 서비스 호출하여 목적지(날짜) 획득
-                req_route = GetPackageRoute.Request()
-                req_route.package_id = pkg_id
-                req_route.customer_name = cust_name
-                req_route.qr_id = decoded_qr
-                
-                route_res, is_offline = node.call_service_with_fail_safe(
-                    node.get_route_client, req_route, 'get_package_route', node.fallback_route
-                )
-                dest_date = route_res.route_destination
-                node.get_logger().info(f'[Scenario]   - 분류 목적지 획득: {dest_date} (오프라인 모드: {is_offline})')
+                # Step B: 로컬 캐시 조회 (GetPackageRoute 서비스 호출 생략)
+                dest_date = None
+                if decoded_qr in node.package_cache:
+                    dest_date = node.package_cache[decoded_qr]
+                    node.get_logger().info(f'[Scenario] [Cache Hit] QR: {decoded_qr} -> 목적지: {dest_date}')
+                elif pkg_id in node.package_cache:
+                    dest_date = node.package_cache[pkg_id]
+                    node.get_logger().info(f'[Scenario] [Cache Hit] ID: {pkg_id} -> 목적지: {dest_date}')
+
+                if not dest_date:
+                    # 캐시 미스 또는 조회 불가능 시, 4번 바이패스/반송 라인으로 처리
+                    node.get_logger().warn(f'[Scenario] [Cache Miss/Error] 패키지 {pkg_id} (QR: {decoded_qr})가 로컬 캐시에 존재하지 않습니다. 안전 회차 라인(4번 라인)으로 Bypass 이송합니다.')
+                    cursor.execute(
+                        "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE package_id = %s AND status = 'WAITING';",
+                        (pkg_id,)
+                    )
+                    time.sleep(1.0)
+                    continue
+
+                node.get_logger().info(f'[Scenario]   - 분류 목적지 결정: {dest_date}')
 
                 # Redis 기준 오늘, 내일, 모레 날짜 계산
                 today_date = node.redis_client.get('system:today_date') if node.redis_client else '2026-06-06'

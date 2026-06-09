@@ -24,6 +24,10 @@ class MockSG2DevicesNode(Node):
         self.redis_client = None
         self.connect_db()
 
+        # bg2 로봇용 로컬 패키지 캐시 및 이전 영업 상태 저장용 변수
+        self.package_cache = {}
+        self.prev_day_status = 'WAITING_FOR_START'
+
         # 1. Action Servers 호스팅
         self._manage_ws_server = ActionServer(
             self,
@@ -54,6 +58,9 @@ class MockSG2DevicesNode(Node):
         self.check_warehouse_client = self.create_client(CheckWarehouseStatus, 'check_warehouse_status')
         self.report_inbound_client = self.create_client(ReportInboundProgress, 'report_inbound_progress')
 
+        # 3. Heartbeat publisher for dashboard connection status (1Hz)
+        self.heartbeat_timer = self.create_timer(1.0, self.publish_heartbeats)
+
     def connect_db(self):
         try:
             self.pg_conn = psycopg2.connect(
@@ -78,6 +85,37 @@ class MockSG2DevicesNode(Node):
         except Exception as e:
             self.get_logger().error(f'Redis 연결 실패: {e}')
             self.redis_client = None
+
+    def publish_heartbeats(self):
+        """대시보드 기기 연동 체크를 위한 주기적 Heartbeat 갱신 (만료 3초)"""
+        if self.redis_client:
+            try:
+                self.redis_client.setex('device:bg2:heartbeat', 3, 'OK')
+                self.redis_client.setex('device:sg2_in_01:heartbeat', 3, 'OK')
+                self.redis_client.setex('device:sg2_in_02:heartbeat', 3, 'OK')
+                self.redis_client.setex('device:sg2_in_03:heartbeat', 3, 'OK')
+                self.redis_client.setex('device:sg2_out_00:heartbeat', 3, 'OK')
+            except Exception as e:
+                self.get_logger().error(f'Redis Heartbeat 갱신 중 에러: {e}')
+
+    def load_package_cache(self):
+        """오늘 영업 시작 시 당일 배송지 할당 패키지 정보를 일괄 조회하여 로컬 캐시에 저장"""
+        self.package_cache = {}
+        if not self.pg_conn:
+            return
+        try:
+            with self.pg_conn.cursor() as cursor:
+                cursor.execute("SELECT package_id, qr_id, route_zone FROM packages;")
+                rows = cursor.fetchall()
+                for row in rows:
+                    pkg_id, qr_id, route_zone = row
+                    if pkg_id:
+                        self.package_cache[pkg_id] = route_zone
+                    if qr_id:
+                        self.package_cache[qr_id] = route_zone
+            self.get_logger().info(f'=== [Cache] 로컬 패키지 {len(rows)}개 캐싱 완료 (bg2 Local Cache) ===')
+        except Exception as e:
+            self.get_logger().error(f'로컬 패키지 캐싱 중 오류 발생: {e}')
 
     # ==========================================
     # 🚀 Action Server: ManageWorkstation (AMR 이송)
@@ -238,6 +276,25 @@ def inbound_sim_loop(node):
             time.sleep(2.0)
             continue
 
+        # 영업 시작 상태인지 감시
+        day_status = 'RUNNING'
+        if node.redis_client:
+            try:
+                val = node.redis_client.get('system:day_status')
+                if val:
+                    day_status = val if isinstance(val, str) else val.decode('utf-8')
+            except Exception as e:
+                node.get_logger().error(f'Redis day_status 조회 실패: {e}')
+        
+        # WAITING_FOR_START -> RUNNING 상태 전환 감지 시 캐시 로드
+        if day_status == 'RUNNING' and node.prev_day_status != 'RUNNING':
+            node.load_package_cache()
+        node.prev_day_status = day_status
+        
+        if day_status != 'RUNNING':
+            time.sleep(1.0)
+            continue
+
         try:
             with node.pg_conn.cursor() as cursor:
                 # 1. WAITING 상태 패키지 중 가장 앞선 것 가져오기
@@ -251,16 +308,24 @@ def inbound_sim_loop(node):
                 pkg_id, cust_name, pkg_qr = pkg_row
                 pkg_qr = pkg_qr or pkg_id
 
-                # 2. GetPackageRoute 서비스 호출하여 목적지 획득
-                req_route = GetPackageRoute.Request()
-                req_route.package_id = pkg_id
-                req_route.customer_name = cust_name
-                req_route.qr_id = pkg_qr
-                
-                route_res = node.call_service_with_fail_safe(
-                    node.get_route_client, req_route, 'get_package_route', node.fallback_route
-                )
-                dest_date = route_res.route_destination
+                # 2. 로컬 캐시 조회 (GetPackageRoute 서비스 호출 생략)
+                dest_date = None
+                if pkg_qr in node.package_cache:
+                    dest_date = node.package_cache[pkg_qr]
+                    node.get_logger().info(f'[Mock Inbound] [Cache Hit] QR: {pkg_qr} -> 목적지: {dest_date}')
+                elif pkg_id in node.package_cache:
+                    dest_date = node.package_cache[pkg_id]
+                    node.get_logger().info(f'[Mock Inbound] [Cache Hit] ID: {pkg_id} -> 목적지: {dest_date}')
+
+                if not dest_date:
+                    # 캐시 미스 또는 조회 불가능 시, 4번 바이패스/반송 라인으로 처리
+                    node.get_logger().warn(f'[Mock Inbound] [Cache Miss/Error] 패키지 {pkg_id} (QR: {pkg_qr})가 로컬 캐시에 존재하지 않습니다. 안전 회차 라인(4번 라인)으로 Bypass 이송합니다.')
+                    cursor.execute(
+                        "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE package_id = %s AND status = 'WAITING';",
+                        (pkg_id,)
+                    )
+                    time.sleep(1.0)
+                    continue
 
                 # 3. 오늘, 내일, 모레 날짜 계산
                 today_date = node.redis_client.get('system:today_date') if node.redis_client else '2026-06-06'
