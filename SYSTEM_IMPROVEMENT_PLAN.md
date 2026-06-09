@@ -771,3 +771,45 @@ for candidate in candidates:
 * `fleet_manager_bridge_node.py`에서 `commands` + `status` 기준 in-flight CMD가 5개 이상이면 새 Goal을 WAITING/REJECT/BUSY 처리
 * 주 수정 지점은 Control Tower이므로 Bridge는 2차 방어선으로 구현
 
+### 17.6 Isaac Sim 물리 제어 충돌 및 USD 리소스 병목 정밀 분석 - [진행 중]
+
+> [!IMPORTANT]
+> **핵심 원인**: Isaac Sim 가상 환경에서 랙이 유발되거나 작업대 이송 시 충돌/튀는 현상의 주원인은, 고정 배경 설비 구조물인 `custom_rack`을 강제로 들어올리려고 시도하면서 물리 연산(PhysX) 및 Stage 계층 구조가 꼬였기 때문입니다. 또한 DB 상태가 실제 물리적 이동이 끝나기 전에 목적지로 선행 변경되는 구조도 위치 불일치를 초래합니다.
+
+#### 1. 핵심 문제점 7가지 세부 분석
+
+1. **custom_rack의 본래 용도 혼선**: 
+   * **원인**: 맵에 이미 존재하는 `custom_rack`들은 이동식 작업대가 아닌 고정형 스토리지 배경용 프림(Prim)으로 설계되었습니다.
+   * **영향**: 고정 랙을 AMR이 억지로 움직이려고 PhysX 물리 연산을 처리하면 시뮬레이터 렉의 1순위 원인이 됩니다. 본래 설계는 `/World/Workstations/WS01~WS10`에 정의된 10대의 독립적인 이동식 작업대를 생성해 움직이는 것이 정상입니다.
+
+2. **Stage 계층 구조의 종속성 (Parent Offset 및 Collision)**:
+   * **원인**: `custom_rack`은 독립적인 최상위 Transform 프림이 아니라, `/World/IN_conveyor/IN_storage/custom_rack`, `/World/MAIN_storage/MAIN_storage/custom_rack` 등 하위 구조물(Child)로 귀속되어 있습니다.
+   * **영향**: 부모-자식 관계의 로컬 오프셋과 고정 설비 간의 Collision이 얽히고설키며, AMR이 리프트(Lift)하는 순간 PhysX가 비이상적인 관성/오버라이드 처리를 강제하여 튐 현상 또는 극심한 지연이 유발됩니다.
+
+3. **이송 전 DB 위치 선행 변경으로 인한 동기화 파탄**:
+   * **원인**: 대시보드 및 관제 시스템의 일부 API가 AMR의 실제 물리 이송이 끝나기 전에 `workstations.current_location`을 목적지(Target)로 미리 변경합니다.
+   * **영향**: Isaac Sim 연동 커넥터 스크립트가 DB를 보고 3D 씬을 갱신하려 할 때, 작업대가 순간이동(Teleport)하여 실제 AMR 리프트와 root 위치의 불일치가 일어나고 물리 콜라이더가 꼬이면서 렉이나 튐이 발생합니다.
+
+4. **isaac_amr_connector.py와 실제 AMR 컨트롤러의 제어권 충돌**:
+   * **원인**: DB의 `workstations.current_location`을 지속적으로 읽어서 작업대 위치를 강제 동기화하는 스크립트(`isaac_amr_connector.py`)와, 실제 주행/리프트를 물리 제어하는 AMR 컨트롤러가 3D 씬 내 동일한 작업대 프림에 동시에 쓰기(Write) 명령을 내립니다.
+   * **영향**: 두 시스템이 하나의 프림에 대해 제어권을 경쟁하며 충돌합니다. 물리 제어를 사용할 때는 커넥터 측에서 작업대 강제 이동 기능을 해제하고, 로봇(AMR) 위치만 렌더링하는 전용 스크립트(`isaac_only_amr_connector.py` 등)로 대체해야 합니다.
+
+5. **custom_rack USD의 물리 컴포넌트(Physics/Payload) 무거운 구조**:
+   * **원인**: `customrack.usd`, `workstation_2x8.usd` 에셋 내부에는 `PhysicsRigidBodyAPI`, `PhysicsCollisionAPI`, `RigidBody` 등 다양한 물리 속성과 페이로드(Payload)가 적용되어 있을 수 있습니다.
+   * **영향**: 랙을 통째로 레퍼런스(Reference)하고 자식 단위로 리프트할 때 PhysX Stage 갱신에 큰 연산 오버헤드를 줍니다. 이동식 작업대는 최상위 root에만 kinematic/rigid body를 할당하고 자식 메쉬는 visual 전용으로 단순화하는 것이 이상적입니다.
+
+6. **QR 코드 메쉬 및 텍스처 과다 배치**:
+   * **원인**: 바닥 격자 맵을 구성하기 위해 1,813개(또는 169개)의 개별 QR plane mesh를 생성하고 재질(Material)/텍스처(Texture)를 일일이 바인딩했습니다.
+   * **영향**: Isaac Sim의 뷰포트 드로우콜(Draw Call)과 비디오 메모리를 점유하여 시뮬레이터 자체의 기본 FPS를 낮추는 잠재적 부하 요인입니다. 단, 랙을 들 때만 발생하는 순간적인 프레임 드롭의 1순위 원인은 아닙니다.
+
+#### 2. 최종 문제점 정리 및 우선순위
+
+| 우선순위 | 문제점 | 원인 분석 | 해결 방안 |
+| :--- | :--- | :--- | :--- |
+| **1순위** | `custom_rack` 강제 이송 시 물리 렉 | 고정 스토리지 배경용 Prim을 작업대로 잘못 사용 | `/World/Workstations/WS01~WS10` 전용 이동식 작업대 프림으로 대체 |
+| **2순위** | 하위 계층 구조물(Child) 이송 | 부모 구조에 얽힌 local offset 및 collision 꼬임 | 부모-자식 종속성이 없는 독립적인 root 레벨의 이송체 구성 |
+| **3순위** | DB 위치 선행 확정 | 실제 이동 완료 전 current_location 변경하여 순간이동 유발 | `MOVING_TO_*` (PROCESSING) 상태를 도입하고 이동 완료 시점(`COMPLETED`)에만 최종 위치 갱신 |
+| **4순위** | 커넥터와 AMR 제어권 충돌 | `isaac_amr_connector.py`와 AMR controller가 동일 프림 위치 중복 제어 | 물리 구동 시에는 커넥터의 랙 동기화 기능을 끄고 로봇 위치 렌더링으로 전환 |
+| **5순위** | Asset Physics 무거움 | Physics/Collision/Payload 복잡도 연산 부하 | Visual 전용 단순 메쉬 및 최상위 root kinematic 단일 설정 |
+| **6순위** | QR 메쉬/텍스처 과다 | 1,813개 QR 생성으로 드로우콜 폭증 | 격자 그리드 간격을 넓히거나, 필요한 구역만 동적 생성하여 기본 FPS 확보 |
+

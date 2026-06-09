@@ -7,6 +7,17 @@
 
 ---
 
+## 📅 2026년 6월 9일 (화요일)
+
+* **14:55** - **PostgreSQL 성능 인덱스 생성 및 Redis 타임아웃 설정**:
+  - 패키지 누적 시 발생할 수 있는 Full Table Scan 방지를 위해 `init.sql`에 성능 인덱스 5개(`idx_packages_status`, `idx_packages_route_zone`, `idx_packages_workstation`, `idx_workstations_location`, `idx_floor_qr_location`)를 생성하고, 실구동 중인 DB에 즉시 적용했습니다.
+  - Redis 지연으로 인한 관제 스레드 무한 블로킹을 차단하기 위해 `control_tower_node.py` 내 `redis.Redis()` 초기화 시 `socket_timeout=2.0` 및 `socket_connect_timeout=3.0` 옵션을 추가했습니다.
+
+* **15:00** - **Isaac Sim 연동 물리 제어 충돌 및 USD 리소스 병목 정밀 분석 문서화**:
+  - `SYSTEM_IMPROVEMENT_PLAN.md`에 `17.6 Isaac Sim 물리 제어 충돌 및 USD 리소스 병목 정밀 분석`을 신규 작성하여 7가지 세부 문제점(고정 배경 랙 강제 이송, Stage child 계층 구조 종속, DB 위치 선행 변경으로 인한 순간이동, 커넥터와 AMR 컨트롤러의 중복 제어, 에셋 물리 구조 오버헤드, QR 드로우콜 등)에 대한 구체적 원인 및 우선순위 분석 표를 문서화 완료했습니다.
+
+---
+
 ## 📅 2026년 6월 8일 (월요일)
 
 * **19:45** - **20m × 20m 신규 맵 물리 좌표계 동기화 및 마크다운 일괄 개편 (12.1)**:
