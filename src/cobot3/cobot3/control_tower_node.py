@@ -74,7 +74,11 @@ class ControlTowerNode(Node):
         self.active_moves = set()  # 현재 진행 중인 이송 작업의 workstation_id 집합
         self.active_moves_lock = threading.Lock()
 
-        # 6. 주기적 상태 체크 및 스케줄러 타이머 구동 (1초마다 실행)
+        # 6. Action Server 미응답 시 쿨다운 (불필요한 5초 타임아웃 반복 방지)
+        self.action_server_cooldown_until = 0.0  # time.time() 기준, 이 시각까지 dispatch 보류
+        self.ACTION_SERVER_COOLDOWN_SEC = 15.0   # 미응답 후 15초간 재시도 억제
+
+        # 7. 주기적 상태 체크 및 스케줄러 타이머 구동 (1초마다 실행)
         self.scheduler_timer = self.create_timer(1.0, self.task_scheduler_loop)
         # fleet 상태 브로드캐스트 타이머 구동 (1초마다 실행)
         self.fleet_states_timer = self.create_timer(1.0, self.publish_fleet_states_callback)
@@ -876,6 +880,13 @@ class ControlTowerNode(Node):
         if not task_id:
             task_id = f"AUTO_{str(uuid.uuid4())[:8]}"
 
+        # Cooldown: Action Server 미응답 후 재시도 억제 기간 체크
+        if time.time() < self.action_server_cooldown_until:
+            remaining = self.action_server_cooldown_until - time.time()
+            self.get_logger().debug(
+                f'[Cooldown] Action Server 쿨다운 중 ({remaining:.0f}초 남음). {workstation_id} 이송 보류.')
+            return False
+
         # Dispatch Gate: 동시 이송 한도 초과 시 보류
         if not self.can_dispatch_new_move():
             self.get_logger().warn(
@@ -1019,7 +1030,9 @@ class ControlTowerNode(Node):
             f'  - 목적지: {actual_target} [{target_coords_str}]'
         )
         if not self.manage_workstation_action_client.wait_for_server(timeout_sec=5.0):
-            self.get_logger().error(f'AMR Action Server (manage_workstation) is NOT available! Skipping move for {workstation_id}.')
+            self.get_logger().error(f'AMR Action Server (manage_workstation) is NOT available! Skipping move for {workstation_id}. {self.ACTION_SERVER_COOLDOWN_SEC}초간 재시도 억제.')
+            # 쿨다운 설정: 불필요한 5초 타임아웃 반복 방지
+            self.action_server_cooldown_until = time.time() + self.ACTION_SERVER_COOLDOWN_SEC
             self.publish_task_event(
                 task_id=task_id,
                 task_type="MOVE_WORKSTATION",
@@ -1110,6 +1123,8 @@ class ControlTowerNode(Node):
             return
 
         self.get_logger().info(f'작업대 {workstation_id} 이송 목표 수락됨. 이동 진행 중...')
+        # Action Server 응답 확인 → 쿨다운 해제
+        self.action_server_cooldown_until = 0.0
         get_result_future = goal_handle.get_result_async()
         get_result_future.add_done_callback(
             lambda res_future: self.workstation_move_completed_callback(res_future, workstation_id, start, target, task_id)
@@ -1541,68 +1556,73 @@ class ControlTowerNode(Node):
         amr_msg.data = json.dumps(amr_states)
         self.amr_states_pub.publish(amr_msg)
 
-        # 2. Workstation States (JOIN floor_qr_map and packages occupied slots)
-        workstations_list = []
-        with self.get_db_connection() as conn:
-            if conn:
-                try:
-                    with conn.cursor() as cursor:
-                        # w.status, w.reserved_by가 새로 추가됨
-                        cursor.execute(
-                            "SELECT w.workstation_id, w.qr_id, COALESCE(f.qr_id, w.current_location) as current_location_qr, "
-                            "       w.status, w.reserved_by, "
-                            "       COALESCE(array_to_json(array_agg(p.slot_number ORDER BY p.slot_number) FILTER (WHERE p.slot_number IS NOT NULL AND p.status = 'IN_WORKSTATION')), '[]'::json) as filled_slots "
-                            "FROM workstations w "
-                            "LEFT JOIN floor_qr_map f ON w.current_location = f.location_name "
-                            "LEFT JOIN packages p ON w.workstation_id = p.workstation_id "
-                            "GROUP BY w.workstation_id, w.current_location, f.qr_id, w.qr_id, w.status, w.reserved_by;"
-                        )
-                        rows = cursor.fetchall()
-                        for row in rows:
-                            workstations_list.append({
-                                "workstation_id": row[0],
-                                "workstation_qr_id": row[1] or "",
-                                "current_location": row[2],
-                                "status": row[3] or "WAITING",
-                                "slot_count": 8,
-                                "filled_slots": row[5] if isinstance(row[5], list) else json.loads(row[5] or '[]'),
-                                "reserved_by": row[4]
-                            })
-                except Exception as e:
-                    self.get_logger().error(f'PostgreSQL에서 작업대 상태 로드 중 에러: {str(e)}')
+        # 2. Workstation States — 구독자가 있을 때만 DB 조회 (조건부 발행)
+        has_ws_subs = self.workstation_states_pub.get_subscription_count() > 0
+        has_pkg_subs = self.package_states_pub.get_subscription_count() > 0
 
-        ws_msg = String()
-        ws_msg.data = json.dumps({"workstations": workstations_list})
-        self.workstation_states_pub.publish(ws_msg)
+        if has_ws_subs:
+            workstations_list = []
+            with self.get_db_connection() as conn:
+                if conn:
+                    try:
+                        with conn.cursor() as cursor:
+                            # w.status, w.reserved_by가 새로 추가됨
+                            cursor.execute(
+                                "SELECT w.workstation_id, w.qr_id, COALESCE(f.qr_id, w.current_location) as current_location_qr, "
+                                "       w.status, w.reserved_by, "
+                                "       COALESCE(array_to_json(array_agg(p.slot_number ORDER BY p.slot_number) FILTER (WHERE p.slot_number IS NOT NULL AND p.status = 'IN_WORKSTATION')), '[]'::json) as filled_slots "
+                                "FROM workstations w "
+                                "LEFT JOIN floor_qr_map f ON w.current_location = f.location_name "
+                                "LEFT JOIN packages p ON w.workstation_id = p.workstation_id "
+                                "GROUP BY w.workstation_id, w.current_location, f.qr_id, w.qr_id, w.status, w.reserved_by;"
+                            )
+                            rows = cursor.fetchall()
+                            for row in rows:
+                                workstations_list.append({
+                                    "workstation_id": row[0],
+                                    "workstation_qr_id": row[1] or "",
+                                    "current_location": row[2],
+                                    "status": row[3] or "WAITING",
+                                    "slot_count": 8,
+                                    "filled_slots": row[5] if isinstance(row[5], list) else json.loads(row[5] or '[]'),
+                                    "reserved_by": row[4]
+                                })
+                    except Exception as e:
+                        self.get_logger().error(f'PostgreSQL에서 작업대 상태 로드 중 에러: {str(e)}')
 
-        # 3. Package States (only WAITING, IN_WORKSTATION, IN_WAREHOUSE status)
-        packages_list = []
-        with self.get_db_connection() as conn:
-            if conn:
-                try:
-                    with conn.cursor() as cursor:
-                        cursor.execute(
-                            "SELECT package_id, customer_name, route_zone, status, outbound_id, workstation_id, slot_number, qr_id "
-                            "FROM packages WHERE status != 'COMPLETED';"
-                        )
-                        rows = cursor.fetchall()
-                        for row in rows:
-                            packages_list.append({
-                                "package_id": row[0],
-                                "customer_name": row[1],
-                                "route_zone": row[2],
-                                "status": row[3],
-                                "outbound_id": row[4],
-                                "workstation_id": row[5],
-                                "slot_number": row[6],
-                                "qr_id": row[7] or ""
-                            })
-                except Exception as e:
-                    self.get_logger().error(f'PostgreSQL에서 패키지 상태 로드 중 에러: {str(e)}')
+            ws_msg = String()
+            ws_msg.data = json.dumps({"workstations": workstations_list})
+            self.workstation_states_pub.publish(ws_msg)
 
-        pkg_msg = String()
-        pkg_msg.data = json.dumps({"packages": packages_list})
-        self.package_states_pub.publish(pkg_msg)
+        # 3. Package States — 구독자가 있을 때만 DB 조회 (조건부 발행)
+        if has_pkg_subs:
+            packages_list = []
+            with self.get_db_connection() as conn:
+                if conn:
+                    try:
+                        with conn.cursor() as cursor:
+                            cursor.execute(
+                                "SELECT package_id, customer_name, route_zone, status, outbound_id, workstation_id, slot_number, qr_id "
+                                "FROM packages WHERE status != 'COMPLETED';"
+                            )
+                            rows = cursor.fetchall()
+                            for row in rows:
+                                packages_list.append({
+                                    "package_id": row[0],
+                                    "customer_name": row[1],
+                                    "route_zone": row[2],
+                                    "status": row[3],
+                                    "outbound_id": row[4],
+                                    "workstation_id": row[5],
+                                    "slot_number": row[6],
+                                    "qr_id": row[7] or ""
+                                })
+                    except Exception as e:
+                        self.get_logger().error(f'PostgreSQL에서 패키지 상태 로드 중 에러: {str(e)}')
+
+            pkg_msg = String()
+            pkg_msg.data = json.dumps({"packages": packages_list})
+            self.package_states_pub.publish(pkg_msg)
 
         # 오늘 물량 완료 검사 (Day finished check)
         if self.redis_client:
