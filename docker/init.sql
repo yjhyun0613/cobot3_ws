@@ -51,6 +51,13 @@ CREATE TABLE floor_qr_map (
     description TEXT
 );
 
+-- 6.5. 성능 인덱스 생성 (패키지 누적 시 Full Table Scan 방지)
+CREATE INDEX idx_packages_status ON packages(status);
+CREATE INDEX idx_packages_route_zone ON packages(route_zone);
+CREATE INDEX idx_packages_workstation ON packages(workstation_id);
+CREATE INDEX idx_workstations_location ON workstations(current_location);
+CREATE INDEX idx_floor_qr_location ON floor_qr_map(location_name);
+
 -- 7. 기본 데이터 삽입 (Mock Data)
 -- 로봇 등록
 INSERT INTO robots (robot_id, robot_type, qr_id) VALUES

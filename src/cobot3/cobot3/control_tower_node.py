@@ -120,7 +120,9 @@ class ControlTowerNode(Node):
             self.redis_client = redis.Redis(
                 host=redis_host,
                 port=redis_port,
-                decode_responses=True
+                decode_responses=True,
+                socket_timeout=2.0,
+                socket_connect_timeout=3.0
             )
             self.get_logger().info('Redis 인메모리 데이터베이스 연결 완료.')
 
