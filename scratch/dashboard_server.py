@@ -882,7 +882,7 @@ def index():
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
         @keyframes pulse-border { 0%, 100% { border-color: rgba(0, 242, 254, 0.2); } 50% { border-color: rgba(0, 242, 254, 0.8); } }
         
-        /* 🗺️ 2D 그리드 레이아웃 (새로운 존 하이라이팅 포함) */
+        /* 🗺️ 2D 그리드 레이아웃 (새로운 존 하이라이팅 및 셀 병합 포함) */
         .grid-map-container { position: relative; width: 272px; height: 392px; border: 2px solid rgba(255, 255, 255, 0.12); background-color: rgba(10, 15, 30, 0.9); border-radius: 14px; margin: 0 auto; overflow: hidden; }
         .grid-loc { position: absolute; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 5px; font-size: 0.55rem; font-weight: 700; color: rgba(255, 255, 255, 0.8); text-align: center; }
         
@@ -893,11 +893,15 @@ def index():
         .grid-loc.conveyor { border: 1.5px solid rgba(16, 185, 129, 0.6); background: rgba(16, 185, 129, 0.15); }
         .grid-loc.conveyor-belt { border: 1.5px solid rgba(6, 182, 212, 0.7); background: rgba(6, 182, 212, 0.25); color: transparent; font-weight: bold; }
         .grid-loc.packaging { border: 1.5px solid rgba(236, 72, 153, 0.75); background: rgba(236, 72, 153, 0.18); }
-        .grid-loc.fixed-sg2-robot { border: 2px solid rgba(249, 115, 22, 0.8); background: rgba(249, 115, 22, 0.35); color: #fb923c; font-weight: bold; }
         
-        /* 🚀 추가된 SG2 IN/OUT 그룹 존 하이라이트 스타일 */
-        .grid-loc.zone-sg2-in { border: 2px solid rgba(14, 165, 233, 0.8) !important; background: rgba(14, 165, 233, 0.25) !important; color: #38bdf8 !important; font-weight: 900; box-shadow: 0 0 10px rgba(14, 165, 233, 0.3); }
-        .grid-loc.zone-sg2-out { border: 2px solid rgba(217, 70, 239, 0.8) !important; background: rgba(217, 70, 239, 0.25) !important; color: #f472b6 !important; font-weight: 900; box-shadow: 0 0 10px rgba(217, 70, 239, 0.3); }
+        /* SG2 로봇 렌더링 및 존 하이라이트 스타일 (통일) */
+        .grid-loc.fixed-sg2-robot { border: 2px solid rgba(14, 165, 233, 0.8) !important; background: rgba(14, 165, 233, 0.35) !important; color: #38bdf8 !important; font-weight: bold; }
+        .grid-loc.zone-sg2-in, .grid-loc.zone-sg2-out { border: 2px solid rgba(14, 165, 233, 0.8) !important; background: rgba(14, 165, 233, 0.25) !important; color: #38bdf8 !important; font-weight: 900; box-shadow: 0 0 10px rgba(14, 165, 233, 0.3); }
+
+        /* 범례 스타일 */
+        .map-legend { display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 20px; padding: 12px 16px; background: rgba(15, 23, 42, 0.5); border-radius: 8px; border: 1px solid var(--border-color); justify-content: center; }
+        .legend-item { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: #cbd5e1; font-weight: 500; }
+        .legend-box { width: 14px; height: 14px; border-radius: 3px; }
 
         .grid-loc.has-ws { background: #1e1b4b !important; border: 2px solid #eab308 !important; color: #fde047 !important; font-weight: 900; font-size: 0.52rem; z-index: 5; }
         .grid-loc.path-active { background: rgba(255, 0, 127, 0.05); box-shadow: inset 0 0 8px rgba(255, 0, 127, 0.35); }
@@ -952,6 +956,17 @@ def index():
 
         <div class="panel-card" style="margin-bottom: 2rem;">
             <h2>Warehouse 2D Live Grid Plan</h2>
+            <div class="map-legend">
+                <div class="legend-item"><div class="legend-box" style="border: 2px solid #eab308; background: #1e1b4b;"></div><span>작업대 (WS)</span></div>
+                <div class="legend-item"><div class="legend-box" style="border: 2px solid #fff; background: #ff007f; border-radius: 50%;"></div><span>AMR 로봇</span></div>
+                <div class="legend-item"><div class="legend-box" style="border: 1.5px solid rgba(59, 130, 246, 0.6); background: rgba(59, 130, 246, 0.15);"></div><span>주차 스팟</span></div>
+                <div class="legend-item"><div class="legend-box" style="border: 1.5px solid rgba(245, 158, 11, 0.6); background: rgba(245, 158, 11, 0.15);"></div><span>대기 스팟</span></div>
+                <div class="legend-item"><div class="legend-box" style="border: 1.5px solid rgba(168, 85, 247, 0.6); background: rgba(168, 85, 247, 0.15);"></div><span>충전 스팟</span></div>
+                <div class="legend-item"><div class="legend-box" style="border: 1.5px solid rgba(16, 185, 129, 0.6); background: rgba(16, 185, 129, 0.15);"></div><span>입고 버퍼</span></div>
+                <div class="legend-item"><div class="legend-box" style="border: 1.5px solid rgba(236, 72, 153, 0.75); background: rgba(236, 72, 153, 0.18);"></div><span>출고 버퍼</span></div>
+                <div class="legend-item"><div class="legend-box" style="border: 1.5px solid rgba(6, 182, 212, 0.7); background: rgba(6, 182, 212, 0.25);"></div><span>컨베이어</span></div>
+                <div class="legend-item"><div class="legend-box" style="border: 2px solid rgba(14, 165, 233, 0.8); background: rgba(14, 165, 233, 0.35);"></div><span>SG2 로봇 구역</span></div>
+            </div>
             <div id="floor-plan-container" style="background: rgba(15, 23, 42, 0.45); border-radius: 16px; padding: 20px; display: flex; justify-content: center;">
                 <div id="grid-map-panel" class="grid-map-container"></div>
             </div>
@@ -1015,53 +1030,75 @@ def index():
             container.innerHTML = '';
 
             if (gridCells) {
+                // 🛠️ 병합되어 화면에서 렌더링되지 않아야 할 나머지 여분 타일들의 정확한 좌표 필터링
+                const skipCoords = [
+                    '7.5,3.0', '7.5,-1.5', '7.5,-6.0',     // SG2_IN 로봇 오른쪽 절반 타일 (가로 2칸 병합용)
+                    '-1.5,9.0', '-3.0,7.5', '-1.5,7.5'     // SG2_OUT 로봇 3개 타일 (2x2 정사각형 병합용)
+                ];
+
                 const renderLocations = gridCells.filter(cell => {
-                    return cell.location_name || cell.location_type === 'STATIC_OBSTACLE';
+                    const coordKey = `${cell.x.toFixed(1)},${cell.y.toFixed(1)}`;
+                    if (skipCoords.includes(coordKey)) return false; // 렌더링 스킵
+                    return cell.location_name || cell.location_type === 'STATIC_OBSTACLE' || coordKey === '-3.0,9.0';
                 });
 
                 renderLocations.forEach(cell => {
                     const name = (cell.location_name || '').toLowerCase();
                     const type = cell.location_type;
+                    const coordKey = `${cell.x.toFixed(1)},${cell.y.toFixed(1)}`;
                     const el = document.createElement('div');
                     el.className = 'grid-loc';
-                    let labelText = ''; let w = '28px'; height = '28px';
+                    let labelText = ''; 
+                    let w = '28px'; 
+                    let h = '28px';
 
+                    // 1. 기본 구역 할당
                     if (name.startsWith('spot_')) { el.classList.add('spot'); labelText = 'S' + name.replace('spot_', ''); }
                     else if (name.startsWith('stage_')) { el.classList.add('stage'); labelText = 'ST' + name.replace('stage_', ''); }
                     else if (name.startsWith('charging_')) { el.classList.add('charging'); labelText = 'C' + name.replace('charging_', ''); }
                     else if (name.startsWith('sg2_in_0')) { el.classList.add('conveyor'); labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','A').replace('_b','B').toUpperCase(); }
                     else if (name.startsWith('sg2_out_0')) { el.classList.add('packaging'); labelText = 'O' + name.replace('sg2_out_00_', '').toUpperCase(); }
-                    else if (type === 'STATIC_OBSTACLE') {
-                        if (name.includes('팔') || cell.location_name.includes('로봇')) {
+                    else if (type === 'STATIC_OBSTACLE' || coordKey === '-3.0,9.0') {
+                        // 🛠️ SG2_IN (입고 로봇 영역 3개) - 가로 2칸 병합
+                        if (['6.0,3.0', '6.0,-1.5', '6.0,-6.0'].includes(coordKey)) {
                             el.classList.add('fixed-sg2-robot');
                             labelText = 'SG2';
-                        } else {
+                            w = '58px'; // 가로 넓이 두 배 + gap
+                        }
+                        // 🛠️ SG2_OUT (포장 로봇 영역 1개) - 2x2 정사각형 병합
+                        else if (coordKey === '-3.0,9.0') {
+                            el.classList.add('fixed-sg2-robot');
+                            labelText = 'SG2';
+                            w = '58px';
+                            h = '58px';
+                        }
+                        // 그 외 (X=9.0 컨베이어 벨트 라인)
+                        else {
                             el.classList.add('conveyor-belt');
-                            labelText = 'CV';
+                            labelText = ''; // 텍스트 숨김 (CV 제거)
                         }
                     }
 
-                    // 🚀 특정 구역(존) 좌표 감지하여 강력한 CSS 덮어쓰기 로직
-                    const coordKey = `${cell.x.toFixed(1)},${cell.y.toFixed(1)}`;
-                    const outCoords = ['-1.5,7.5', '-3.0,7.5', '-1.5,9.0', '-3.0,9.0'];
+                    // 🚀 특정 구역(존) 좌표 감지하여 강력한 CSS 덧붙이기 (기존 클래스 유지)
+                    const outCoords = ['0.0,9.0', '0.0,7.5', '-3.0,9.0']; // 포장 작업대 버퍼 + SG2_OUT 로봇 영역
                     const inCoords = ['6.0,3.0', '7.5,3.0', '6.0,-1.5', '7.5,-1.5', '6.0,-6.0', '7.5,-6.0'];
 
                     if (outCoords.includes(coordKey)) {
-                        el.className = 'grid-loc zone-sg2-out'; // 기존 클래스들을 아예 핑크퍼플 존으로 통일
-                        // 만약 빈 셀이었다면 기본 이름 부여
+                        el.classList.add('zone-sg2-out'); 
                         if (!labelText && !el.classList.contains('conveyor-belt')) labelText = 'OUT';
                     } else if (inCoords.includes(coordKey)) {
-                        el.className = 'grid-loc zone-sg2-in'; // 기존 클래스들을 아예 스카이블루 존으로 통일
+                        el.classList.add('zone-sg2-in'); 
                         if (!labelText && !el.classList.contains('conveyor-belt')) labelText = 'IN';
                     }
 
-                    // 투명 컨베이어벨트인 경우 텍스트 안보이게 유지
+                    // 투명 컨베이어 벨트는 텍스트 공백 유지
                     if (el.classList.contains('conveyor-belt')) { labelText = ''; }
                     
                     el.textContent = labelText;
                     el.style.left = `${xToPx(cell.x)}px`; el.style.top = `${yToPx(cell.y)}px`;
-                    el.style.width = w; el.style.height = '28px';
+                    el.style.width = w; el.style.height = h;
                     container.appendChild(el);
+                    
                     if (cell.location_name) locCellMap[name] = el;
                     locCellMap[cell.qr_id] = el;
                 });
