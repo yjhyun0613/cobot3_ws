@@ -53,7 +53,7 @@ cd ~/cobot3_ws/docker
 # 2. 컨테이너 백그라운드 구동 (관리자 권한 필요)
 sudo docker compose up -d
 ```
-* 최초 구동 시 `init.sql` 스크립트가 실행되어 **로봇 정보, 작업대 10대(WS01~WS10), 창고 주차 스팟 10개(spot_01~spot_10), 출고 대기 스팟 4개(stage_01~stage_04)**가 자동으로 적재됩니다.
+* 최초 구동 시 `init.sql` 스크립트가 실행되어 **로봇 정보, 작업대 10대(WS01~WS10), 창고 주차 스팟 10개(spot_01~spot_10), 출고 대기 스팟 4개(stage_01~stage_04), 바닥 QR 격자 맵(`floor_qr_map`) 약 117개 노드(논리 스팟 + AMR 주행 경로)**가 자동으로 적재됩니다.
 
 ---
 
@@ -91,6 +91,10 @@ colcon build
 
 # 4. 관제 센터 노드 실행
 ros2 run cobot3 control_tower
+
+# (선택) Docker 컨테이너 환경에서 실행 시 DB/Redis 호스트를 환경변수로 지정:
+# export POSTGRES_HOST=postgres REDIS_HOST=redis
+# ros2 run cobot3 control_tower
 ```
 
 ---
@@ -164,10 +168,17 @@ cd ~/cobot3_ws
 
 * **맵 파일**: `src/cobot3/resource/floor_with_con,storage.usd` (바닥 QR, 컨베이어, 스토리지, 작업대 선반 기설치)
 * **실행 방법** (관제탑 + 로봇 시뮬레이터가 구동 중인 상태에서 별도 터미널):
-  ```bash
-  cd ~/cobot3_ws
-  isaac-python scratch/isaac_amr_connector.py
-  ```
+  * **일반 동기화 모드 (단순 3D 뷰어 모니터링 시)**:
+    ```bash
+    cd ~/cobot3_ws
+    isaac-python scratch/isaac_amr_connector.py
+    ```
+  * **물리 시뮬레이션 모드 (실제 AMR 컨트롤러가 랙을 물리적으로 들어올리는 연동 시)**:
+    * PhysX 물리 연산과 커넥터의 작업대 강제 위치 동기화 간의 충돌을 방지하기 위해 `--only-amr` (또는 `-o`) 옵션을 추가하여 실행합니다.
+    ```bash
+    cd ~/cobot3_ws
+    isaac-python scratch/isaac_amr_connector.py --only-amr
+    ```
 * Isaac Sim 3D 뷰어에서 5대의 AMR과 10대의 이동식 작업대가 Redis/PostgreSQL 데이터와 30Hz로 동기화되어 실시간 주행 및 리프트 동작이 렌더링됩니다.
 
 ---
