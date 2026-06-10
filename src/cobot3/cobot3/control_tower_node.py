@@ -824,6 +824,70 @@ class ControlTowerNode(Node):
         except Exception as e:
             self.get_logger().error(f'작업대 완충 체크 중 에러: {str(e)}')
 
+    # ==========================================
+    # 거리 기반 최적화 헬퍼 함수 (Distance-based Optimization)
+    # ==========================================
+
+    def get_closest_empty_workstation(self, cursor, target_location):
+        """목적지 위치(예: sg2_in_01_A)와 물리적으로 가장 가까운 창고의 빈 작업대를 조회"""
+        # 1. 목적지의 x, y 물리 좌표를 먼저 조회
+        cursor.execute("SELECT x_coord, y_coord FROM floor_qr_map WHERE location_name = %s;", (target_location,))
+        target_row = cursor.fetchone()
+        if not target_row:
+            self.get_logger().warn(f'[최단거리] 목적지 {target_location}의 물리 좌표를 floor_qr_map에서 찾을 수 없습니다. Fallback 사용.')
+            # Fallback: 기존 LIMIT 1 방식으로 조회
+            cursor.execute(
+                "SELECT workstation_id, current_location, qr_id FROM workstations "
+                "WHERE current_location LIKE 'spot_%%' "
+                "AND workstation_id NOT IN ("
+                "    SELECT DISTINCT workstation_id FROM packages "
+                "    WHERE workstation_id IS NOT NULL AND status IN ('IN_WORKSTATION', 'IN_WAREHOUSE')"
+                ") LIMIT 1;"
+            )
+            return cursor.fetchone()
+
+        tx, ty = target_row[0], target_row[1]
+
+        # 2. 거리 연산을 통해 가장 가까운 빈 작업대 1대 추출
+        cursor.execute("""
+            SELECT w.workstation_id, w.current_location, w.qr_id
+            FROM workstations w
+            JOIN floor_qr_map f ON w.current_location = f.location_name
+            WHERE w.current_location LIKE 'spot_%%'
+              AND w.workstation_id NOT IN (
+                  SELECT DISTINCT workstation_id FROM packages
+                  WHERE workstation_id IS NOT NULL AND status IN ('IN_WORKSTATION', 'IN_WAREHOUSE')
+              )
+            ORDER BY (f.x_coord - %s)^2 + (f.y_coord - %s)^2 ASC
+            LIMIT 1;
+        """, (tx, ty))
+
+        return cursor.fetchone()
+
+    def get_closest_empty_spot(self, cursor, source_location):
+        """출발지 위치(예: sg2_out_00_A)에서 물리적으로 가장 가까운 빈 창고 스팟을 조회"""
+        # 1. 출발지의 x, y 물리 좌표를 먼저 조회
+        cursor.execute("SELECT x_coord, y_coord FROM floor_qr_map WHERE location_name = %s;", (source_location,))
+        source_row = cursor.fetchone()
+        if not source_row:
+            # Fallback: 기존 방식 (spot_id ASC)
+            cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1;")
+            return cursor.fetchone()
+
+        sx, sy = source_row[0], source_row[1]
+
+        # 2. 거리 연산을 통해 가장 가까운 빈 스팟 1개 추출
+        cursor.execute("""
+            SELECT wl.spot_id
+            FROM warehouse_locations wl
+            JOIN floor_qr_map f ON wl.spot_id = f.location_name
+            WHERE wl.status = 'EMPTY'
+            ORDER BY (f.x_coord - %s)^2 + (f.y_coord - %s)^2 ASC
+            LIMIT 1;
+        """, (sx, sy))
+
+        return cursor.fetchone()
+
     def dispatch_workstations_keepalive(self):
         """인바운드 라인별 작업대 개수 및 아웃바운드 포장존 상태를 감시하여 동적 공급 조율 (단일 슬롯 A 전용)"""
         if not self.pg_conn_pool:
@@ -884,25 +948,18 @@ class ControlTowerNode(Node):
                                             'workstation_qr_id': b_qr
                                         })
                                 else:
-                                    # 창고에서 A구역으로 직송
+                                    # 창고에서 A구역으로 직송 (💡 최단거리 배정)
                                     if not self.is_task_queued('DEPLOY_EMPTY_WORKSTATION', target=f"{line}_A"):
-                                        cursor.execute(
-                                            "SELECT workstation_id, current_location, qr_id FROM workstations "
-                                            "WHERE current_location LIKE 'spot_%%' "
-                                            "AND workstation_id NOT IN ("
-                                            "    SELECT DISTINCT workstation_id FROM packages "
-                                            "    WHERE workstation_id IS NOT NULL AND status IN ('IN_WORKSTATION', 'IN_WAREHOUSE')"
-                                            ") LIMIT 1;"
-                                        )
-                                        row = cursor.fetchone()
+                                        target_loc = f"{line}_A"
+                                        row = self.get_closest_empty_workstation(cursor, target_loc)
                                         if row:
                                             ws_id, start_loc, ws_qr = row[0], row[1], row[2] if row[2] is not None else ""
                                             self.push_amr_task({
                                                 'workstation_id': ws_id,
                                                 'task_type': 'DEPLOY_EMPTY_WORKSTATION',
                                                 'from': start_loc,
-                                                'to': f"{line}_A",
-                                                'description': f'빈 작업대 {ws_id} 공급 ➡️ {line}_A',
+                                                'to': target_loc,
+                                                'description': f'💡[최단거리] 빈 작업대 {ws_id} 공급 ➡️ {target_loc}',
                                                 'workstation_qr_id': ws_qr
                                             })
 
@@ -910,23 +967,16 @@ class ControlTowerNode(Node):
                             elif line_status[line]['A'] and not line_status[line]['B'] and not line_status[line]['MOVING_B']:
                                 if not self.is_task_queued('DEPLOY_EMPTY_WORKSTATION', target=f"{line}_B"):
                                     self.get_logger().info(f"[Dual-Buffer] {line} 예비 B구역 공백 감지, 공용 풀에 조달 요청 발행")
-                                    cursor.execute(
-                                        "SELECT workstation_id, current_location, qr_id FROM workstations "
-                                        "WHERE current_location LIKE 'spot_%%' "
-                                        "AND workstation_id NOT IN ("
-                                        "    SELECT DISTINCT workstation_id FROM packages "
-                                        "    WHERE workstation_id IS NOT NULL AND status IN ('IN_WORKSTATION', 'IN_WAREHOUSE')"
-                                        ") LIMIT 1;"
-                                    )
-                                    row = cursor.fetchone()
+                                    target_loc = f"{line}_B"
+                                    row = self.get_closest_empty_workstation(cursor, target_loc)
                                     if row:
                                         ws_id, start_loc, ws_qr = row[0], row[1], row[2] if row[2] is not None else ""
                                         self.push_amr_task({
                                             'workstation_id': ws_id,
                                             'task_type': 'DEPLOY_EMPTY_WORKSTATION',
                                             'from': start_loc,
-                                            'to': f"{line}_B",
-                                            'description': f'빈 작업대 {ws_id} 사전 보충 ➡️ {line}_B',
+                                            'to': target_loc,
+                                            'description': f'💡[최단거리] 빈 작업대 {ws_id} 사전 보충 ➡️ {target_loc}',
                                             'workstation_qr_id': ws_qr
                                         })
 
@@ -1628,9 +1678,8 @@ class ControlTowerNode(Node):
                             if row and row[0] is not None:
                                 ws_qr_id = row[0]
                                 
-                            # DB에서 비어있는 창고 스팟 조회
-                            cursor.execute("SELECT spot_id FROM warehouse_locations WHERE status = 'EMPTY' ORDER BY spot_id ASC LIMIT 1;")
-                            spot_row = cursor.fetchone()
+                            # DB에서 비어있는 창고 스팟 조회 (💡 포장존에서 가장 가까운 스팟 우선)
+                            spot_row = self.get_closest_empty_spot(cursor, 'sg2_out_00_A')
                             if spot_row:
                                 target_spot = spot_row[0]
                                 cursor.execute("UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;", (workstation_id, target_spot))
