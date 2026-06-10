@@ -116,24 +116,22 @@ string last_packed_slot     # 직전에 포장 완료된 슬롯 번호 (예: "sl
 
 ## 🔌 3. ROS 2 서비스 (Service) 인터페이스
 
-### ① `GetPackageRoute.srv`
-* **서비스 경로**: `cobot3_interfaces/srv/GetPackageRoute`
-* **역할**: 컨베이어 분류기(`bg2`)가 진입한 택배 박스의 QR코드를 스캔하여 배송일자별로 어떤 라인으로 분류해야 하는지 목적지를 조회합니다.
+### ① `GetDailyPackageList.srv`
+* **서비스 경로**: `cobot3_interfaces/srv/GetDailyPackageList`
+* **역할**: 컨베이어 분류기(`bg2`)가 영업 기동 시점에 오늘 처리해야 할 전체 정적 택배 목록을 한 번에 일괄 조회하여 로컬 캐시로 다운로드합니다.
 * **Request/Response 정의**:
 ```text
 # Request
-string package_id           # 상자 바코드 ID (비어있을 수 있음)
-string customer_name        # 수령인 성함 (비어있을 수 있음)
-string qr_id                # 바코드에서 스캔한 QR코드 원본 문자열 (예: "PKG_RAND_001")
+bool request_start          # 영업 기동 요청 플래그
 
 ---
 # Response
-string route_destination    # 분류 목적지 배송일자 문자열 (예: "2026-06-08")
+string package_list_json    # 오늘 처리할 전체 패키지 리스트 (JSON 직렬화 포맷)
 ```
-#### 💡 분류 라인 매핑 규칙
-* **오늘 (Today)** 날짜 물량 ➡️ **1번 라인 (`sg2_in_01`)**으로 푸싱 분류
-* **내일 (Tomorrow)** 날짜 물량 ➡️ **2번 라인 (`sg2_in_02`)**으로 푸싱 분류
-* **모레 (Day After)** 날짜 물량 ➡️ **3번 라인 (`sg2_in_03`)**으로 푸싱 분류
+#### 💡 로컬 분류 라인 매핑 규칙 (bg2 자체 판단)
+* **오늘 (Today - 2026-06-08)** 날짜 물량 ➡️ **1번 라인 (`sg2_in_01`)**으로 푸싱 분류
+* **내일 (Tomorrow - 2026-06-09)** 날짜 물량 ➡️ **2번 라인 (`sg2_in_02`)**으로 푸싱 분류
+* **모레 (Day After - 2026-06-10)** 날짜 물량 ➡️ **3번 라인 (`sg2_in_03`)**으로 푸싱 분류
 
 ### ② `CheckWarehouseStatus.srv`
 * **서비스 경로**: `cobot3_interfaces/srv/CheckWarehouseStatus`
