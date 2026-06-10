@@ -1,0 +1,9 @@
+# Request: bg2 시뮬레이터에서 상자가 컨베이어 끝단에 도달하여
+#          sg2 시뮬레이터로 이송(순간이동)을 요청할 때 사용
+string package_id          # 이동 대상 상자의 고유 ID (예: "PKG_20260610_001")
+string target_line         # sg2 측 도착 라인 (예: "sg2_in_01", "sg2_in_02", "sg2_in_03")
+
+---
+# Response: 동기화 처리 결과
+bool success               # 이송 동기화 처리 성공 여부
+string message             # 처리 결과 메시지 또는 에러 상세

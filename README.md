@@ -96,7 +96,7 @@ python3 docker/init_june_8th_state.py
 
 ---
 
-### 4단계: 프로그램 구동 (터미널 3개 필요)
+### 4단계: 프로그램 구동 (터미널 3~4개 필요)
 
 > [!IMPORTANT]
 > **분산 환경 vs 로컬 환경**: 상대 PC(Isaac Sim)와 썬더볼트 케이블을 연결한 분산 환경에서는 `ROS_LOCALHOST_ONLY=0`으로 설정합니다. 케이블 없이 이 PC에서만 테스트할 때는 `ROS_LOCALHOST_ONLY=1`과 `unset CYCLONEDDS_URI`를 사용합니다.
@@ -124,6 +124,16 @@ source install/setup.bash
 export ROS_DOMAIN_ID=119
 export ROS_LOCALHOST_ONLY=0        # 분산 환경 (상대 PC 연결 시)
 python3 src/cobot3/testfile/mock_simul.py
+```
+
+#### 터미널 4 (선택): 분산 시뮬레이션 상자 동기화 노드
+Isaac Sim bg2/sg2 2대 분산 시뮬레이션 환경에서 상자 순간이동(소멸/소환)을 제어할 때 사용합니다.
+```bash
+cd ~/cobot3_ws
+source install/setup.bash
+export ROS_DOMAIN_ID=119
+export ROS_LOCALHOST_ONLY=0
+ros2 run cobot3 sim_sync_node
 ```
 
 > [!TIP]
@@ -186,7 +196,10 @@ graph TD
     Outbound[sg2_out_00_A: 포장 로봇] -->|StartPackaging| CT
     CT <-->|SQL / Real-time Query| DB[(PostgreSQL)]
     CT <-->|ZADD / ZPOPMAX Priority Tasks| Redis[(Redis Command Queue)]
-    CT -->|1Hz JSON Broadcast / Event-driven| Fleet[/"/fleet/* Topics (amr_states, workstation_states, package_states, task_events)"/]
+    CT -->|1Hz JSON Broadcast / Event-driven| Fleet[/"/fleet/* Topics"/]
+    IsaacBG2[Isaac Sim A - bg2] -->|TransitPackage.srv| SimSync[sim_sync_node]
+    SimSync -->|sg2_spawn_trigger| IsaacSG2[Isaac Sim B - sg2]
+    SimSync <-->|status update| DB
 ```
 
 ### ② QR코드 식별자 매핑 규격

@@ -7,6 +7,27 @@
 
 ---
 
+## 📅 2026년 6월 10일 (화요일)
+
+* **17:45** - **분산 시뮬레이션 상자 동기화 전담 노드(sim_sync_node) 구축 및 인터페이스 정의 완료**:
+  - `cobot3_interfaces/srv/TransitPackage.srv` 커스텀 ROS 2 서비스 인터페이스 신규 정의: bg2 시뮬레이터에서 sg2로 상자 순간이동 요청을 위한 `package_id`, `target_line` → `success`, `message` 규격.
+  - `CMakeLists.txt`에 `TransitPackage.srv` 빌드 타겟 등록.
+  - `sim_sync_node.py` 전면 개편: 기존 미사용 `ReportInboundProgress` import 제거, `TransitPackage.srv` 기반 `/sim/transit_package` 서비스 서버 추가, 환경변수 기반 DB/Redis 접속(`POSTGRES_HOST`, `REDIS_HOST` 등), 내부 유틸리티 메서드 분리, docstring 정비 완료.
+  - `setup.py`에 `sim_sync_node` entry_point 등록 (`ros2 run cobot3 sim_sync_node` 명령으로 실행 가능).
+
+* **17:45** - **마크다운 문서 일괄 동기화**:
+  - `cobot3_interfaces/README.md`: `TransitPackage.srv` 규격 및 분산 시뮬레이션 동기화 토픽 섹션(§4) 추가, AI 에이전트 가이드 헤더 보강.
+  - `SYSTEM_IMPROVEMENT_PLAN.md`: §18 "분산 시뮬레이션 상자 동기화 전담 노드 구축" 섹션 신규 추가 (통신 채널 규격, 데이터 흐름 다이어그램, QR 상자 에셋 규격, 구동 가이드 포함).
+  - `README.md`: 4단계 프로그램 구동 안내에 터미널 4(sim_sync_node) 추가, 시스템 아키텍처 mermaid 다이어그램에 sim_sync_node 및 Isaac Sim 분산 연동 채널 반영.
+  - `ROBOT_AMR_INTEGRATION_GUIDE.md`: 아키텍처 다이어그램에 sim_sync_node 추가, §3에 `TransitPackage.srv` 서비스 규격 추가, §6.5 분산 시뮬레이션 동기화 노드 섹션 신설 (통신 채널, 데이터 흐름, 구동 명령).
+  - `CHANGELOG.md`: 본 변경 이력 추가.
+
+* **17:14** - **Isaac Sim 관제탑 시뮬레이션용 QR 상자 USD 에셋 생성기 개편**:
+  - `scratch/generate_sh5_boxes.py` 전면 개편: 색상 오렌지(0.85, 0.38, 0.08), QR 코드 앞면(Front face, -Y) 배치, 물리 속성(1.5kg, 마찰 2.0/1.8, friction_combine=max), 단순 Box Collider 적용.
+  - QR 파일 대상 범위를 6/6~6/12 전체 140개로 확대.
+
+---
+
 ## 📅 2026년 6월 9일 (화요일)
 
 * **17:15** - **아이작 심(Isaac Sim) 컨트롤러 좌표계 동기화 및 대시보드 서버 최적화**:

@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'control_tower = cobot3.control_tower_node:main',
+            'sim_sync_node = cobot3.sim_sync_node:main',
         ],
     },
 )

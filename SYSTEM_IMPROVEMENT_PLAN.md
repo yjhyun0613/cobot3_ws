@@ -712,3 +712,88 @@ PC A의 AMR 제어 노드가 PC B의 데이터베이스와 Redis에 접근할 �
 > **조치 완료**: 
 > - 물리 구동 시 `isaac_amr_connector.py`와 AMR Controller가 3D 씬 내 동일 프림에 중복 명령을 쓰던 제어권 충돌 문제를 **내 PC에서 시뮬레이션 코드 및 커넥터를 영구히 삭제(Clean)하고 관제 전용 모드로 전환**함으로써 원천적으로 해결하였습니다.
 > - 이제 실제 시뮬레이션 물리 연산과 실시간 제어(A* 주행, 리프트 등)는 오직 상대방(AMR PC)의 로컬 환경 내에서만 처리되며, 내 PC는 Redis 상태 캐시 수집 및 ROS 2 Action 전송의 관제 인터페이스 역할만 수행하므로 충돌 여지가 전혀 존재하지 않습니다.
+
+---
+
+## 🌐 18. 분산 시뮬레이션 상자 동기화 전담 노드 (sim_sync_node) 구축 - [완료]
+
+> [!NOTE]
+> **적용 완료**: 2026년 6월 10일 구현 완료.
+> - `sim_sync_node.py`를 관제탑과 완전히 독립된 마이크로 ROS 2 서비스 노드로 구축.
+> - `cobot3_interfaces/srv/TransitPackage.srv` 커스텀 서비스 인터페이스 신규 정의 및 CMakeLists.txt 등록.
+> - `setup.py`에 `sim_sync_node` entry_point 등록 완료 (`ros2 run cobot3 sim_sync_node`).
+> - Isaac Sim bg2/sg2 시뮬레이터 연동을 위한 서비스/토픽 하이브리드 통신 채널 구성 완료.
+
+### 18.1 독립 노드 분리 설계 배경 (Architectural Decision)
+
+기존 관제탑(`control_tower_node.py`)은 데이터베이스 커넥션 풀링, AMR 큐 스케줄링, 로봇 팔 일시정지 제어 등 핵심 비즈니스 로직만으로도 처리해야 할 결합도가 매우 높습니다. 여기에 시뮬레이터(Isaac Sim) 두 인스턴스 간의 물리적 프림(Prim) 상태를 강제로 동기화하는 '소멸/소환' 이벤트 핸들러까지 추가되면 다음과 같은 문제가 발생합니다:
+
+1. **관제탑 비대화(Fat Node):** 시뮬레이션 종속적 코드가 메인 관제 로직에 섞여 유지보수성이 저하됩니다.
+2. **상용화/현업 전환 시 결함:** 실제 현장 물류창고에 배포할 때는 시뮬레이터 동기화 코드를 전부 주석 처리하거나 지워야 하는 번거로움이 생깁니다.
+
+따라서 완전히 독립된 **마이크로 ROS 2 서비스 노드(`sim_sync_node.py`)**로 기능을 분리하여, 개발 환경(시뮬레이션 가속)과 상용 환경의 결합도를 원천 차단(Decoupling)합니다.
+
+### 18.2 통신 채널 규격
+
+| 채널 타입 | 토픽/서비스 이름 | 메시지 타입 | 방향 | 용도 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Service** | `/sim/transit_package` | `TransitPackage.srv` | bg2 → sync_node | 상자 이송 요청 (권장) |
+| **Topic** | `/sim/bg2_exit_event` | `std_msgs/String` (JSON) | bg2 → sync_node | 상자 탈출 감지 (대체 채널) |
+| **Topic** | `/sim/sg2_spawn_trigger` | `std_msgs/String` (JSON) | sync_node → sg2 | 상자 소환 명령 |
+
+### 18.3 데이터 흐름 및 상자 텔레포트 메커니즘
+
+```
+Isaac Sim A (bg2)                 sim_sync_node                  Isaac Sim B (sg2)
+━━━━━━━━━━━━━━━━━                ━━━━━━━━━━━━━━━                ━━━━━━━━━━━━━━━━━
+상자가 벨트 끝에 도달
+         │
+         ├──[ServiceCall]──────►  /sim/transit_package
+         │                              │
+         │                     DB: status='TRANSIT_TO_SG2'
+         │                              │
+         │                     [Topic Pub]──────────────►  /sim/sg2_spawn_trigger
+         │                              │                         │
+         ◄──Response(success)──┘                        상자 Prim 동적 생성(소환)
+         │
+  해당 상자 Prim 삭제(소멸)
+```
+
+### 18.4 Isaac Sim QR 상자 에셋 규격
+
+분산 시뮬레이션 환경에서 사용되는 상자 USD 에셋의 물리/시각 규격:
+
+| 항목 | 값 |
+| :--- | :--- |
+| 크기 | 10cm × 10cm × 10cm `(0.10, 0.10, 0.10)` |
+| 색상 | 오렌지 `diffuse_color=(0.85, 0.38, 0.08)` |
+| 충돌체 | 단순 Box Collider (Mesh Collider 렌더링 금지) |
+| 질량 | 1.5 kg |
+| 정지 마찰력 | 2.0 |
+| 동마찰력 | 1.8 |
+| 마찰 결합 모드 | `friction_combine_mode="max"` |
+| QR 코드 위치 | 앞면(Front face, -Y방향) 1면 |
+| 에셋 생성기 | `scratch/generate_sh5_boxes.py` |
+| QR 이미지 | `scratch/qr_codes/QR_YYYYMMDD_NNN.png` |
+| 출력 경로 | `scratch/box_assets/PKG_YYYYMMDD_NNN.usd` |
+
+### 18.5 구동 가이드
+
+```bash
+# 1. 인터페이스 빌드 (최초 1회)
+cd ~/cobot3_ws
+colcon build --packages-select cobot3_interfaces
+source install/setup.bash
+
+# 2. 노드 패키지 빌드
+colcon build --packages-select cobot3
+source install/setup.bash
+
+# 3. 분산 시뮬레이션 동기화 노드 실행
+export ROS_DOMAIN_ID=119
+ros2 run cobot3 sim_sync_node
+
+# 4. (선택) 상자 USD 에셋 생성 (Isaac Sim Python 환경 필요)
+~/.local/share/ov/pkg/isaac-sim-*/python.sh scratch/generate_sh5_boxes.py
+```
+

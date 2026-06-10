@@ -16,10 +16,13 @@ graph TD
         CT[Control Tower Node] <--> DB[(PostgreSQL)]
         CT <--> Redis[(Redis Cache)]
         Dash[FastAPI Dashboard] <-- WebSocket (0.5s) --> Browser[Client Dashboard]
+        SimSync[sim_sync_node] <--> DB
     end
     
     subgraph PC A (AMR 및 시뮬레이터)
         AMR_Act[AMR Action Server] <--> CT
+        IsaacBG2[Isaac Sim A - bg2] --> |TransitPackage.srv| SimSync
+        SimSync --> |sg2_spawn_trigger| IsaacSG2[Isaac Sim B - sg2]
         Isaac[NVIDIA Isaac Sim] <-- TCP Socket (30Hz) --> Bridge[Socket-ROS2 Bridge]
     end
 
@@ -165,6 +168,23 @@ string package_qr_id        # 적재된 패키지 QR코드 ID
 # Response
 bool success                # DB 반영 성공 여부 (true / false)
 ```
+
+### ④ `TransitPackage.srv` _(분산 시뮬레이션 전용)_
+* **서비스 경로**: `cobot3_interfaces/srv/TransitPackage`
+* **역할**: Isaac Sim **분산 시뮬레이션 환경 전용**. bg2(분류 라인) 시뮬레이터에서 상자가 컨베이어 벨트 끝단 트리거 영역에 도달했을 때, 독립 동기화 노드(`sim_sync_node`)에 sg2(적재/포장 라인) 시뮬레이터로의 상자 순간이동(소멸 → 소환)을 요청합니다.
+* **Request/Response 정의**:
+```text
+# Request
+string package_id           # 이동 대상 상자의 고유 ID (예: "PKG_20260610_001")
+string target_line          # sg2 측 도착 라인 (예: "sg2_in_01", "sg2_in_02", "sg2_in_03")
+
+---
+# Response
+bool success                # 이송 동기화 처리 성공 여부
+string message              # 처리 결과 메시지 또는 에러 상세
+```
+> [!NOTE]
+> **사용 노드**: `sim_sync_node`(서비스 서버)는 관제탑(`control_tower_node`)과 완전히 독립되어 실행됩니다. 실제 현장 배포 시에는 이 노드를 기동하지 않으면 됩니다.
 
 ---
 
@@ -325,6 +345,43 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp  # Cyclone DDS 미들웨어 강제 
 PC A의 파이썬 노드 및 커넥터 스크립트 실행 시 호스트 접속처를 PC B의 IP로 명시적으로 변경해 줍니다.
 * **Database Host**: `192.168.100.20`
 * **Redis Host**: `192.168.100.20`
+
+### ③ 환경변수 기반 DB/Redis 접속 설정 (sim_sync_node 포함)
+분산 환경에서 `sim_sync_node`를 포함한 모든 노드의 DB/Redis 접속 호스트를 환경변수로 주입할 수 있습니다.
+```bash
+# PC A에서 실행 시 (DB/Redis는 PC B에 있으므로)
+export POSTGRES_HOST=192.168.100.20
+export REDIS_HOST=192.168.100.20
+```
+
+---
+
+## 🌐 6.5 분산 시뮬레이션 상자 동기화 노드 (sim_sync_node)
+
+Isaac Sim bg2(분류 라인)와 sg2(적재/포장 라인) 2대 분산 시뮬레이션 환경 간의 상자 순간이동(소멸/소환)을 전담하는 독립 마이크로 노드입니다.
+
+### 통신 채널 규격
+| 채널 타입 | 이름 | 메시지 타입 | 방향 | 용도 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Service** | `/sim/transit_package` | `TransitPackage.srv` | bg2 → sync_node | 상자 이송 요청 (권장) |
+| **Topic** | `/sim/bg2_exit_event` | `std_msgs/String` (JSON) | bg2 → sync_node | 상자 탈출 감지 (대체 채널) |
+| **Topic** | `/sim/sg2_spawn_trigger` | `std_msgs/String` (JSON) | sync_node → sg2 | 상자 소환 명령 |
+
+### 데이터 흐름
+1. bg2 시뮬레이터에서 상자가 컨베이어 벨트 끝단 트리거 박스에 접촉
+2. bg2 스크립트가 `/sim/transit_package` 서비스 호출 (또는 `/sim/bg2_exit_event` 토픽 발행)
+3. `sim_sync_node`가 수신하여 PostgreSQL 상태를 `TRANSIT_TO_SG2`로 갱신
+4. `/sim/sg2_spawn_trigger` 토픽으로 sg2 시뮬레이터에 소환 명령 발행
+5. sg2 시뮬레이터가 토픽을 구독하여 지정된 입구 좌표에 상자 Prim 동적 생성
+6. bg2 시뮬레이터는 서비스 응답(success) 수신 후 해당 상자 Prim 즉시 삭제
+
+### 구동 명령
+```bash
+cd ~/cobot3_ws
+source install/setup.bash
+export ROS_DOMAIN_ID=119
+ros2 run cobot3 sim_sync_node
+```
 
 ---
 
