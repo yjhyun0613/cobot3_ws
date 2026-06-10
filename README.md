@@ -76,89 +76,72 @@ sudo docker compose up -d
 
 ---
 
-### 3단계: ROS2 관제탑 노드 빌드 및 구동
-로봇들로부터 통신을 받아 DB를 갱신하고 스케줄링 명령을 하달하는 메인 ROS2 노드를 실행합니다.
+### 3단계: 시나리오 데이터 초기화
 
+시뮬레이션 시작 전 DB 상태를 원하는 시나리오로 설정합니다. 두 가지 방식 중 하나를 선택하세요.
+
+#### 방법 A: 빈 상태에서 시작 (공장 초기화)
+작업대 10대를 주차장에 정렬하고, 패키지를 모두 비운 깨끗한 상태로 시작합니다.
 ```bash
-# 1. 워크스페이스 루트로 이동
 cd ~/cobot3_ws
+python3 scratch/reset_db.py
+```
 
-# 2. ROS2 패키지 컴파일 (최초 1회 또는 코드 수정 시)
-colcon build
+#### 방법 B: 6월 8일 이월 재고 시나리오에서 시작 (권장)
+전날(6~7일)의 부분 적재 작업대(WS01 완충 8개, WS02 5개, WS03 5개)와 AMR 5대 충전기 배치 등 실제 영업 재개 시점의 상태를 마스킹합니다.
+```bash
+cd ~/cobot3_ws
+python3 docker/init_june_8th_state.py
+```
 
-# 3. ROS2 환경 변수 소싱
-. install/setup.bash
+---
 
-# 4. 관제 센터 노드 실행
+### 4단계: 프로그램 구동 (터미널 3개 필요)
+
+> [!IMPORTANT]
+> **분산 환경 vs 로컬 환경**: 상대 PC(Isaac Sim)와 썬더볼트 케이블을 연결한 분산 환경에서는 `ROS_LOCALHOST_ONLY=0`으로 설정합니다. 케이블 없이 이 PC에서만 테스트할 때는 `ROS_LOCALHOST_ONLY=1`과 `unset CYCLONEDDS_URI`를 사용합니다.
+
+#### 터미널 1: FastAPI 웹 대시보드 서버
+```bash
+cd ~/cobot3_ws
+python3 scratch/dashboard_server.py
+```
+* 접속 주소: **http://localhost:8009**
+
+#### 터미널 2: ROS2 관제탑(Control Tower) 노드
+```bash
+cd ~/cobot3_ws
+source install/setup.bash
+export ROS_DOMAIN_ID=119
+export ROS_LOCALHOST_ONLY=0        # 분산 환경 (상대 PC 연결 시)
 ros2 run cobot3 control_tower
-
-# (선택) Docker 컨테이너 환경에서 실행 시 DB/Redis 호스트를 환경변수로 지정:
-# export POSTGRES_HOST=postgres REDIS_HOST=redis
-# ros2 run cobot3 control_tower
 ```
 
----
-
-## 🖥️ 3. 실시간 웹 대시보드 및 모의 시뮬레이터 구동 (테스트용)
-
-관제탑 시스템 및 DB 상태를 시각적으로 확인하고 가상의 적재 시나리오를 테스트할 수 있도록 웹 대시보드 및 모의 시나리오 실행 스크립트가 `scratch/` 디렉토리에 내장되어 있습니다.
-
-### ① 실시간 웹 대시보드 (FastAPI 기반)
-DB 데이터(PostgreSQL & Redis)를 한눈에 모니터링할 수 있는 멋진 다크 모드 대시보드를 제공합니다.
-
-* **구동 방법**:
-  ```bash
-  # 1. FastAPI 및 Uvicorn 라이브러리 설치 (미설치 시)
-  pip install fastapi uvicorn
-
-  # 2. 대시보드 서버 실행 (워크스페이스 루트에서 실행)
-  python3 scratch/dashboard_server.py
-  ```
-* **접속 주소**: 웹 브라우저를 열고 `http://localhost:8009`에 접속합니다.
-* **주요 기능**:
-  * 창고 주차 스팟 10개(`spot_01` ~ `spot_10`) 및 작업대 10개(`WS01` ~ `WS10`)의 실시간 상태 시각화
-  * Redis AMR 명령 대기열(`queue:amr_tasks`) 실시간 우선순위 목록 표시
-  * 택배 위치, 수령인, 상태, 출고 바코드 등을 테이블로 실시간 추적
-  * **[⚡ 시뮬레이션 적재 발생]** 버튼으로 DB 및 Redis에 Look-ahead 명령어가 정상 동작하는지 모의 테스트 가능
-  * **[🔄 데이터베이스 초기화]** 버튼으로 테이블 상태 공장 초기화 가능
-
-### ② 모의 ROS2 시뮬레이터 테스트 (`run_full_simulation_robot.py`)
-실제 ROS2 통신 환경에서 관제 센터 노드가 올바르게 응답하는지 검증하기 위한 가상 노드입니다. AMR 액션 서버(`manage_workstation`), 포장 로봇 액션 서버(`start_packaging`) 등을 모의(Mocking)하여 관제탑과의 핑퐁 제어 루프를 시뮬레이션합니다.
-
-* **구동 방법**:
-  ```bash
-  # 1. 새로운 터미널에서 ROS2 환경 설정 소싱
-  cd ~/cobot3_ws
-  . install/setup.bash
-
-  # 2. 시뮬레이터 실행
-  python3 scratch/run_full_simulation_robot.py
-  ```
-* **시나리오 흐름**:
-  1. 시뮬레이터 가동 시 대기(`WAITING`) 상태인 택배 상자를 순차적으로 분류합니다.
-  2. 분류 로봇(bg2)이 택배 박스를 스캔하여 목적지 날짜를 조회하고 이에 해당하는 대상 로봇(`sg2_in_01` ~ `03`)을 결정합니다.
-  3. 로봇은 해당 라인의 A구역(`sg2_in_XX_A`)에 빈 작업대가 배치될 때까지 대기한 후 적재 및 진척도 보고를 진행합니다.
-  4. 3번째 슬롯 적재 완료 시점에 관제탑에서 **Look-ahead 예비 작업대 배치 태스크(B구역 호출)**를 정상 발행하는지 감시합니다.
-  5. 8번째 슬롯까지 적재 시 완충 작업대가 회수 및 보관/포장 이송되고, B구역의 작업대가 A구역으로 승격되어 연속 공정이 이루어지는지 검증합니다.
-
----
-
-## 🎯 4. 원클릭 통합 테스트 환경 가동 (추천)
-
-위 3단계를 **자동으로 한번에 처리**하는 통합 런처 스크립트가 준비되어 있습니다.
-
+#### 터미널 3: 로봇 및 AMR 모의 시뮬레이터
 ```bash
 cd ~/cobot3_ws
-./start_test_env.sh
+source install/setup.bash
+export ROS_DOMAIN_ID=119
+export ROS_LOCALHOST_ONLY=0        # 분산 환경 (상대 PC 연결 시)
+python3 src/cobot3/testfile/mock_simul.py
 ```
 
-이 스크립트는 다음을 순서대로 자동 수행합니다:
-1. Docker 컨테이너(PostgreSQL, Redis) 상태 점검 및 자동 가동
-2. 데이터베이스 테이블 초기화 및 바닥 QR 격자 맵 재생성 (`scratch/reset_db.py`)
-3. ROS 2 워크스페이스 빌드 확인
-4. 실행 모드 선택 (새 터미널 탭 자동 실행 / 백그라운드 / 수동 명령어 안내)
+> [!TIP]
+> **로컬 전용 테스트 시**: 썬더볼트 케이블이 연결되어 있지 않은 경우 CycloneDDS가 `thunderbolt0` 인터페이스를 찾지 못해 에러가 발생합니다. 이때는 각 터미널에서 `unset CYCLONEDDS_URI`를 먼저 실행하고 `ROS_LOCALHOST_ONLY=1`로 설정하세요.
 
-실행 후 웹 브라우저에서 **`http://localhost:8009`**에 접속하고, 테스트용 CSV 파일(`scratch/packages_2026-06-08.csv`)을 업로드하면 시뮬레이션이 즉시 시작됩니다.
+---
+
+### 5단계: 대시보드에서 CSV 업로드 및 영업 시작
+
+1. 웹 브라우저에서 **`http://localhost:8009`**에 접속합니다.
+2. 상단의 **[📥 CSV 입고 명단 업로드]** 버튼을 클릭하여 아래 파일 중 하나를 업로드합니다.
+   * `scratch/packages_2026-06-08.csv` (6월 8일 시나리오용)
+   * `scratch/packages_2026-06-09.csv`, `scratch/packages_2026-06-10.csv` 등
+3. 모든 기기가 연결되면 **[🟢 영업 시작]** 버튼이 활성화되며, 클릭 시 시뮬레이션이 개시됩니다.
+4. 모의 시뮬레이터 터미널에서 다음 과정이 순서대로 진행됩니다:
+   * **[초기화]**: 관제탑으로부터 당일 전체 택배 명단을 1회 일괄 수신 (`GetDailyPackageList`)
+   * **[분류 진행]**: bg2 분류기 로컬에서 택배 목적지를 직접 판단하고 분류 카운트 표시
+   * **[이송 시작]**: 적재 로봇이 작업대에 순차 적재 후 AMR 호출 및 작업대 회전/교체 시나리오 연동
 
 ---
 
@@ -198,7 +181,7 @@ cat ~/cobot3_ws/docker/warehouse_backup.sql | sudo docker exec -i warehouse_post
 ### ① 시스템 아키텍처 구조
 ```mermaid
 graph TD
-    Sorter[bg2: 컨베이어 분류 로봇] -->|GetPackageRoute| CT[Control Tower Node]
+    Sorter[bg2: 컨베이어 분류 로봇] -->|GetDailyPackageList| CT[Control Tower Node]
     Inbound[sg2_in_XX: 적재 로봇] -->|CheckWarehouseStatus / ReportInbound| CT
     Outbound[sg2_out_00_A: 포장 로봇] -->|StartPackaging| CT
     CT <-->|SQL / Real-time Query| DB[(PostgreSQL)]
