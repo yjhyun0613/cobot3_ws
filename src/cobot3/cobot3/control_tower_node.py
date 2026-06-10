@@ -6,7 +6,7 @@ import os
 import threading
 
 # 커스텀 ROS2 인터페이스 임포트
-from cobot3_interfaces.srv import GetPackageRoute, CheckWarehouseStatus, ReportInboundProgress, GetDailyPackageList
+from cobot3_interfaces.srv import CheckWarehouseStatus, ReportInboundProgress, GetDailyPackageList
 from cobot3_interfaces.action import MovePackage, ManageWorkstation, StartPackaging
 from std_msgs.msg import String, Bool
 
@@ -44,11 +44,6 @@ class ControlTowerNode(Node):
         self.init_databases()
 
         # 2. ROS2 서비스 서버 등록 (로봇들로부터의 요청 수신)
-        self.route_service = self.create_service(
-            GetPackageRoute,
-            'get_package_route',
-            self.get_package_route_callback
-        )
         self.warehouse_status_service = self.create_service(
             CheckWarehouseStatus,
             'check_warehouse_status',
@@ -198,77 +193,6 @@ class ControlTowerNode(Node):
     # ==========================================
     # ROS2 서비스 콜백 함수 정의 (인바운드 라인)
     # ==========================================
-
-    def get_package_route_callback(self, request, response):
-        """bg2 로봇이 바코드를 찍어 목적지 날짜를 조회할 때 호출"""
-        package_id = request.package_id
-        customer_name = request.customer_name
-        qr_id = request.qr_id
-        self.get_logger().info(f'[GetPackageRoute] 입고 택배 바코드/QR 스캔 - ID: {package_id}, 수령인: {customer_name}, QR ID: {qr_id}')
-
-        route_date = None
-        with self.get_db_connection() as conn:
-            if conn:
-                try:
-                    with conn.cursor() as cursor:
-                        # 1. QR ID가 주어지면 QR ID로 먼저 조회
-                        if qr_id != "":
-                            cursor.execute(
-                                "SELECT route_zone, package_id, customer_name FROM packages WHERE qr_id = %s;",
-                                (qr_id,)
-                            )
-                            row = cursor.fetchone()
-                            if row:
-                                route_date = row[0]
-                                package_id = row[1]
-                                customer_name = row[2]
-                                self.get_logger().info(f'[GetPackageRoute] QR ID {qr_id}로 조회 성공 - 패키지 ID: {package_id}')
-
-                        # 2. QR ID로 조회에 실패했거나 제공되지 않은 경우 기존 package_id로 조회
-                        if not route_date and package_id:
-                            cursor.execute(
-                                "SELECT route_zone, customer_name, qr_id FROM packages WHERE package_id = %s;",
-                                (package_id,)
-                            )
-                            row = cursor.fetchone()
-                            if row:
-                                route_date = row[0]
-                                customer_name = row[1]
-                                if row[2] is not None:
-                                    qr_id = row[2]
-                                self.get_logger().info(f'[GetPackageRoute] Package ID {package_id}로 조회 성공 - QR ID: {qr_id}')
-
-                        # 3. 데이터베이스에 없는 새로운 패키지인 경우 자동 등록
-                        if not route_date:
-                            route_date = datetime.now().strftime('%Y-%m-%d')
-                            if not package_id:
-                                package_id = f"PKG_QR_{qr_id}" if qr_id else f"PKG_RAND_{int(time.time())}"
-                            if not customer_name:
-                                customer_name = f"Customer_{qr_id}" if qr_id else "Unknown"
-
-                            if qr_id != "":
-                                cursor.execute(
-                                    "INSERT INTO packages (package_id, customer_name, route_zone, status, qr_id) "
-                                    "VALUES (%s, %s, %s, 'WAITING', %s);"  ,
-                                    (package_id, customer_name, route_date, qr_id)
-                                )
-                            else:
-                                cursor.execute(
-                                    "INSERT INTO packages (package_id, customer_name, route_zone, status) "
-                                    "VALUES (%s, %s, %s, 'WAITING');",
-                                    (package_id, customer_name, route_date)
-                                )
-                            self.get_logger().info(f'[GetPackageRoute] 신규 패키지 등록 완료 - ID: {package_id}, QR: {qr_id}')
-                except Exception as e:
-                    self.get_logger().error(f'GetPackageRoute DB 조회 중 오류: {str(e)}')
-
-        # DB 미연결 또는 예외 시 Mock 값 대응
-        if not route_date:
-            route_date = datetime.now().strftime('%Y-%m-%d')
-
-        response.route_destination = route_date
-        self.get_logger().info(f'[GetPackageRoute] 목적지 분류 결과 전송 -> {route_date}')
-        return response
 
     def get_daily_package_list_callback(self, request, response):
         """bg2 로봇이 영업 시작 시 오늘 분류할 전체 택배 명단을 한 번에 가져갈 때 호출"""

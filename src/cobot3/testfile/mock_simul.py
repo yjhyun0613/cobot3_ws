@@ -7,7 +7,7 @@ from datetime import datetime
 from std_msgs.msg import Bool
 
 # 커스텀 ROS2 인터페이스 임포트
-from cobot3_interfaces.srv import GetPackageRoute, CheckWarehouseStatus, ReportInboundProgress
+from cobot3_interfaces.srv import GetDailyPackageList, CheckWarehouseStatus, ReportInboundProgress
 from cobot3_interfaces.action import MovePackage, ManageWorkstation, StartPackaging
 
 class MockRobotSimulator(Node):
@@ -34,7 +34,10 @@ class MockRobotSimulator(Node):
         # ----------------------------------------------------
         # 2. 서비스 클라이언트 등록 (로봇 -> 관제탑 요청 발송)
         # ----------------------------------------------------
-        self.route_client = self.create_client(GetPackageRoute, 'get_package_route')
+        self.route_client = self.create_client(GetDailyPackageList, 'get_daily_package_list')
+        self.package_list = []
+        self.package_list_fetched = False
+        self.classified_count = 0
         self.warehouse_status_client = self.create_client(CheckWarehouseStatus, 'check_warehouse_status')
         self.inbound_progress_client = self.create_client(ReportInboundProgress, 'report_inbound_progress')
 
@@ -160,42 +163,55 @@ class MockRobotSimulator(Node):
             self.get_logger().info('sg2_in_01이 일시 정지 상태이므로 신규 패키지 입고 시뮬레이션을 보류합니다.')
             return
 
-        pkg_id = f"PKG_MOCK_{self.package_counter}"
-        cust_name = f"User_{self.package_counter}"
-        qr_str = f"QR_MOCK_{self.package_counter}"
-        self.package_counter += 1
-
-        self.get_logger().info(f'\n--- 📦 [시나리오 시작] 신규 패키지 입고 감지: {pkg_id} ---')
-        
-        # 단계 1: bg2 로봇이 바코드를 찍어 배송 경로 조회
-        if not self.route_client.wait_for_service(timeout_sec=2.0):
-            self.get_logger().warn('관제탑의 get_package_route 서비스 서버가 켜져있지 않습니다.')
+        # 1차 실행 때 오늘 전체 택배 명단을 가져옵니다.
+        if not self.package_list_fetched:
+            if not self.route_client.wait_for_service(timeout_sec=2.0):
+                self.get_logger().warn('관제탑의 get_daily_package_list 서비스 서버가 켜져있지 않습니다.')
+                return
+            
+            self.get_logger().info('📦 [초기화] 영업 시작: 관제탑으로부터 오늘 전체 택배 명단을 1회 받아옵니다.')
+            req = GetDailyPackageList.Request()
+            req.request_start = True
+            
+            future = self.route_client.call_async(req)
+            future.add_done_callback(self.response_daily_package_list_callback)
+            self.package_list_fetched = True
             return
 
-        req_route = GetPackageRoute.Request()
-        req_route.package_id = pkg_id
-        req_route.customer_name = cust_name
-        req_route.qr_id = qr_str
-        
-        future = self.route_client.call_async(req_route)
-        future.add_done_callback(lambda f: self.response_route_callback(f, pkg_id, cust_name, qr_str))
+        # 명단이 비어있거나 이미 모든 패키지를 분류했다면 중단
+        if not self.package_list or self.classified_count >= len(self.package_list):
+            self.get_logger().info(f'🎉 오늘 예정된 모든 패키지 분류/적재가 완료되어 시뮬레이션을 종료합니다. (총 {self.classified_count}개)')
+            return
 
-    def response_route_callback(self, future, pkg_id, cust_name, qr_str):
-        try:
-            res = future.result()
-            self.get_logger().info(f'[Service 응답] 목적지 분류 결과 수신 -> {res.route_destination}')
+        # 명단에서 다음 패키지를 꺼내어 스캔
+        pkg = self.package_list[self.classified_count]
+        pkg_id = pkg.get('package_id')
+        cust_name = pkg.get('customer_name')
+        qr_str = pkg.get('qr_id')
+        self.classified_count += 1
+
+        self.get_logger().info(f'\n--- 📦 [분류 진행] QR 스캔 완료: {qr_str} (진행: {self.classified_count}/{len(self.package_list)}) ---')
+        self.get_logger().info(f'[로컬 분류 판단] 패키지 {pkg_id} 목적지 -> {pkg.get("route_zone")}')
+
+        # 단계 2: sg2_in 적재 로봇이 창고 중복 검사 수행 (이후 과정은 기존과 동일)
+        if self.warehouse_status_client.wait_for_service(timeout_sec=1.0):
+            req_status = CheckWarehouseStatus.Request()
+            req_status.customer_name = cust_name
+            req_status.package_id = pkg_id
+            req_status.qr_id = qr_str
             
-            # 단계 2: sg2_in 적재 로봇이 창고 중복 검사 수행
-            if self.warehouse_status_client.wait_for_service(timeout_sec=1.0):
-                req_status = CheckWarehouseStatus.Request()
-                req_status.customer_name = cust_name
-                req_status.package_id = pkg_id
-                req_status.qr_id = qr_str
-                
-                f_status = self.warehouse_status_client.call_async(req_status)
-                f_status.add_done_callback(lambda f: self.response_warehouse_status_callback(f, pkg_id, qr_str))
+            f_status = self.warehouse_status_client.call_async(req_status)
+            f_status.add_done_callback(lambda f: self.response_warehouse_status_callback(f, pkg_id, qr_str))
+
+    def response_daily_package_list_callback(self, future):
+        try:
+            import json
+            res = future.result()
+            self.package_list = json.loads(res.package_list_json)
+            self.get_logger().info(f'📥 오늘 배송할 총 {len(self.package_list)}개의 택배 명단을 수신하여 로컬에 저장 완료!')
         except Exception as e:
-            self.get_logger().error(f'Route 서비스 응답 처리 중 에러: {e}')
+            self.get_logger().error(f'명단 수신 실패: {e}')
+            self.package_list_fetched = False
 
     def response_warehouse_status_callback(self, future, pkg_id, qr_str):
         try:
