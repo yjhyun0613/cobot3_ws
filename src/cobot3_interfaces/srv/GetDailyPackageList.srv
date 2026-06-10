@@ -1,0 +1,6 @@
+# Request: 영업 시작 시 패키지 정보 일괄 요청
+bool request_start
+
+---
+# Response: 오늘 처리할 전체 택배 명단 (JSON 포맷 스트링)
+string package_list_json

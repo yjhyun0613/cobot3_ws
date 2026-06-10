@@ -6,7 +6,7 @@ import os
 import threading
 
 # 커스텀 ROS2 인터페이스 임포트
-from cobot3_interfaces.srv import GetPackageRoute, CheckWarehouseStatus, ReportInboundProgress
+from cobot3_interfaces.srv import GetPackageRoute, CheckWarehouseStatus, ReportInboundProgress, GetDailyPackageList
 from cobot3_interfaces.action import MovePackage, ManageWorkstation, StartPackaging
 from std_msgs.msg import String, Bool
 
@@ -58,6 +58,11 @@ class ControlTowerNode(Node):
             ReportInboundProgress,
             'report_inbound_progress',
             self.report_inbound_progress_callback
+        )
+        self.get_daily_package_list_service = self.create_service(
+            GetDailyPackageList,
+            'get_daily_package_list',
+            self.get_daily_package_list_callback
         )
 
         # 3. ROS2 액션 클라이언트 등록 (AMR 및 포장 로봇에게 명령 하달)
@@ -263,6 +268,34 @@ class ControlTowerNode(Node):
 
         response.route_destination = route_date
         self.get_logger().info(f'[GetPackageRoute] 목적지 분류 결과 전송 -> {route_date}')
+        return response
+
+    def get_daily_package_list_callback(self, request, response):
+        """bg2 로봇이 영업 시작 시 오늘 분류할 전체 택배 명단을 한 번에 가져갈 때 호출"""
+        self.get_logger().info('[GetDailyPackageList] 오늘 전체 택배 명단 요청 수신')
+        packages = []
+        with self.get_db_connection() as conn:
+            if conn:
+                try:
+                    with conn.cursor() as cursor:
+                        # 오늘 배송 대상인 전체 패키지를 가져옵니다. (WAITING 또는 IN_WORKSTATION 상태)
+                        cursor.execute(
+                            "SELECT package_id, customer_name, route_zone, qr_id FROM packages WHERE status = 'WAITING' OR status = 'IN_WORKSTATION';"
+                        )
+                        rows = cursor.fetchall()
+                        for row in rows:
+                            packages.append({
+                                'package_id': row[0],
+                                'customer_name': row[1],
+                                'route_zone': row[2],
+                                'qr_id': row[3] or ""
+                            })
+                except Exception as e:
+                    self.get_logger().error(f'GetDailyPackageList DB 조회 중 오류: {str(e)}')
+        
+        # JSON 포맷으로 직렬화하여 전달
+        response.package_list_json = json.dumps(packages)
+        self.get_logger().info(f'[GetDailyPackageList] 총 {len(packages)}개의 패키지 명단 전송 완료')
         return response
 
     def check_warehouse_status_callback(self, request, response):
