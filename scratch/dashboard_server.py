@@ -285,22 +285,18 @@ def get_status():
                     "carrying_workstation_id": ws["workstation_id"],
                     "battery": "95"
                 }
-            if "AMR_01" not in amr_states:
-                amr_states["AMR_01"] = {
-                    "state": "IDLE",
-                    "current_qr_id": "QR_0030",
-                    "target_qr_id": "",
-                    "carrying_workstation_id": "",
-                    "battery": "88"
-                }
-            if "AMR_02" not in amr_states:
-                amr_states["AMR_02"] = {
-                    "state": "IDLE",
-                    "current_qr_id": "QR_0031",
-                    "target_qr_id": "",
-                    "carrying_workstation_id": "",
-                    "battery": "91"
-                }
+            for idx in range(1, 6):
+                amr_name = f"AMR_{idx:02d}"
+                if amr_name not in amr_states:
+                    # Y 물리 좌표가 -9.0, -7.5, -6.0, -4.5, -3.0 인 충전 포지션에 대응
+                    y_val = -9.0 + (idx - 1) * 1.5
+                    amr_states[amr_name] = {
+                        "state": "IDLE",
+                        "current_qr_id": f"FLOOR_X_-3.0_Y_{y_val:.1f}",
+                        "target_qr_id": "",
+                        "carrying_workstation_id": "",
+                        "battery": f"{85 + idx * 2}"
+                    }
 
         # grid_cells 캐시 활용
         global _grid_cells_cache

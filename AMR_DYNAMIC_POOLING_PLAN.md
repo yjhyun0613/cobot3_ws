@@ -44,39 +44,118 @@ A/B 듀얼 스테이션(버퍼) 레이아웃의 장점과 동적 풀링을 결�
 
 ---
 
-## 💻 4. 핵심 소스 코드 수정 가이드
+## 💻 4. 실제 구현 세부 사항 (Implementation Details)
 
-### ① 원자적 로봇 조회 및 락(Lock) 처리 (`control_tower_node.py` 보강)
-동적 풀링 시 여러 태스크가 하나의 IDLE 로봇에게 동시에 배정되는 Race Condition을 방지하기 위해 `get_idle_amr()` 및 배정 로직에 즉각적인 상태 변경(Locking)을 도입해야 합니다.
+### ① 최단 거리(Nearest-AMR) 계산 및 원자적 상태 변경 (`control_tower_node.py` 적용)
+관제탑이 Redis ZSET 큐에서 작업을 처리할 때, 출발지 좌표를 기반으로 가장 가까이 있는 `IDLE` 상태의 AMR을 탐색하여 원자적으로 배정하고 상태를 `BUSY`로 전환합니다.
 
 ```python
-def allocate_amr_to_task(self, task):
-    """Redis를 활용하여 원자적으로 IDLE 로봇을 조회하고 즉시 RESERVED로 잠금"""
-    with self.trigger_lock:  # 스레드 락 적용
-        amr_id = self.get_idle_amr()
-        if amr_id:
-            # 찾은 즉시 Redis 상태를 업데이트하여 타 스레드에서 접근 불가하도록 방어
-            self.redis_client.hset(f"amr:{amr_id}", "state", "RESERVED")
-            task['assigned_amr'] = amr_id
-            self.get_logger().info(f"[풀링 배정] 태스크 {task['task_type']} ➡️ {amr_id} 배정 및 잠금 완료")
-            return amr_id
-        return None
+    def get_nearest_idle_amr(self, start_location_name):
+        """지정된 출발지에서 물리적으로 가장 가까운 IDLE 상태의 AMR을 탐색하여 반환"""
+        if not self.redis_client:
+            return 'AMR_01'
+
+        start_x, start_y = 0.0, 0.0
+        coords_found = False
+        default_zone_coords = {
+            'bg2': (9.0, 4.5),
+            'warehouse': (0.75, -3.0),
+            'staging': (6.0, 8.25),
+            'buffer': (1.5, 0.0),
+        }
+
+        if start_location_name in default_zone_coords:
+            start_x, start_y = default_zone_coords[start_location_name]
+            coords_found = True
+        elif start_location_name:
+            with self.get_db_connection() as conn:
+                if conn:
+                    try:
+                        with conn.cursor() as cursor:
+                            cursor.execute(
+                                "SELECT x_coord, y_coord FROM floor_qr_map WHERE location_name = %s;",
+                                (start_location_name,)
+                            )
+                            row = cursor.fetchone()
+                            if row:
+                                start_x, start_y = row[0], row[1]
+                                coords_found = True
+                    except Exception as db_err:
+                        self.get_logger().error(f'출발지 좌표 DB 조회 실패: {db_err}')
+
+        best_amr = None
+        min_distance = float('inf')
+
+        try:
+            keys = self.redis_client.keys("amr:*")
+            for key in keys:
+                if key == "queue:amr_tasks":
+                    continue
+                parts = key.split(":")
+                if len(parts) > 1:
+                    amr_id = parts[1]
+                    val = self.redis_client.hgetall(key)
+                    if val:
+                        state = val.get("state", "IDLE").upper()
+                        available = val.get("available", "true").lower() in ["true", "1", "yes"]
+                        if state == "IDLE" and available:
+                            if not coords_found:
+                                return amr_id
+                            
+                            curr_qr = val.get("current_qr_id", "")
+                            amr_x, amr_y = 0.0, 0.0
+                            amr_coords_found = False
+
+                            if curr_qr.startswith("FLOOR_X_"):
+                                try:
+                                    parts_qr = curr_qr.split("_")
+                                    amr_x = float(parts_qr[2])
+                                    amr_y = float(parts_qr[4])
+                                    amr_coords_found = True
+                                except Exception:
+                                    pass
+
+                            if not amr_coords_found and curr_qr:
+                                with self.get_db_connection() as conn:
+                                    if conn:
+                                        with conn.cursor() as cursor:
+                                            cursor.execute(
+                                                "SELECT x_coord, y_coord FROM floor_qr_map WHERE qr_id = %s;",
+                                                (curr_qr,)
+                                            )
+                                            row = cursor.fetchone()
+                                            if row:
+                                                amr_x, amr_y = row[0], row[1]
+                                                amr_coords_found = True
+
+                            if amr_coords_found:
+                                dist = ((start_x - amr_x) ** 2 + (start_y - amr_y) ** 2) ** 0.5
+                                if dist < min_distance:
+                                    min_distance = dist
+                                    best_amr = amr_id
+                            else:
+                                if not best_amr:
+                                    best_amr = amr_id
+        except Exception as e:
+            self.get_logger().error(f"최단거리 AMR 계산 중 오류: {str(e)}")
+
+        if not best_amr:
+            return self.get_idle_amr()
+
+        return best_amr
 ```
 
-### ② `dispatch_workstations_keepalive` 내 듀얼 버퍼 스케줄링 확장
+### ② 5대 AMR 충전소 위치 초기 배치 (`init_june_8th_state.py`)
+시뮬레이션 초기화 시, 5대의 AMR(`AMR_01`~`AMR_05`)을 각각의 물리적 충전 스팟(`charging_01`~`charging_05`) 좌표의 QR ID로 매핑하여 Redis에 초기 등록합니다.
 
 ```python
-# 입고 라인별 A/B 구역 상시 감시 및 공급
-for line in inbound_lines:
-    # A구역 공백 시 최우선 보충
-    if not line_status[line]['A'] and not line_status[line]['MOVING_A']:
-        self.enqueue_deploy_task(line, f"{line}_A", score=95)
-    
-    # 파트너님 제안 반영: A구역은 차있으나 B구역(Standby)이 비어있을 때 미리 채워두기
-    elif line_status[line]['A'] and not line_status[line]['B'] and not line_status[line]['MOVING_B']:
-        if not self.is_task_queued('DEPLOY_EMPTY_WORKSTATION', target=f"{line}_B"):
-            self.get_logger().info(f"[Dual-Buffer] {line} 예비 B구역 공백 감지, 공용 풀에 조달 요청 발행")
-            self.enqueue_deploy_task(line, f"{line}_B", score=90)
+    amr_charging_positions = [
+        ('AMR_01', 'FLOOR_X_-3.0_Y_-9.0'),
+        ('AMR_02', 'FLOOR_X_-3.0_Y_-7.5'),
+        ('AMR_03', 'FLOOR_X_-3.0_Y_-6.0'),
+        ('AMR_04', 'FLOOR_X_-3.0_Y_-4.5'),
+        ('AMR_05', 'FLOOR_X_-3.0_Y_-3.0')
+    ]
 ```
 
 ---

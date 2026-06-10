@@ -92,6 +92,26 @@ def init_june_8th_simulation():
     insert_packages(ws02_pkgs, 'WS02')
     insert_packages(ws03_pkgs, 'WS03')
     
+    # 6. Redis AMR 초기 상태 등록 (AMR_01 ~ AMR_05)
+    amr_charging_positions = [
+        ('AMR_01', 'FLOOR_X_-3.0_Y_-9.0'),
+        ('AMR_02', 'FLOOR_X_-3.0_Y_-7.5'),
+        ('AMR_03', 'FLOOR_X_-3.0_Y_-6.0'),
+        ('AMR_04', 'FLOOR_X_-3.0_Y_-4.5'),
+        ('AMR_05', 'FLOOR_X_-3.0_Y_-3.0')
+    ]
+    for amr_id, qr_id in amr_charging_positions:
+        key = f"amr:{amr_id}"
+        r_client.hset(key, mapping={
+            "state": "IDLE",
+            "current_qr_id": qr_id,
+            "target_qr_id": "",
+            "carrying_workstation_id": "",
+            "battery": "100.0",
+            "available": "true"
+        })
+    print("🔋 [Redis] AMR_01 ~ AMR_05 충전소 초기 배치 완료")
+
     conn.commit()
     cursor.close()
     conn.close()

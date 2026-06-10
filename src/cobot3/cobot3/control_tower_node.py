@@ -452,6 +452,105 @@ class ControlTowerNode(Node):
             return 20
         return 30
 
+    def get_nearest_idle_amr(self, start_location_name):
+        """지정된 출발지에서 물리적으로 가장 가까운 IDLE 상태의 AMR을 탐색하여 반환"""
+        if not self.redis_client:
+            return 'AMR_01'  # Fallback for mock mode
+
+        # 1. 출발지의 물리 x, y 좌표 식별
+        start_x, start_y = 0.0, 0.0
+        coords_found = False
+
+        # 추상적인 전체 구역명(warehouse, staging 등)에 대한 기본 대표 좌표 매핑
+        default_zone_coords = {
+            'bg2': (9.0, 4.5),
+            'warehouse': (0.75, -3.0),
+            'staging': (6.0, 8.25),
+            'buffer': (1.5, 0.0),
+        }
+
+        if start_location_name in default_zone_coords:
+            start_x, start_y = default_zone_coords[start_location_name]
+            coords_found = True
+        elif start_location_name:
+            with self.get_db_connection() as conn:
+                if conn:
+                    try:
+                        with conn.cursor() as cursor:
+                            cursor.execute(
+                                "SELECT x_coord, y_coord FROM floor_qr_map WHERE location_name = %s;",
+                                (start_location_name,)
+                            )
+                            row = cursor.fetchone()
+                            if row:
+                                start_x, start_y = row[0], row[1]
+                                coords_found = True
+                    except Exception as db_err:
+                        self.get_logger().error(f'출발지 좌표 DB 조회 실패: {db_err}')
+
+        best_amr = None
+        min_distance = float('inf')
+
+        try:
+            keys = self.redis_client.keys("amr:*")
+            for key in keys:
+                if key == "queue:amr_tasks":
+                    continue
+                parts = key.split(":")
+                if len(parts) > 1:
+                    amr_id = parts[1]
+                    val = self.redis_client.hgetall(key)
+                    if val:
+                        state = val.get("state", "IDLE").upper()
+                        available = val.get("available", "true").lower() in ["true", "1", "yes"]
+                        if state == "IDLE" and available:
+                            if not coords_found:
+                                # 출발지 좌표를 모르면 그냥 첫 번째 찾은 IDLE AMR 반환
+                                return amr_id
+                            
+                            curr_qr = val.get("current_qr_id", "")
+                            amr_x, amr_y = 0.0, 0.0
+                            amr_coords_found = False
+
+                            # FLOOR_X_1.5_Y_3.0 형식에서 파싱 시도
+                            if curr_qr.startswith("FLOOR_X_"):
+                                try:
+                                    parts_qr = curr_qr.split("_")
+                                    amr_x = float(parts_qr[2])
+                                    amr_y = float(parts_qr[4])
+                                    amr_coords_found = True
+                                except Exception:
+                                    pass
+
+                            if not amr_coords_found and curr_qr:
+                                with self.get_db_connection() as conn:
+                                    if conn:
+                                        with conn.cursor() as cursor:
+                                            cursor.execute(
+                                                "SELECT x_coord, y_coord FROM floor_qr_map WHERE qr_id = %s;",
+                                                (curr_qr,)
+                                            )
+                                            row = cursor.fetchone()
+                                            if row:
+                                                amr_x, amr_y = row[0], row[1]
+                                                amr_coords_found = True
+
+                            if amr_coords_found:
+                                dist = ((start_x - amr_x) ** 2 + (start_y - amr_y) ** 2) ** 0.5
+                                if dist < min_distance:
+                                    min_distance = dist
+                                    best_amr = amr_id
+                            else:
+                                if not best_amr:
+                                    best_amr = amr_id
+        except Exception as e:
+            self.get_logger().error(f"최단거리 AMR 계산 중 오류: {str(e)}")
+
+        if not best_amr:
+            return self.get_idle_amr()
+
+        return best_amr
+
     def get_idle_amr(self):
         """Redis에서 IDLE 상태인 사용 가능한 AMR을 찾아 반환"""
         if not self.redis_client:
@@ -576,19 +675,40 @@ class ControlTowerNode(Node):
                 # 영업 중이 아니면 (WAITING_FOR_START 또는 PENDING_TRANSITION) 아무 작업도 수행하지 않음
                 return
 
-            # 1. Redis 큐에서 최고 우선순위 AMR 태스크가 있는지 조회 (zpopmax)
+            # 1. Redis 큐에서 최고 우선순위 AMR 태스크가 있는지 피크(Peek)
             try:
-                task_data = self.redis_client.zpopmax('queue:amr_tasks')
+                task_data = self.redis_client.zrange('queue:amr_tasks', -1, -1, withscores=True)
                 if task_data:
                     member, score = task_data[0]
                     task = json.loads(member)
-                    self.get_logger().info(f'[Scheduler] Redis 큐에서 최고 우선순위 태스크 감지 (Score: {score}) -> {task["task_type"]}')
-                    self.execute_amr_task(task)
+                    
+                    # 태스크의 출발지 좌표 분석
+                    start_loc = task.get('from', '')
+                    if not start_loc:
+                        if task.get('task_type') == 'DIRECT_WAREHOUSE':
+                            start_loc = 'bg2'
+                        elif task.get('task_type') == 'PRE_FETCH_EMPTY_WORKSTATION':
+                            start_loc = 'warehouse'
+
+                    # 최단 거리 idle AMR 탐색
+                    assigned_amr = self.get_nearest_idle_amr(start_loc)
+                    if assigned_amr:
+                        # 원자적으로 큐에서 제거 성공 시 실행
+                        removed = self.redis_client.zrem('queue:amr_tasks', member)
+                        if removed > 0:
+                            # 다른 요청이 선점할 수 없도록 즉시 상태 잠금
+                            self.redis_client.hset(f"amr:{assigned_amr}", "state", "BUSY")
+                            task['assigned_amr'] = assigned_amr
+                            self.get_logger().info(f'[Scheduler] 최고 우선순위 태스크 감지 (Score: {score}) -> {task["task_type"]} ({assigned_amr} 배정 및 실행)')
+                            self.execute_amr_task(task)
+                    else:
+                        # 가용한 IDLE AMR이 없으면 로그를 남기고 다음 주기 대기 (큐에는 그대로 보존)
+                        self.get_logger().info(f'[Scheduler] 대기 중인 IDLE AMR이 없어 태스크 {task["task_type"]}를 큐에서 대기시킵니다.')
             except Exception as q_err:
                 if "WRONGTYPE" in str(q_err):
                     self.redis_client.delete('queue:amr_tasks')
                 else:
-                    self.get_logger().error(f'Redis Pop 실패: {str(q_err)}')
+                    self.get_logger().error(f'Redis Pop/Alloc 실패: {str(q_err)}')
 
             # 2. 작업대 8칸이 모두 찼을 때의 이송 스케줄링 체크
             self.check_completed_workstations()
@@ -641,7 +761,10 @@ class ControlTowerNode(Node):
                 status='ASSIGNED',
                 assigned_amr=assigned_amr
             )
-            self.move_package_action_client.send_goal_async(goal_msg)
+            send_goal_future = self.move_package_action_client.send_goal_async(goal_msg)
+            send_goal_future.add_done_callback(
+                lambda future: self.move_package_response_callback(future, goal_msg.package_id, goal_msg.destination_zone, task_id, assigned_amr)
+            )
 
     def check_completed_workstations(self):
         """8개 칸이 모두 채워진 완성된 작업대를 파악해 이동 명령(AMR) 스케줄링"""
@@ -1238,10 +1361,103 @@ class ControlTowerNode(Node):
                 assigned_amr=assigned_amr
             )
 
-        # AMR 상태 Redis 업데이트 (IDLE)
+        # AMR 상태 Redis 업데이트 (IDLE 및 위치 갱신)
         if self.redis_client:
             try:
                 self.redis_client.hset(f"amr:{assigned_amr}", "state", "IDLE")
+                if result.success and target:
+                    target_qr = ""
+                    with self.get_db_connection() as conn:
+                        if conn:
+                            with conn.cursor() as cursor:
+                                cursor.execute("SELECT qr_id FROM floor_qr_map WHERE location_name = %s;", (target,))
+                                row = cursor.fetchone()
+                                if row:
+                                    target_qr = row[0]
+                    if target_qr:
+                        self.redis_client.hset(f"amr:{assigned_amr}", "current_qr_id", target_qr)
+                        self.get_logger().info(f"[Redis] {assigned_amr}의 현재 위치를 {target_qr}로 업데이트 완료.")
+            except Exception as e:
+                self.get_logger().error(f'AMR 상태 Redis IDLE 업데이트 실패: {str(e)}')
+
+    def move_package_response_callback(self, future, package_id, destination_zone, task_id, assigned_amr):
+        """AMR의 단일 패키지 직송 액션 수락 여부 확인 콜백"""
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().warn(f'패키지 {package_id} 직송 요청이 AMR에 의해 거절당했습니다.')
+            self.publish_task_event(
+                task_id=task_id,
+                task_type="DIRECT_WAREHOUSE",
+                priority=100,
+                workstation_id="",
+                workstation_qr_id="",
+                start_location="bg2",
+                target_location=destination_zone,
+                status='FAILED',
+                assigned_amr=assigned_amr
+            )
+            if self.redis_client:
+                try:
+                    self.redis_client.hset(f"amr:{assigned_amr}", "state", "IDLE")
+                except Exception as e:
+                    self.get_logger().error(f'AMR 상태 Redis 복구 실패: {str(e)}')
+            return
+
+        self.get_logger().info(f'패키지 {package_id} 직송 목표 수락됨. 이동 진행 중...')
+        get_result_future = goal_handle.get_result_async()
+        get_result_future.add_done_callback(
+            lambda res_future: self.move_package_completed_callback(res_future, package_id, destination_zone, task_id, assigned_amr)
+        )
+
+    def move_package_completed_callback(self, future, package_id, destination_zone, task_id, assigned_amr):
+        """AMR의 단일 패키지 직송 액션 완료 시 최종 DB 업데이트 및 Redis 상태 갱신"""
+        result = future.result().result
+        if result.success:
+            self.get_logger().info(f'=== [성공] 패키지 {package_id} 직송 최종 도착 완료: -> {destination_zone} ===')
+            with self.get_db_connection() as conn:
+                if conn:
+                    try:
+                        with conn.cursor() as cursor:
+                            cursor.execute(
+                                "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE package_id = %s;",
+                                (package_id,)
+                            )
+                    except Exception as e:
+                        self.get_logger().error(f'패키지 직송 DB 최종 반영 실패: {str(e)}')
+
+            self.publish_task_event(
+                task_id=task_id,
+                task_type="DIRECT_WAREHOUSE",
+                priority=100,
+                workstation_id="",
+                workstation_qr_id="",
+                start_location="bg2",
+                target_location=destination_zone,
+                status='COMPLETED',
+                assigned_amr=assigned_amr
+            )
+        else:
+            self.get_logger().error(f'[실패] 패키지 {package_id} 직송 중 에러 발생')
+            self.publish_task_event(
+                task_id=task_id,
+                task_type="DIRECT_WAREHOUSE",
+                priority=100,
+                workstation_id="",
+                workstation_qr_id="",
+                start_location="bg2",
+                target_location=destination_zone,
+                status='FAILED',
+                assigned_amr=assigned_amr
+            )
+
+        # AMR 상태 Redis 업데이트 (IDLE 및 위치 갱신)
+        if self.redis_client:
+            try:
+                self.redis_client.hset(f"amr:{assigned_amr}", "state", "IDLE")
+                # destination_zone 에 따라 적절한 창고 영역 QR 지정
+                target_qr = "FLOOR_X_1.5_Y_3.0" if destination_zone == 'ZONE_A' else "FLOOR_X_-3.0_Y_3.0"
+                self.redis_client.hset(f"amr:{assigned_amr}", "current_qr_id", target_qr)
+                self.get_logger().info(f"[Redis] {assigned_amr}의 현재 위치를 {target_qr}로 업데이트 완료.")
             except Exception as e:
                 self.get_logger().error(f'AMR 상태 Redis IDLE 업데이트 실패: {str(e)}')
 
@@ -1567,16 +1783,18 @@ class ControlTowerNode(Node):
 
         if not amr_states:
             # Fallback mock for demo/dashboard
-            amr_states = {
-                "AMR_01": {
+            amr_states = {}
+            for idx in range(1, 6):
+                amr_id = f"AMR_{idx:02d}"
+                y_val = -9.0 + (idx - 1) * 1.5
+                amr_states[amr_id] = {
                     "state": "IDLE",
-                    "current_qr_id": "QR_0030",
+                    "current_qr_id": f"FLOOR_X_-3.0_Y_{y_val:.1f}",
                     "target_qr_id": "",
                     "carrying_workstation_id": None,
-                    "battery": 82.5,
+                    "battery": 80.0 + idx * 3.5,
                     "available": True
                 }
-            }
 
         amr_msg = String()
         amr_msg.data = json.dumps(amr_states)
