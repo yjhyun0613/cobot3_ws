@@ -37,12 +37,12 @@ def init_june_8th_simulation():
         ('WS02', 'sg2_in_01_A', 'WORKSTATION_WS02'),    # 1번 입고 Active (오늘 물량 5칸 차 있음)
         ('WS03', 'sg2_in_02_A', 'WORKSTATION_WS03'),    # 2번 입고 Active (내일 물량 5칸 차 있음)
         ('WS04', 'sg2_in_03_A', 'WORKSTATION_WS04'),    # 3번 입고 Active (모레 물량 0칸 비어 있음)
-        ('WS05', 'spot_01', 'WORKSTATION_WS05'),        # 메인 창고 주차장 정렬 예비대
-        ('WS06', 'spot_02', 'WORKSTATION_WS06'),
-        ('WS07', 'spot_03', 'WORKSTATION_WS07'),
-        ('WS08', 'spot_04', 'WORKSTATION_WS08'),
-        ('WS09', 'spot_05', 'WORKSTATION_WS09'),
-        ('WS10', 'spot_06', 'WORKSTATION_WS10')
+        ('WS05', 'spot_05', 'WORKSTATION_WS05'),        # 메인 창고 주차장 정렬 예비대
+        ('WS06', 'spot_06', 'WORKSTATION_WS06'),
+        ('WS07', 'spot_07', 'WORKSTATION_WS07'),
+        ('WS08', 'spot_08', 'WORKSTATION_WS08'),
+        ('WS09', 'spot_09', 'WORKSTATION_WS09'),
+        ('WS10', 'spot_10', 'WORKSTATION_WS10')
     ]
 
     for ws_id, loc, qr in workstation_positions:

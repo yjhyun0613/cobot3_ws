@@ -67,44 +67,56 @@ INSERT INTO robots (robot_id, robot_type, qr_id) VALUES
 ('sg2_in_03', 'MANIPULATOR', 'ROBOT_sg2_in_03'),
 ('sg2_out_00', 'MANIPULATOR', 'ROBOT_sg2_out_00');
 
--- -- 작업대 등록 (WS01 ~ WS10)
--- INSERT INTO workstations (workstation_id, current_location, qr_id) VALUES
--- ('WS01', 'spot_01', 'WORKSTATION_WS01'),
--- ('WS02', 'spot_02', 'WORKSTATION_WS02'),
--- ('WS03', 'spot_03', 'WORKSTATION_WS03'),
--- ('WS04', 'spot_04', 'WORKSTATION_WS04'),
--- ('WS05', 'spot_05', 'WORKSTATION_WS05'),
--- ('WS06', 'spot_06', 'WORKSTATION_WS06'),
--- ('WS07', 'spot_07', 'WORKSTATION_WS07'),
--- ('WS08', 'spot_08', 'WORKSTATION_WS08'),
--- ('WS09', 'spot_09', 'WORKSTATION_WS09'),
--- ('WS10', 'spot_10', 'WORKSTATION_WS10');
-
+-- 작업대 등록 (WS01 ~ WS10)
 INSERT INTO workstations (workstation_id, current_location, qr_id) VALUES
-('WS01', 'spot_09', 'WORKSTATION_WS01'),
-('WS02', 'spot_10', 'WORKSTATION_WS02'),
-('WS03', 'spot_07', 'WORKSTATION_WS03'),
-('WS04', 'spot_08', 'WORKSTATION_WS04'),
+('WS01', 'spot_01', 'WORKSTATION_WS01'),
+('WS02', 'spot_02', 'WORKSTATION_WS02'),
+('WS03', 'spot_03', 'WORKSTATION_WS03'),
+('WS04', 'spot_04', 'WORKSTATION_WS04'),
 ('WS05', 'spot_05', 'WORKSTATION_WS05'),
 ('WS06', 'spot_06', 'WORKSTATION_WS06'),
-('WS07', 'spot_03', 'WORKSTATION_WS07'),
-('WS08', 'spot_04', 'WORKSTATION_WS08'),
-('WS09', 'spot_01', 'WORKSTATION_WS09'),
-('WS10', 'spot_02', 'WORKSTATION_WS10');
+('WS07', 'spot_07', 'WORKSTATION_WS07'),
+('WS08', 'spot_08', 'WORKSTATION_WS08'),
+('WS09', 'spot_09', 'WORKSTATION_WS09'),
+('WS10', 'spot_10', 'WORKSTATION_WS10');
+
+-- INSERT INTO workstations (workstation_id, current_location, qr_id) VALUES
+-- ('WS01', 'spot_09', 'WORKSTATION_WS01'),
+-- ('WS02', 'spot_10', 'WORKSTATION_WS02'),
+-- ('WS03', 'spot_07', 'WORKSTATION_WS03'),
+-- ('WS04', 'spot_08', 'WORKSTATION_WS04'),
+-- ('WS05', 'spot_05', 'WORKSTATION_WS05'),
+-- ('WS06', 'spot_06', 'WORKSTATION_WS06'),
+-- ('WS07', 'spot_03', 'WORKSTATION_WS07'),
+-- ('WS08', 'spot_04', 'WORKSTATION_WS08'),
+-- ('WS09', 'spot_01', 'WORKSTATION_WS09'),
+-- ('WS10', 'spot_02', 'WORKSTATION_WS10');
 
 
 -- 창고 스팟 등록 및 작업대 주차 (spot_01 ~ spot_10)
 INSERT INTO warehouse_locations (spot_id, workstation_id, status) VALUES
-('spot_01', 'WS09', 'OCCUPIED'),
-('spot_02', 'WS10', 'OCCUPIED'),
-('spot_03', 'WS07', 'OCCUPIED'),
-('spot_04', 'WS08', 'OCCUPIED'),
+('spot_01', 'WS01', 'OCCUPIED'),
+('spot_02', 'WS02', 'OCCUPIED'),
+('spot_03', 'WS03', 'OCCUPIED'),
+('spot_04', 'WS04', 'OCCUPIED'),
 ('spot_05', 'WS05', 'OCCUPIED'),
 ('spot_06', 'WS06', 'OCCUPIED'),
-('spot_07', 'WS03', 'OCCUPIED'),
-('spot_08', 'WS04', 'OCCUPIED'),
-('spot_09', 'WS01', 'OCCUPIED'),
-('spot_10', 'WS02', 'OCCUPIED');
+('spot_07', 'WS07', 'OCCUPIED'),
+('spot_08', 'WS08', 'OCCUPIED'),
+('spot_09', 'WS09', 'OCCUPIED'),
+('spot_10', 'WS10', 'OCCUPIED');
+
+-- INSERT INTO warehouse_locations (spot_id, workstation_id, status) VALUES
+-- ('spot_01', 'WS09', 'OCCUPIED'),
+-- ('spot_02', 'WS10', 'OCCUPIED'),
+-- ('spot_03', 'WS07', 'OCCUPIED'),
+-- ('spot_04', 'WS08', 'OCCUPIED'),
+-- ('spot_05', 'WS05', 'OCCUPIED'),
+-- ('spot_06', 'WS06', 'OCCUPIED'),
+-- ('spot_07', 'WS03', 'OCCUPIED'),
+-- ('spot_08', 'WS04', 'OCCUPIED'),
+-- ('spot_09', 'WS01', 'OCCUPIED'),
+-- ('spot_10', 'WS02', 'OCCUPIED');
 
 
 -- 출고 대기 구역 등록 (stage_01 ~ stage_04)
@@ -120,17 +132,28 @@ INSERT INTO warehouse_locations (spot_id, workstation_id, status) VALUES
 -- 관제탑 노드의 trigger_workstation_move 함수가 이 테이블에서 물리 좌표를 조회합니다.
 
 -- 8-1. 메인 보관 창고 스팟 (spot_01 ~ spot_10)
+-- INSERT INTO floor_qr_map (qr_id, x_coord, y_coord, location_name, location_type, description) VALUES
+-- ('FLOOR_X_1.5_Y_3.0',   1.5,   3.0, 'spot_01', 'PARKING_SPOT', '메인 창고 1행 1열'),
+-- ('FLOOR_X_0.0_Y_3.0',   0.0,   3.0, 'spot_02', 'PARKING_SPOT', '메인 창고 1행 2열'),
+-- ('FLOOR_X_1.5_Y_0.0',   1.5,   0.0, 'spot_03', 'PARKING_SPOT', '메인 창고 2행 1열'),
+-- ('FLOOR_X_0.0_Y_0.0',   0.0,   0.0, 'spot_04', 'PARKING_SPOT', '메인 창고 2행 2열'),
+-- ('FLOOR_X_1.5_Y_-3.0',  1.5,  -3.0, 'spot_05', 'PARKING_SPOT', '메인 창고 3행 1열'),
+-- ('FLOOR_X_0.0_Y_-3.0',  0.0,  -3.0, 'spot_06', 'PARKING_SPOT', '메인 창고 3행 2열'),
+-- ('FLOOR_X_1.5_Y_-6.0',  1.5,  -6.0, 'spot_07', 'PARKING_SPOT', '메인 창고 4행 1열'),
+-- ('FLOOR_X_0.0_Y_-6.0',  0.0,  -6.0, 'spot_08', 'PARKING_SPOT', '메인 창고 4행 2열'),
+-- ('FLOOR_X_1.5_Y_-9.0',  1.5,  -9.0, 'spot_09', 'PARKING_SPOT', '메인 창고 5행 1열'),
+-- ('FLOOR_X_0.0_Y_-9.0',  0.0,  -9.0, 'spot_10', 'PARKING_SPOT', '메인 창고 5행 2열');
 INSERT INTO floor_qr_map (qr_id, x_coord, y_coord, location_name, location_type, description) VALUES
-('FLOOR_X_1.5_Y_3.0',   1.5,   3.0, 'spot_01', 'PARKING_SPOT', '메인 창고 1행 1열'),
-('FLOOR_X_0.0_Y_3.0',   0.0,   3.0, 'spot_02', 'PARKING_SPOT', '메인 창고 1행 2열'),
-('FLOOR_X_1.5_Y_0.0',   1.5,   0.0, 'spot_03', 'PARKING_SPOT', '메인 창고 2행 1열'),
-('FLOOR_X_0.0_Y_0.0',   0.0,   0.0, 'spot_04', 'PARKING_SPOT', '메인 창고 2행 2열'),
+('FLOOR_X_1.5_Y_3.0',   1.5,  -9.0, 'spot_01', 'PARKING_SPOT', '메인 창고 1행 1열'),
+('FLOOR_X_0.0_Y_3.0',   0.0,  -9.0, 'spot_02', 'PARKING_SPOT', '메인 창고 1행 2열'),
+('FLOOR_X_1.5_Y_0.0',   1.5,  -6.0, 'spot_03', 'PARKING_SPOT', '메인 창고 2행 1열'),
+('FLOOR_X_0.0_Y_0.0',   0.0,  -6.0, 'spot_04', 'PARKING_SPOT', '메인 창고 2행 2열'),
 ('FLOOR_X_1.5_Y_-3.0',  1.5,  -3.0, 'spot_05', 'PARKING_SPOT', '메인 창고 3행 1열'),
 ('FLOOR_X_0.0_Y_-3.0',  0.0,  -3.0, 'spot_06', 'PARKING_SPOT', '메인 창고 3행 2열'),
-('FLOOR_X_1.5_Y_-6.0',  1.5,  -6.0, 'spot_07', 'PARKING_SPOT', '메인 창고 4행 1열'),
-('FLOOR_X_0.0_Y_-6.0',  0.0,  -6.0, 'spot_08', 'PARKING_SPOT', '메인 창고 4행 2열'),
-('FLOOR_X_1.5_Y_-9.0',  1.5,  -9.0, 'spot_09', 'PARKING_SPOT', '메인 창고 5행 1열'),
-('FLOOR_X_0.0_Y_-9.0',  0.0,  -9.0, 'spot_10', 'PARKING_SPOT', '메인 창고 5행 2열');
+('FLOOR_X_1.5_Y_-6.0',  1.5,   0.0, 'spot_07', 'PARKING_SPOT', '메인 창고 4행 1열'),
+('FLOOR_X_0.0_Y_-6.0',  0.0,   0.0, 'spot_08', 'PARKING_SPOT', '메인 창고 4행 2열'),
+('FLOOR_X_1.5_Y_-9.0',  1.5,   3.0, 'spot_09', 'PARKING_SPOT', '메인 창고 5행 1열'),
+('FLOOR_X_0.0_Y_-9.0',  0.0,   3.0, 'spot_10', 'PARKING_SPOT', '메인 창고 5행 2열');
 
 -- 8-2. 입고 분류 라인 A/B (sg2_in_01 ~ sg2_in_03)
 INSERT INTO floor_qr_map (qr_id, x_coord, y_coord, location_name, location_type, description) VALUES
