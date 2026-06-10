@@ -759,10 +759,10 @@ class ControlTowerNode(Node):
                         cursor.execute("SELECT workstation_id, current_location, qr_id FROM workstations;")
                         workstations = cursor.fetchall()
                         
-                        # 라인별 작업대 매핑 (A구역, 이동 중인 작업대만 추적)
-                        line_status = {line: {'A': [], 'MOVING_A': []} for line in inbound_lines}
-                        # 포장존 상태 매핑 (A구역만)
-                        sg2_out_status = {'A': [], 'MOVING_A': []}
+                        # 라인별 작업대 매핑 (A, B 구역)
+                        line_status = {line: {'A': [], 'MOVING_A': [], 'B': [], 'MOVING_B': []} for line in inbound_lines}
+                        # 포장존 상태 매핑 (A, B 구역)
+                        sg2_out_status = {'A': [], 'MOVING_A': [], 'B': [], 'MOVING_B': []}
                         
                         for ws_id, loc, qr_id in workstations:
                             ws_qr = qr_id if qr_id is not None else ""
@@ -772,19 +772,64 @@ class ControlTowerNode(Node):
                                     line_status[line]['A'].append((ws_id, ws_qr))
                                 elif loc == f"MOVING_TO_{line.upper()}_A":
                                     line_status[line]['MOVING_A'].append((ws_id, ws_qr))
+                                elif loc == f"{line}_B":
+                                    line_status[line]['B'].append((ws_id, ws_qr))
+                                elif loc == f"MOVING_TO_{line.upper()}_B":
+                                    line_status[line]['MOVING_B'].append((ws_id, ws_qr))
                             
                             # 2. 아웃바운드 포장존 상태 분석
                             if loc == 'sg2_out_00_A' or loc == 'sg2_out_00_A_ROTATING':
                                 sg2_out_status['A'].append((ws_id, ws_qr))
                             elif loc == 'MOVING_TO_SG2_OUT_00_A':
                                 sg2_out_status['MOVING_A'].append((ws_id, ws_qr))
+                            elif loc == 'sg2_out_00_B':
+                                sg2_out_status['B'].append((ws_id, ws_qr))
+                            elif loc == 'MOVING_TO_SG2_OUT_00_B':
+                                sg2_out_status['MOVING_B'].append((ws_id, ws_qr))
 
-                        # 인바운드 동적 배치 (단일 슬롯 A 구역 전용)
+                        # 인바운드 동적 배치 (Dual Buffer A/B 구역)
                         for line in inbound_lines:
-                            # A구역에 작업대가 없고, A구역으로 이동 중인 작업대도 없는 경우
+                            # A구역 공백 시 최우선 보충
                             if not line_status[line]['A'] and not line_status[line]['MOVING_A']:
-                                if not self.is_task_queued('DEPLOY_EMPTY_WORKSTATION', target=f"{line}_A"):
-                                    self.get_logger().info(f'[Keep-Alive] {line}의 A구역이 비어 있습니다. 빈 작업대 공급 태스크 추가를 검사합니다.')
+                                if line_status[line]['B']:
+                                    # B가 있으면 B에서 A로 즉시 승격(Promotion)
+                                    b_ws_id, b_qr = line_status[line]['B'][0]
+                                    if not self.is_task_queued('DEPLOY_EMPTY_WORKSTATION', workstation_id=b_ws_id):
+                                        self.push_amr_task({
+                                            'workstation_id': b_ws_id,
+                                            'task_type': 'DEPLOY_EMPTY_WORKSTATION',
+                                            'from': f"{line}_B",
+                                            'to': f"{line}_A",
+                                            'description': f'대기 작업대 {b_ws_id} ➡️ {line}_A 승격 이동',
+                                            'workstation_qr_id': b_qr
+                                        })
+                                else:
+                                    # 창고에서 A구역으로 직송
+                                    if not self.is_task_queued('DEPLOY_EMPTY_WORKSTATION', target=f"{line}_A"):
+                                        cursor.execute(
+                                            "SELECT workstation_id, current_location, qr_id FROM workstations "
+                                            "WHERE current_location LIKE 'spot_%%' "
+                                            "AND workstation_id NOT IN ("
+                                            "    SELECT DISTINCT workstation_id FROM packages "
+                                            "    WHERE workstation_id IS NOT NULL AND status IN ('IN_WORKSTATION', 'IN_WAREHOUSE')"
+                                            ") LIMIT 1;"
+                                        )
+                                        row = cursor.fetchone()
+                                        if row:
+                                            ws_id, start_loc, ws_qr = row[0], row[1], row[2] if row[2] is not None else ""
+                                            self.push_amr_task({
+                                                'workstation_id': ws_id,
+                                                'task_type': 'DEPLOY_EMPTY_WORKSTATION',
+                                                'from': start_loc,
+                                                'to': f"{line}_A",
+                                                'description': f'빈 작업대 {ws_id} 공급 ➡️ {line}_A',
+                                                'workstation_qr_id': ws_qr
+                                            })
+
+                            # A구역은 찼지만 B구역(Standby)이 비어있을 때 미리 채워두기 (Look-ahead)
+                            elif line_status[line]['A'] and not line_status[line]['B'] and not line_status[line]['MOVING_B']:
+                                if not self.is_task_queued('DEPLOY_EMPTY_WORKSTATION', target=f"{line}_B"):
+                                    self.get_logger().info(f"[Dual-Buffer] {line} 예비 B구역 공백 감지, 공용 풀에 조달 요청 발행")
                                     cursor.execute(
                                         "SELECT workstation_id, current_location, qr_id FROM workstations "
                                         "WHERE current_location LIKE 'spot_%%' "
@@ -796,65 +841,105 @@ class ControlTowerNode(Node):
                                     row = cursor.fetchone()
                                     if row:
                                         ws_id, start_loc, ws_qr = row[0], row[1], row[2] if row[2] is not None else ""
-                                        self.get_logger().info(f'[Keep-Alive] {ws_id}(출발지: {start_loc}) ➡️ {line}_A 빈 작업대 공급 태스크를 큐에 추가합니다.')
                                         self.push_amr_task({
                                             'workstation_id': ws_id,
                                             'task_type': 'DEPLOY_EMPTY_WORKSTATION',
                                             'from': start_loc,
-                                            'to': f"{line}_A",
-                                            'description': f'빈 작업대 {ws_id} 공급 ➡️ {line}_A',
+                                            'to': f"{line}_B",
+                                            'description': f'빈 작업대 {ws_id} 사전 보충 ➡️ {line}_B',
                                             'workstation_qr_id': ws_qr
                                         })
-                                    else:
-                                        self.get_logger().warn(f"[Keep-Alive] {line}에 공급할 창고 내 빈 작업대가 부족합니다.")
 
-                        # 아웃바운드 포장존 동적 배치 (단일 슬롯 A 구역 전용 — B구역 없음)
+                        # 아웃바운드 포장존 동적 배치 (Dual Buffer A/B 구역)
                         if not sg2_out_status['A'] and not sg2_out_status['MOVING_A']:
-                            today_date = self.redis_client.get('system:today_date') if self.redis_client else datetime.now().strftime('%Y-%m-%d')
-                            if not today_date:
-                                today_date = datetime.now().strftime('%Y-%m-%d')
+                            if sg2_out_status['B']:
+                                # B가 있으면 B에서 A로 즉시 승격
+                                b_ws_id, b_qr = sg2_out_status['B'][0]
+                                if not self.is_task_queued('DEPLOY_PACKAGING_WORKSTATION', workstation_id=b_ws_id):
+                                    self.push_amr_task({
+                                        'workstation_id': b_ws_id,
+                                        'task_type': 'DEPLOY_PACKAGING_WORKSTATION',
+                                        'from': "sg2_out_00_B",
+                                        'to': "sg2_out_00_A",
+                                        'description': f'포장 대기 작업대 {b_ws_id} ➡️ sg2_out_00_A 승격 이동',
+                                        'workstation_qr_id': b_qr
+                                    })
+                            else:
+                                today_date = self.redis_client.get('system:today_date') if self.redis_client else datetime.now().strftime('%Y-%m-%d')
+                                if not today_date:
+                                    today_date = datetime.now().strftime('%Y-%m-%d')
 
-                            cursor.execute("SELECT COUNT(*) FROM packages WHERE route_zone = %s AND status = 'WAITING';", (today_date,))
-                            waiting_today = cursor.fetchone()[0]
-                            cursor.execute(
-                                "SELECT COUNT(*) FROM packages WHERE route_zone = %s AND status = 'IN_WORKSTATION' "
-                                "AND workstation_id IN (SELECT workstation_id FROM workstations WHERE current_location = 'sg2_in_01_A');",
-                                (today_date,)
-                            )
-                            inbound_today_packages = cursor.fetchone()[0]
-                            
+                                cursor.execute("SELECT COUNT(*) FROM packages WHERE route_zone = %s AND status = 'WAITING';", (today_date,))
+                                waiting_today = cursor.fetchone()[0]
+                                cursor.execute(
+                                    "SELECT COUNT(*) FROM packages WHERE route_zone = %s AND status = 'IN_WORKSTATION' "
+                                    "AND workstation_id IN (SELECT workstation_id FROM workstations WHERE current_location = 'sg2_in_01_A');",
+                                    (today_date,)
+                                )
+                                inbound_today_packages = cursor.fetchone()[0]
+                                
+                                having_cond = "HAVING COUNT(p.package_id) = 8"
+                                inbound_started = self.redis_client.get('system:inbound_started') == 'true' if self.redis_client else False
+                                if waiting_today == 0 and inbound_today_packages == 0 and inbound_started:
+                                    having_cond = "HAVING COUNT(p.package_id) > 0"
+
+                                cursor.execute(
+                                    f"SELECT w.workstation_id, w.current_location, w.qr_id "
+                                    f"FROM workstations w "
+                                    f"JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WAREHOUSE' "
+                                    f"WHERE (w.current_location LIKE 'spot_%%' OR w.current_location LIKE 'stage_%%') AND p.route_zone = %s "
+                                    f"GROUP BY w.workstation_id, w.current_location, w.qr_id "
+                                    f"{having_cond} "
+                                    f"ORDER BY CASE WHEN w.current_location LIKE 'stage_%%' THEN 0 ELSE 1 END ASC, w.current_location ASC "
+                                    f"LIMIT 1;",
+                                    (today_date,)
+                                )
+                                row = cursor.fetchone()
+                                if row:
+                                    ws_id, start_loc, ws_qr = row[0], row[1], row[2] if row[2] is not None else ""
+                                    if not self.is_task_queued('FETCH_FOR_PACKAGING', target='sg2_out_00_A'):
+                                        # 패키지 상태 복원
+                                        cursor.execute("UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';", (ws_id,))
+                                        self.push_amr_task({
+                                            'workstation_id': ws_id,
+                                            'task_type': 'FETCH_FOR_PACKAGING',
+                                            'from': start_loc,
+                                            'to': 'sg2_out_00_A',
+                                            'description': f'완충 작업대 {ws_id} 포장존 공급 ➡️ sg2_out_00_A',
+                                            'workstation_qr_id': ws_qr
+                                        })
+                        elif sg2_out_status['A'] and not sg2_out_status['B'] and not sg2_out_status['MOVING_B']:
+                            # A가 있고 B가 비었으면 예비 B 미리 채우기
+                            today_date = self.redis_client.get('system:today_date') if self.redis_client else datetime.now().strftime('%Y-%m-%d')
+                            if not today_date: today_date = datetime.now().strftime('%Y-%m-%d')
                             having_cond = "HAVING COUNT(p.package_id) = 8"
                             inbound_started = self.redis_client.get('system:inbound_started') == 'true' if self.redis_client else False
-                            if waiting_today == 0 and inbound_today_packages == 0 and inbound_started:
-                                having_cond = "HAVING COUNT(p.package_id) > 0"
-
+                            cursor.execute("SELECT COUNT(*) FROM packages WHERE route_zone = %s AND status = 'WAITING';", (today_date,))
+                            if cursor.fetchone()[0] == 0 and inbound_started: having_cond = "HAVING COUNT(p.package_id) > 0"
+                            # 제외 조건 추가 (이미 A구역에 있는 워크스테이션 제외)
+                            exclude_ws = sg2_out_status['A'][0][0] if sg2_out_status['A'] else ""
                             cursor.execute(
                                 f"SELECT w.workstation_id, w.current_location, w.qr_id "
                                 f"FROM workstations w "
                                 f"JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WAREHOUSE' "
                                 f"WHERE (w.current_location LIKE 'spot_%%' OR w.current_location LIKE 'stage_%%') AND p.route_zone = %s "
+                                f"AND w.workstation_id != %s "
                                 f"GROUP BY w.workstation_id, w.current_location, w.qr_id "
                                 f"{having_cond} "
                                 f"ORDER BY CASE WHEN w.current_location LIKE 'stage_%%' THEN 0 ELSE 1 END ASC, w.current_location ASC "
                                 f"LIMIT 1;",
-                                (today_date,)
+                                (today_date, exclude_ws)
                             )
                             row = cursor.fetchone()
                             if row:
                                 ws_id, start_loc, ws_qr = row[0], row[1], row[2] if row[2] is not None else ""
-                                if not self.is_task_queued('FETCH_FOR_PACKAGING', target='sg2_out_00_A'):
-                                    self.get_logger().info(f'[Keep-Alive] 포장존 A가 비어 있어 창고에서 완충 작업대 {ws_id}를 A구역으로 공급하는 태스크 추가.')
-                                    # 패키지 상태 복원
-                                    cursor.execute(
-                                        "UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';",
-                                        (ws_id,)
-                                    )
+                                if not self.is_task_queued('PRE_FETCH_PACKAGING_WORKSTATION', target='sg2_out_00_B'):
                                     self.push_amr_task({
                                         'workstation_id': ws_id,
-                                        'task_type': 'FETCH_FOR_PACKAGING',
+                                        'task_type': 'PRE_FETCH_PACKAGING_WORKSTATION',
                                         'from': start_loc,
-                                        'to': 'sg2_out_00_A',
-                                        'description': f'완충 작업대 {ws_id} 포장존 공급 ➡️ sg2_out_00_A',
+                                        'to': 'sg2_out_00_B',
+                                        'description': f'다음 완충 작업대 {ws_id} 사전 보충 ➡️ sg2_out_00_B',
                                         'workstation_qr_id': ws_qr
                                     })
         except Exception as e:

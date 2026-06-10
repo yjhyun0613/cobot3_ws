@@ -1041,8 +1041,8 @@ def index():
                     if (name.startsWith('spot_')) { el.classList.add('spot'); labelText = 'S' + name.replace('spot_', ''); }
                     else if (name.startsWith('stage_')) { el.classList.add('stage'); labelText = 'ST' + name.replace('stage_', ''); }
                     else if (name.startsWith('charging_')) { el.classList.add('charging'); labelText = 'C' + name.replace('charging_', ''); }
-                    else if (name.startsWith('sg2_in_0')) { el.classList.add('conveyor'); labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','').toUpperCase(); }
-                    else if (name.startsWith('sg2_out_0')) { el.classList.add('packaging'); labelText = 'O' + name.replace('sg2_out_00_a', '').replace('sg2_out_00', '').toUpperCase(); }
+                    else if (name.startsWith('sg2_in_0')) { el.classList.add('conveyor'); labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','A').replace('_b','B').toUpperCase(); }
+                    else if (name.startsWith('sg2_out_0')) { el.classList.add('packaging'); labelText = 'O' + name.replace('sg2_out_00_', '').toUpperCase(); }
                     else if (type === 'STATIC_OBSTACLE' || coordKey === '-3.0,9.0') {
                         // 🛠️ SG2_IN (입고 로봇 영역 3개) - 가로 2칸 병합
                         if (['6.0,3.0', '6.0,-1.5', '6.0,-6.0'].includes(coordKey)) {
@@ -1065,7 +1065,7 @@ def index():
                     }
 
                     // 🚀 특정 구역(존) 좌표 감지하여 강력한 CSS 덧붙이기 (기존 클래스 유지)
-                    const outCoords = ['0.0,9.0', '-3.0,9.0']; // 포장 작업대 버퍼(A) + SG2_OUT 로봇 영역
+                    const outCoords = ['0.0,9.0', '0.0,7.5', '-3.0,9.0']; // 포장 작업대 버퍼 + SG2_OUT 로봇 영역
                     const inCoords = ['6.0,3.0', '7.5,3.0', '6.0,-1.5', '7.5,-1.5', '6.0,-6.0', '7.5,-6.0'];
 
                     if (outCoords.includes(coordKey)) {
