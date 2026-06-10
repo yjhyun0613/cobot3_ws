@@ -4,6 +4,7 @@ from rclpy.action import ActionServer
 from rclpy.executors import MultiThreadedExecutor
 import time
 from datetime import datetime
+from std_msgs.msg import Bool
 
 # 커스텀 ROS2 인터페이스 임포트
 from cobot3_interfaces.srv import GetPackageRoute, CheckWarehouseStatus, ReportInboundProgress
@@ -38,10 +39,31 @@ class MockRobotSimulator(Node):
         self.inbound_progress_client = self.create_client(ReportInboundProgress, 'report_inbound_progress')
 
         # ----------------------------------------------------
-        # 3. 가상 물류 시나리오 구동 (10초마다 새로운 패키지 입고 시뮬레이션)
+        # 3. 로봇 제어 토픽 구독 (관제탑 -> 로봇 일시 정지 명령)
+        # ----------------------------------------------------
+        self.is_paused = {'sg2_in_01': False, 'sg2_in_02': False, 'sg2_in_03': False, 'sg2_out_00': False}
+        self.pause_subs = {}
+        for robot_id in ['sg2_in_01', 'sg2_in_02', 'sg2_in_03', 'sg2_out_00']:
+            self.pause_subs[robot_id] = self.create_subscription(
+                Bool,
+                f'/{robot_id}/pause_status',
+                lambda msg, r_id=robot_id: self.pause_callback(msg, r_id),
+                10
+            )
+
+        # ----------------------------------------------------
+        # 4. 가상 물류 시나리오 구동 (10초마다 새로운 패키지 입고 시뮬레이션)
         # ----------------------------------------------------
         self.scenario_timer = self.create_timer(10.0, self.trigger_mock_inbound_scenario)
         self.package_counter = 1
+        
+        # Redis 연결 (영업 시작 플래그 확인용)
+        import redis
+        try:
+            self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
+        except Exception as e:
+            self.get_logger().error(f"Redis 연결 실패: {e}")
+            self.redis_client = None
         
         self.get_logger().info('모든 액션 서버 및 서비스 클라이언트 준비 완료.')
 
@@ -94,8 +116,12 @@ class MockRobotSimulator(Node):
         feedback_msg = StartPackaging.Feedback()
         output_ids = []
         
-        # 1~8번 슬롯을 하나씩 포장하면서 관제탑에 피드백 전송 (관제탑은 3, 4번째에 최적화 로직 동작)
+        # 1~8번 슬롯을 하나씩 포장하면서 관제탑에 피드백 전송 (관제탑은 4번째에 180도 회전/일시 정지 트리거링)
         for slot in range(1, 9):
+            # 일시 정지(Pause) 상태인 경우 0.5초 단위로 계속 대기
+            while self.is_paused.get('sg2_out_00', False):
+                time.sleep(0.5)
+                
             time.sleep(0.8)  # 포장 시간 시뮬레이션
             feedback_msg.completed_slots = slot
             feedback_msg.last_packed_slot = f"slot_{slot}"
@@ -112,12 +138,28 @@ class MockRobotSimulator(Node):
         self.get_logger().info(f'[Action Completed] 작업대 {goal.workstation_id} 모든 슬롯 포장 완료!')
         return result
 
+    def pause_callback(self, msg, robot_id):
+        self.is_paused[robot_id] = msg.data
+        if msg.data:
+            self.get_logger().warn(f'[Pause] {robot_id} 로봇 작동 일시 정지 (작업대 교체 대기)')
+        else:
+            self.get_logger().info(f'[Resume] {robot_id} 로봇 작동 재개 (새 작업대 배치 완료)')
+
     # ========================================================
     # 📡 [Service Client] 가상 호출 시나리오
     # ========================================================
 
     def trigger_mock_inbound_scenario(self):
         """주기적으로 발생하는 입고 상황 가상 시나리오"""
+        if self.redis_client:
+            val = self.redis_client.get('system:inbound_started')
+            if not val or val.decode('utf-8') != 'true':
+                return
+
+        if self.is_paused.get('sg2_in_01', False):
+            self.get_logger().info('sg2_in_01이 일시 정지 상태이므로 신규 패키지 입고 시뮬레이션을 보류합니다.')
+            return
+
         pkg_id = f"PKG_MOCK_{self.package_counter}"
         cust_name = f"User_{self.package_counter}"
         qr_str = f"QR_MOCK_{self.package_counter}"
@@ -172,8 +214,8 @@ class MockRobotSimulator(Node):
         if not self.inbound_progress_client.wait_for_service(timeout_sec=1.0):
             return
 
-        # 테스트 편의상 1번부터 4번 슬롯까지 순식간에 차오르는 상황을 시뮬레이션
-        for slot in range(1, 5):
+        # 테스트 편의상 1번부터 8번 슬롯까지 순차적으로 차오르는 상황 시뮬레이션
+        for slot in range(1, 9):
             req_progress = ReportInboundProgress.Request()
             req_progress.workstation_id = "WS01"
             req_progress.robot_id = "sg2_in_01"

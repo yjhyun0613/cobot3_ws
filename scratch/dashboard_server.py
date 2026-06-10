@@ -586,15 +586,14 @@ def simulate_inbound():
             target_loc = f"{target_robot}_A"
             
             loc_a, loc_a_rot, loc_a_mov = f"{target_robot}_A", f"{target_robot}_A_ROTATING", f"MOVING_TO_{target_robot.upper()}_A"
-            loc_b, loc_b_mov = f"{target_robot}_B", f"MOVING_TO_{target_robot.upper()}_B"
             
             cursor.execute("""
                 SELECT workstation_id, current_location FROM workstations 
-                WHERE current_location IN (%s, %s, %s, %s, %s)
+                WHERE current_location IN (%s, %s, %s)
                 ORDER BY CASE current_location
-                    WHEN %s THEN 1 WHEN %s THEN 2 WHEN %s THEN 3 WHEN %s THEN 4 WHEN %s THEN 5 ELSE 6
+                    WHEN %s THEN 1 WHEN %s THEN 2 WHEN %s THEN 3 ELSE 4
                 END LIMIT 1;
-            """, (loc_a, loc_a_rot, loc_a_mov, loc_b, loc_b_mov, loc_a, loc_a_rot, loc_a_mov, loc_b, loc_b_mov))
+            """, (loc_a, loc_a_rot, loc_a_mov, loc_a, loc_a_rot, loc_a_mov))
             ws_row = cursor.fetchone()
             if ws_row:
                 ws_id = ws_row[0]
@@ -637,15 +636,6 @@ def simulate_inbound():
             cursor.execute("UPDATE packages SET status = 'IN_WORKSTATION', workstation_id = %s, slot_number = %s WHERE package_id = %s;", (ws_id, slot_num, pkg_id))
             
             lookahead_triggered = False
-            if slot_num == 3 and redis_client:
-                cursor.execute("SELECT qr_id FROM workstations WHERE workstation_id = %s;", (ws_id,))
-                ws_qr = cursor.fetchone()[0]
-                task_data = {
-                    "task_type": "PRE_FETCH_EMPTY_WORKSTATION", "target_robot": target_robot,
-                    "description": f"Look-ahead: {ws_id} 3번째 슬롯 적재 감지 → B구역 예비 작업대 호출", "workstation_qr_id": ws_qr
-                }
-                push_priority_task(redis_client, task_data)
-                lookahead_triggered = True
 
             rotation_triggered = False
             if slot_num == 4 and redis_client:
@@ -686,24 +676,15 @@ def simulate_inbound():
                 }
                 push_priority_task(redis_client, task_retrieve)
                 
-                cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = %s LIMIT 1;", (f"{target_robot}_B",))
-                b_ws_row = cursor.fetchone()
-                if b_ws_row:
+                cursor.execute("SELECT workstation_id, current_location, qr_id FROM workstations WHERE current_location LIKE 'spot_%%' AND workstation_id NOT IN (SELECT DISTINCT workstation_id FROM packages WHERE workstation_id IS NOT NULL AND status IN ('IN_WORKSTATION', 'IN_WAREHOUSE')) LIMIT 1;")
+                new_row = cursor.fetchone()
+                if new_row:
+                    cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (new_row[1],))
                     task_deploy = {
-                        "task_type": "DEPLOY_EMPTY_WORKSTATION", "workstation_id": b_ws_row[0], "from": f"{target_robot}_B", "to": target_loc,
-                        "description": f"대기 작업대 {b_ws_row[0]} 배치 → {target_loc} (승격)", "workstation_qr_id": b_ws_row[1] or ""
+                        "task_type": "DEPLOY_EMPTY_WORKSTATION", "workstation_id": new_row[0], "from": new_row[1], "to": target_loc,
+                        "description": f"새 빈 작업대 {new_row[0]} 배치 → {target_loc} (창고 직송)", "workstation_qr_id": new_row[2] or ""
                     }
                     push_priority_task(redis_client, task_deploy)
-                else:
-                    cursor.execute("SELECT workstation_id, current_location, qr_id FROM workstations WHERE current_location LIKE 'spot_%%' AND workstation_id NOT IN (SELECT DISTINCT workstation_id FROM packages WHERE workstation_id IS NOT NULL AND status IN ('IN_WORKSTATION', 'IN_WAREHOUSE')) LIMIT 1;")
-                    new_row = cursor.fetchone()
-                    if new_row:
-                        cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (new_row[1],))
-                        task_deploy = {
-                            "task_type": "DEPLOY_EMPTY_WORKSTATION", "workstation_id": new_row[0], "from": new_row[1], "to": target_loc,
-                            "description": f"새 빈 작업대 {new_row[0]} 배치 → {target_loc} (창고 직송)", "workstation_qr_id": new_row[2] or ""
-                        }
-                        push_priority_task(redis_client, task_deploy)
                 swap_triggered = True
 
         release_db_connection(pg_conn)
@@ -769,15 +750,25 @@ def simulate_packaging():
             cursor.execute("SELECT COUNT(*) FROM packages WHERE workstation_id = %s AND status = 'IN_WORKSTATION';", (ws_id,))
             remaining_count = cursor.fetchone()[0]
             
+            # Event-Driven Redis counter system 적용
+            if redis_client:
+                try:
+                    comp_count = redis_client.incrby('system:today_completed_count', 1)
+                    total_str = redis_client.get('system:today_total_packages')
+                    if not total_str or int(total_str) == 0:
+                        cursor.execute("SELECT COUNT(*) FROM packages WHERE route_zone = %s;", (today_date,))
+                        total_count = cursor.fetchone()[0]
+                        redis_client.set('system:today_total_packages', total_count)
+                    else:
+                        total_count = int(total_str)
+                    
+                    if total_count > 0 and comp_count >= total_count:
+                        redis_client.set('system:day_status', 'PENDING_TRANSITION')
+                        redis_client.set('system:completed_day', today_date)
+                except Exception as redis_err:
+                    print(f"Redis EOD Check error in dashboard: {redis_err}")
+
             lookahead_triggered = False
-            if completed_count == 7 and redis_client:
-                cursor.execute("SELECT w.workstation_id, w.current_location, w.qr_id FROM workstations w WHERE w.workstation_id IN (SELECT DISTINCT p.workstation_id FROM packages p WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s) AND w.workstation_id != %s LIMIT 1;", (today_date, ws_id))
-                next_row = cursor.fetchone()
-                if next_row:
-                    cursor.execute("SELECT COUNT(*) FROM workstations WHERE current_location = 'sg2_out_00_B' OR current_location = 'MOVING_TO_SG2_OUT_00_B';")
-                    if cursor.fetchone()[0] == 0:
-                        push_priority_task(redis_client, {"task_type": "PRE_FETCH_PACKAGING_WORKSTATION", "workstation_id": next_row[0], "from": next_row[1], "to": "sg2_out_00_B", "description": f"Look-ahead: {ws_id} 7번째 포장 완료 → 대기 작업대 {next_row[0]} 사전 호출", "workstation_qr_id": next_row[2] or ""})
-                        lookahead_triggered = True
             
             swap_triggered = False
             if remaining_count == 0 and redis_client:
@@ -789,18 +780,12 @@ def simulate_packaging():
                 
                 push_priority_task(redis_client, {"task_type": "RETRIEVE_EMPTY_WORKSTATION", "workstation_id": ws_id, "from": "sg2_out_00_A", "to": target_spot, "description": f"포장 완료 빈 작업대 {ws_id} 회수 → {target_spot}", "workstation_qr_id": ws_qr or ""})
                 
-                cursor.execute("SELECT workstation_id, qr_id FROM workstations WHERE current_location = 'sg2_out_00_B' LIMIT 1;")
-                b_row = cursor.fetchone()
-                if b_row:
-                    cursor.execute("UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';", (b_row[0],))
-                    push_priority_task(redis_client, {"task_type": "DEPLOY_PACKAGING_WORKSTATION", "workstation_id": b_row[0], "from": "sg2_out_00_B", "to": "sg2_out_00_A", "description": f"대기 작업대 {b_row[0]} 배치 → sg2_out_00_A (승격)", "workstation_qr_id": b_row[1] or ""})
-                else:
-                    cursor.execute("SELECT w.workstation_id, w.current_location, w.qr_id FROM workstations w WHERE w.workstation_id IN (SELECT DISTINCT p.workstation_id FROM packages p WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s) AND w.workstation_id != %s LIMIT 1;", (today_date, ws_id))
-                    next_row = cursor.fetchone()
-                    if next_row:
-                        if next_row[1].startswith('spot_'): cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (next_row[1],))
-                        cursor.execute("UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';", (next_row[0],))
-                        push_priority_task(redis_client, {"task_type": "DEPLOY_PACKAGING_WORKSTATION", "workstation_id": next_row[0], "from": next_row[1], "to": "sg2_out_00_A", "description": f"다음 포장 작업대 {next_row[0]} 배치 → sg2_out_00_A (교체)", "workstation_qr_id": next_row[2] or ""})
+                cursor.execute("SELECT w.workstation_id, w.current_location, w.qr_id FROM workstations w WHERE w.workstation_id IN (SELECT DISTINCT p.workstation_id FROM packages p WHERE p.status = 'IN_WAREHOUSE' AND p.route_zone = %s) AND w.workstation_id != %s LIMIT 1;", (today_date, ws_id))
+                next_row = cursor.fetchone()
+                if next_row:
+                    if next_row[1].startswith('spot_'): cursor.execute("UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;", (next_row[1],))
+                    cursor.execute("UPDATE packages SET status = 'IN_WORKSTATION' WHERE workstation_id = %s AND status = 'IN_WAREHOUSE';", (next_row[0],))
+                    push_priority_task(redis_client, {"task_type": "DEPLOY_PACKAGING_WORKSTATION", "workstation_id": next_row[0], "from": next_row[1], "to": "sg2_out_00_A", "description": f"다음 포장 작업대 {next_row[0]} 배치 → sg2_out_00_A (교체)", "workstation_qr_id": next_row[2] or ""})
                 swap_triggered = True
         
         release_db_connection(pg_conn)
@@ -1056,8 +1041,8 @@ def index():
                     if (name.startsWith('spot_')) { el.classList.add('spot'); labelText = 'S' + name.replace('spot_', ''); }
                     else if (name.startsWith('stage_')) { el.classList.add('stage'); labelText = 'ST' + name.replace('stage_', ''); }
                     else if (name.startsWith('charging_')) { el.classList.add('charging'); labelText = 'C' + name.replace('charging_', ''); }
-                    else if (name.startsWith('sg2_in_0')) { el.classList.add('conveyor'); labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','A').replace('_b','B').toUpperCase(); }
-                    else if (name.startsWith('sg2_out_0')) { el.classList.add('packaging'); labelText = 'O' + name.replace('sg2_out_00_', '').toUpperCase(); }
+                    else if (name.startsWith('sg2_in_0')) { el.classList.add('conveyor'); labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','').toUpperCase(); }
+                    else if (name.startsWith('sg2_out_0')) { el.classList.add('packaging'); labelText = 'O' + name.replace('sg2_out_00_a', '').replace('sg2_out_00', '').toUpperCase(); }
                     else if (type === 'STATIC_OBSTACLE' || coordKey === '-3.0,9.0') {
                         // 🛠️ SG2_IN (입고 로봇 영역 3개) - 가로 2칸 병합
                         if (['6.0,3.0', '6.0,-1.5', '6.0,-6.0'].includes(coordKey)) {
@@ -1080,7 +1065,7 @@ def index():
                     }
 
                     // 🚀 특정 구역(존) 좌표 감지하여 강력한 CSS 덧붙이기 (기존 클래스 유지)
-                    const outCoords = ['0.0,9.0', '0.0,7.5', '-3.0,9.0']; // 포장 작업대 버퍼 + SG2_OUT 로봇 영역
+                    const outCoords = ['0.0,9.0', '-3.0,9.0']; // 포장 작업대 버퍼(A) + SG2_OUT 로봇 영역
                     const inCoords = ['6.0,3.0', '7.5,3.0', '6.0,-1.5', '7.5,-1.5', '6.0,-6.0', '7.5,-6.0'];
 
                     if (outCoords.includes(coordKey)) {

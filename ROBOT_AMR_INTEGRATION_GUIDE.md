@@ -170,6 +170,20 @@ bool success                # DB 반영 성공 여부 (true / false)
 
 ---
 
+## 🛑 4. ROS 2 토픽 (Topic) 인터페이스 (제어용)
+
+### ① `/{robot_id}/pause_status`
+* **메시지 타입**: `std_msgs/msg/Bool`
+* **역할**: 단일 슬롯 JIT 환경에서 8칸 만석 시, 혹은 앞/뒤 양면(4칸씩) 적재를 위한 **180도 회전(`ROTATE_WORKSTATION`)** 시 관제탑이 로봇 팔의 작업을 일시 정지(Pause)시키거나, 작업대 교체/회전이 완료되어 다시 재개(Resume)시킬 때 사용하는 제어 토픽입니다.
+* **사용 로봇**: 적재 로봇 (`sg2_in_01`, `sg2_in_02`, `sg2_in_03`) 및 포장 로봇 (`sg2_out_00`)
+* **메시지 구조**:
+```text
+# std_msgs/msg/Bool
+bool data  # true: 일시 정지 지시 (작업대 만석 또는 4칸 회전 대기), false: 작업 재개 지시 (새 작업대 배치 또는 회전 완료)
+```
+
+---
+
 ## ⚡ 4. Redis 실시간 상태 캐시 규격 (AMR 상태 모니터링)
 AMR의 고주파 주행 정보는 네트워크 대역폭과 DB 부하 절감을 위해 Redis에 캐싱됩니다.
 
