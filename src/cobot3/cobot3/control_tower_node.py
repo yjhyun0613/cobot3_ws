@@ -625,13 +625,93 @@ class ControlTowerNode(Node):
             self.get_logger().error(f'Redis 큐 중복 확인 중 오류: {e}')
         return False
 
+    def is_workstation_or_target_busy(self, ws_id, target_loc):
+        """작업대 또는 목적지가 이미 다른 작업에 의해 점유/이동 중인지 검사"""
+        # 1. Redis 큐 검사
+        if self.redis_client:
+            try:
+                tasks_raw = self.redis_client.zrange('queue:amr_tasks', 0, -1)
+                for t_raw in tasks_raw:
+                    try:
+                        task = json.loads(t_raw if isinstance(t_raw, str) else t_raw.decode('utf-8'))
+                        # 동일한 작업대 ID가 큐에 있는지 확인
+                        if ws_id and task.get('workstation_id') == ws_id:
+                            self.get_logger().warn(f"[스케줄러 검사] 작업대 {ws_id}가 이미 Redis 큐에 대기 중이므로 작업을 중복 등록하지 않습니다.")
+                            return True
+                        # 동일한 목적지가 큐에 이미 예약되어 있는지 확인
+                        if target_loc and task.get('to') == target_loc:
+                            self.get_logger().warn(f"[스케줄러 검사] 목적지 {target_loc}가 이미 Redis 큐의 다른 작업 목적지로 예약되어 있으므로 중복 등록하지 않습니다.")
+                            return True
+                    except Exception:
+                        pass
+            except Exception as e:
+                self.get_logger().error(f'Redis 큐 중복 검사 오류: {e}')
+
+        # 2. PostgreSQL DB 검사 (현재 이동 중 또는 이미 목적지에 배치되어 있는지 검사)
+        if self.pg_conn_pool:
+            try:
+                with self.get_db_connection() as conn:
+                    if conn:
+                        with conn.cursor() as cursor:
+                            # 작업대 자체의 상태 검사
+                            if ws_id:
+                                cursor.execute("SELECT current_location, status FROM workstations WHERE workstation_id = %s;", (ws_id,))
+                                row = cursor.fetchone()
+                                if row:
+                                    curr_loc, status = row[0], row[1]
+                                    if status == 'PROCESSING' or (curr_loc and curr_loc.startswith('MOVING_TO_')):
+                                        self.get_logger().warn(f"[스케줄러 검사] 작업대 {ws_id}가 이미 이동 중(DB 상태: {status}, 위치: {curr_loc})이므로 작업을 등록하지 않습니다.")
+                                        return True
+
+                            # 목적지 점유/예약 검사
+                            if target_loc:
+                                # 2-1. 다른 작업대가 해당 목적지로 가고 있거나 이미 위치해 있는지 검사
+                                cursor.execute(
+                                    "SELECT workstation_id, current_location FROM workstations "
+                                    "WHERE (current_location = %s OR current_location = %s) "
+                                    "  AND (%s IS NULL OR workstation_id != %s);",
+                                    (target_loc, f"MOVING_TO_{target_loc.upper()}", ws_id, ws_id)
+                                )
+                                row = cursor.fetchone()
+                                if row:
+                                    self.get_logger().warn(f"[스케줄러 검사] 목적지 {target_loc}가 이미 작업대 {row[0]}(현재 위치/상태: {row[1]})에 의해 선점되었으므로 중복 등록하지 않습니다.")
+                                    return True
+
+                                # 2-2. 목적지가 창고 주차 스팟(spot_XX, stage_XX)일 때, 해당 스팟이 비어있지 않은지 검사
+                                if target_loc.startswith('spot_') or target_loc.startswith('stage_'):
+                                    cursor.execute(
+                                        "SELECT status, workstation_id FROM warehouse_locations WHERE spot_id = %s;",
+                                        (target_loc,)
+                                    )
+                                    row = cursor.fetchone()
+                                    if row:
+                                        spot_status, spot_ws = row[0], row[1]
+                                        if spot_status == 'OCCUPIED' and spot_ws != ws_id:
+                                            self.get_logger().warn(f"[스케줄러 검사] 목적지 스팟 {target_loc}가 이미 다른 작업대 {spot_ws}에 의해 점유되어 있어 중복 등록하지 않습니다.")
+                                            return True
+            except Exception as db_err:
+                self.get_logger().error(f'[스케줄러 검사] DB 중복 검증 중 오류: {db_err}')
+
+        return False
+
     def push_amr_task(self, task_dict):
         """AMR 작업 명령을 Redis 대기 큐(Sorted Set)에 집어넣음"""
+        task_type = task_dict.get('task_type', 'TASK')
+        ws_id = task_dict.get('workstation_id')
+        target_loc = task_dict.get('to')
+
+        # 중복 등록 방지 검사 (작업대 또는 목적지가 이미 예약/점유되었는지 확인)
+        if self.is_workstation_or_target_busy(ws_id, target_loc):
+            self.get_logger().warn(
+                f"[스케줄러 중복 방지] 태스크 등록 취소: {task_type} (작업대: {ws_id}, 목적지: {target_loc})"
+            )
+            return
+
         import uuid
         task_uuid = str(uuid.uuid4())
         task_dict['uuid'] = task_uuid
-        task_type = task_dict.get('task_type', 'TASK')
         score = self.get_task_priority(task_type)
+
 
         if self.redis_client:
             try:
@@ -797,6 +877,26 @@ class ControlTowerNode(Node):
             send_goal_future.add_done_callback(
                 lambda future: self.move_package_response_callback(future, goal_msg.package_id, goal_msg.destination_zone, task_id, assigned_amr, start_location)
             )
+        else:
+            # 작업대(Workstation) 이동 관련 태스크 (DEPLOY_EMPTY_WORKSTATION, ROTATE_WORKSTATION, RETRIEVE_FULL_WORKSTATION 등)
+            workstation_id = task.get('workstation_id')
+            start_location = task.get('from')
+            target_location = task.get('to')
+            workstation_qr_id = task.get('workstation_qr_id', '')
+
+            self.get_logger().info(
+                f'{assigned_amr}에게 작업대 {workstation_id}(QR: {workstation_qr_id}) 이송 액션 전송 중... '
+                f'(출발: {start_location}, 목적지: {target_location})'
+            )
+            self.trigger_workstation_move(
+                workstation_id=workstation_id,
+                start=start_location,
+                target=target_location,
+                workstation_qr_id=workstation_qr_id,
+                task_id=task_id,
+                assigned_amr=assigned_amr
+            )
+
 
     def check_completed_workstations(self):
         """8개 칸이 모두 채워진 완성된 작업대를 파악해 이동 명령(AMR) 스케줄링"""
@@ -1091,7 +1191,7 @@ class ControlTowerNode(Node):
                                 cursor.execute(
                                     f"SELECT w.workstation_id, w.current_location, w.qr_id "
                                     f"FROM workstations w "
-                                    f"JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WAREHOUSE' "
+                                    f"JOIN packages p ON w.workstation_id = p.workstation_id AND p.status IN ('IN_WAREHOUSE', 'IN_WORKSTATION') "
                                     f"WHERE (w.current_location LIKE 'spot_%%' OR w.current_location LIKE 'stage_%%') AND p.route_zone = %s "
                                     f"GROUP BY w.workstation_id, w.current_location, w.qr_id "
                                     f"{having_cond} "
@@ -1126,7 +1226,7 @@ class ControlTowerNode(Node):
                             cursor.execute(
                                 f"SELECT w.workstation_id, w.current_location, w.qr_id "
                                 f"FROM workstations w "
-                                f"JOIN packages p ON w.workstation_id = p.workstation_id AND p.status = 'IN_WAREHOUSE' "
+                                f"JOIN packages p ON w.workstation_id = p.workstation_id AND p.status IN ('IN_WAREHOUSE', 'IN_WORKSTATION') "
                                 f"WHERE (w.current_location LIKE 'spot_%%' OR w.current_location LIKE 'stage_%%') AND p.route_zone = %s "
                                 f"AND w.workstation_id != %s "
                                 f"GROUP BY w.workstation_id, w.current_location, w.qr_id "

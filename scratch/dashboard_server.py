@@ -159,7 +159,7 @@ def get_status():
             cursor.execute("""
                 SELECT workstation_id, slot_number, customer_name 
                 FROM packages 
-                WHERE status = 'IN_WORKSTATION' AND workstation_id IS NOT NULL;
+                WHERE status IN ('IN_WORKSTATION', 'IN_WAREHOUSE') AND workstation_id IS NOT NULL;
             """)
             pkg_rows = cursor.fetchall()
             ws_pkg_map = {}
@@ -1232,7 +1232,29 @@ def index():
                     (data.workstations || []).forEach(ws => {
                         const el = document.createElement('div');
                         el.className = 'ws-card';
-                        el.innerHTML = `<div class="ws-header"><span class="ws-id">${ws.workstation_id}</span><span class="ws-loc">${ws.current_location}</span></div>`;
+                        
+                        let slotsHtml = '<div class="ws-slots-grid">';
+                        (ws.slots || []).forEach(slot => {
+                            const isFull = slot.status === 'FULL';
+                            const customerName = slot.customer || '';
+                            const statusClass = isFull ? 'full' : 'empty';
+                            const displayName = isFull ? customerName : '—';
+                            slotsHtml += `
+                                <div class="ws-slot ${statusClass}" title="Slot ${slot.slot_number}: ${isFull ? customerName : 'EMPTY'}">
+                                    <div style="font-weight: 700;">#${slot.slot_number}</div>
+                                    <div class="ws-slot-name">${displayName}</div>
+                                </div>
+                            `;
+                        });
+                        slotsHtml += '</div>';
+
+                        el.innerHTML = `
+                            <div class="ws-header">
+                                <span class="ws-id">${ws.workstation_id}</span>
+                                <span class="ws-loc">${ws.current_location}</span>
+                            </div>
+                            ${slotsHtml}
+                        `;
                         if (wc) wc.appendChild(el);
                     });
                 }

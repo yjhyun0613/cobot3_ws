@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import time
+from datetime import datetime
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -93,7 +94,8 @@ class MockSg2OutNode(Node):
         # 최종 결과 전송
         result = StartPackaging.Result()
         result.success = True
-        result.final_output_ids = [f"{workstation_id}_{i}_{today_date}" for i in range(1, 9)]
+        timestamp = datetime.now().strftime('%H%M%S')
+        result.final_output_ids = [f"sg2_out_00_{workstation_id}_SLOT{i}_{today_date}_{timestamp}" for i in range(1, 9)]
         self.get_logger().info(f'✅ [Mock SG2 OUT] {workstation_id} 모든 포장 공정 완료 및 결과 전송 완료')
         return result
 

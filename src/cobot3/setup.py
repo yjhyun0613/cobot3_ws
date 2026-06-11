@@ -27,6 +27,8 @@ setup(
             'control_tower = cobot3.control_tower_node:main',
             'sim_sync_node = cobot3.sim_sync_node:main',
             'mock_sg2_out = cobot3.mock_sg2_out_node:main',
+            'mock_amr = cobot3.mock_amr_node:main',
+            'mock_sg2 = cobot3.mock_sg2_node:main',
         ],
     },
 )

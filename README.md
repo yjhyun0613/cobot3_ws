@@ -9,20 +9,16 @@
 
 ## 📂 프로젝트 문서 지도 (Documentation Map)
 
-프로젝트 루트의 문서를 효율적으로 찾아볼 수 있도록 다음과 같이 4가지 카테고리로 통합 및 정리하였습니다.
+프로젝트 루트의 문서를 효율적으로 찾아볼 수 있도록 다음과 같이 3대 핵심 문서로 단순화하여 통합하였습니다.
 
-### 1. 📖 시스템 가이드 및 종합 보고서
-* **[README.md](file:///home/rokey/cobot3_ws/README.md)**: 전체 시스템의 아키텍처, QR 규격, 기동 프로세스, 운영 시 잠재적 대책 및 에이전트 가이드 수록.
-* **[PROJECT_REPORT.md](file:///home/rokey/cobot3_ws/PROJECT_REPORT.md)**: NVIDIA Isaac Sim 시뮬레이터 연동 결과 및 핵심 비즈니스 시나리오, 설계 결정 사항을 총망라한 최종 요약 보고서.
+### 1. 📖 [README.md](file:///home/yoon/cobot3_ws/README.md) (사용 매뉴얼 및 데모 시나리오)
+* 전체 시스템의 기동 프로세스, 사전 요구사항, 데이터 백업/복원, 그리고 실제 발표 현장에서 활용할 **6월 8일 데모 시연 진행 스크립트** 수록.
 
-### 2. 📐 시스템 설계 및 연동 규격서
-* **[DATABASE_SCHEMA.md](file:///home/rokey/cobot3_ws/DATABASE_SCHEMA.md)**: PostgreSQL 및 Redis의 테이블 스키마 정의, ERD 관계도 및 캐싱 매핑 상세 설명서.
-* **[ROBOT_AMR_INTEGRATION_GUIDE.md](file:///home/rokey/cobot3_ws/ROBOT_AMR_INTEGRATION_GUIDE.md)**: ROS 2 서비스/액션, Redis 캐시 규격, 1Hz JSON 상태 토픽 및 분산 DDS 통신(Cyclone DDS)을 포괄하는 로봇/AMR 연동 가이드.
-* **[PHYSICAL_LAYOUT.md](file:///home/rokey/cobot3_ws/PHYSICAL_LAYOUT.md)**: 주차 구역, 입고 라인 A/B, 출고 대기 창고, 포장 라인 등의 물리적 X, Y 좌표 매핑 테이블.
-* **[SYSTEM_IMPROVEMENT_PLAN.md](file:///home/rokey/cobot3_ws/SYSTEM_IMPROVEMENT_PLAN.md)**: 데이터베이스 정규화, QR코드 도입, 이중 버퍼, 우선순위 큐, Fail-safe 등 개선 계획 및 진행 상황 보고서.
+### 2. 🔌 [ROBOT_AMR_INTEGRATION_GUIDE.md](file:///home/yoon/cobot3_ws/ROBOT_AMR_INTEGRATION_GUIDE.md) (기술 연동 명세 및 아키텍처 규격서)
+* ROS 2 서비스/액션 메시지 정의, Redis 캐시 구조, Cyclone DDS 무선 통신 설정, 데이터베이스 스키마(PostgreSQL ERD) 및 창고 물리 격자 좌표(X, Y) 매핑 총망라.
 
-### 3. 📈 개발 이력 및 수정 내역
-* **[CHANGELOG.md](file:///home/rokey/cobot3_ws/CHANGELOG.md)**: 프로젝트 시작(2026-06-01)부터 현재까지 날짜 및 시간별 상세 개발 이력.
+### 3. 📊 [PROJECT_REPORT.md](file:///home/yoon/cobot3_ws/PROJECT_REPORT.md) (종합 구축 결과 및 개선 보고서)
+* 4단계 비즈니스 시나리오, JIT 교체/인터로킹 아키텍처 결정 사항, 데이터베이스 정규화/이중 버퍼/우선순위 큐 등의 시스템 개선 내역 및 마일스톤 이력 요약.
 
 ---
 
@@ -72,7 +68,7 @@ sudo docker compose up -d
 
 #### ② Redis 실시간 AMR 작업 큐 모니터링 (Redis Commander)
 * **주소**: [http://localhost:8081](http://localhost:8081)
-* 왼쪽 트리 메뉴의 `queue:amr_tasks` 리스트를 클릭하여 현재 AMR에게 대기 중인 작업 스케줄링 현황을 한눈에 시각화해 볼 수 있습니다.
+* ① 왼쪽 트리 메뉴의 `queue:amr_tasks` 리스트를 클릭하여 현재 AMR에게 대기 중인 작업 스케줄링 현황을 한눈에 시각화해 볼 수 있습니다.
 
 ---
 
@@ -99,7 +95,7 @@ python3 docker/init_june_8th_state.py
 ### 4단계: 프로그램 구동 (터미널 3~4개 필요)
 
 > [!IMPORTANT]
-> **분산 환경 vs 로컬 환경**: 상대 PC(Isaac Sim)와 썬더볼트 케이블을 연결한 분산 환경에서는 `ROS_LOCALHOST_ONLY=0`으로 설정합니다. 케이블 없이 이 PC에서만 테스트할 때는 `ROS_LOCALHOST_ONLY=1`과 `unset CYCLONEDDS_URI`를 사용합니다.
+> **분산 환경 vs 로컬 환경**: 4대 PC 분산 환경(관제탑, AMR, SG2, BG2)에서 WiFi로 연동할 때는 각 터미널에서 `export CYCLONEDDS_URI=file://$HOME/.ros/cyclonedds_wifi.xml`을 지정하고 `ROS_LOCALHOST_ONLY=0`으로 설정합니다.
 
 #### 터미널 1: FastAPI 웹 대시보드 서버
 ```bash
@@ -113,17 +109,19 @@ python3 scratch/dashboard_server.py
 cd ~/cobot3_ws
 source install/setup.bash
 export ROS_DOMAIN_ID=119
-export ROS_LOCALHOST_ONLY=0        # 분산 환경 (상대 PC 연결 시)
+export ROS_LOCALHOST_ONLY=0        # 분산 환경
+export CYCLONEDDS_URI=file://$HOME/.ros/cyclonedds_wifi.xml
 ros2 run cobot3 control_tower
 ```
 
-#### 터미널 3: 로봇 및 AMR 모의 시뮬레이터
+#### 터미널 3: 가상 AMR 및 SG2 로봇 시뮬레이터 (Local 통합 테스트용)
+만약 실제 로봇 기기나 AMR PC 없이 본인 PC 내부에서 단독 시나리오를 연동 테스트하려면 가상 시뮬레이터 노드들을 켭니다.
 ```bash
-cd ~/cobot3_ws
-source install/setup.bash
-export ROS_DOMAIN_ID=119
-export ROS_LOCALHOST_ONLY=0        # 분산 환경 (상대 PC 연결 시)
-python3 src/cobot3/testfile/mock_simul.py
+# 가상 AMR 실행 (1초 단위 실시간 주행 보간 및 Redis/대시보드 위젯 동기화)
+ros2 run cobot3 mock_amr
+
+# 가상 SG2 실행 (inbound 로봇 자동적재 및 outbound 포장액션, 180도 회전 락 지원)
+ros2 run cobot3 mock_sg2
 ```
 
 #### 터미널 4 (선택): 분산 시뮬레이션 상자 동기화 노드
@@ -133,11 +131,12 @@ cd ~/cobot3_ws
 source install/setup.bash
 export ROS_DOMAIN_ID=119
 export ROS_LOCALHOST_ONLY=0
+export CYCLONEDDS_URI=file://$HOME/.ros/cyclonedds_wifi.xml
 ros2 run cobot3 sim_sync_node
 ```
 
 > [!TIP]
-> **로컬 전용 테스트 시**: 썬더볼트 케이블이 연결되어 있지 않은 경우 CycloneDDS가 `thunderbolt0` 인터페이스를 찾지 못해 에러가 발생합니다. 이때는 각 터미널에서 `unset CYCLONEDDS_URI`를 먼저 실행하고 `ROS_LOCALHOST_ONLY=1`로 설정하세요.
+> **로컬 전용 테스트 시**: 다른 PC들과 통신하지 않고 본인 PC 내부에서만 독립적으로 테스트할 때는 각 터미널에서 `unset CYCLONEDDS_URI`를 실행하고 `ROS_LOCALHOST_ONLY=1`로 설정하십시오.
 
 ---
 
@@ -147,24 +146,7 @@ ros2 run cobot3 sim_sync_node
 2. 상단의 **[📥 CSV 입고 명단 업로드]** 버튼을 클릭하여 아래 파일 중 하나를 업로드합니다.
    * `scratch/packages_2026-06-08.csv` (6월 8일 시나리오용)
    * `scratch/packages_2026-06-09.csv`, `scratch/packages_2026-06-10.csv` 등
-3. 모든 기기가 연결되면 **[🟢 영업 시작]** 버튼이 활성화되며, 클릭 시 시뮬레이션이 개시됩니다.
-4. 모의 시뮬레이터 터미널에서 다음 과정이 순서대로 진행됩니다:
-   * **[초기화]**: 관제탑으로부터 당일 전체 택배 명단을 1회 일괄 수신 (`GetDailyPackageList`)
-   * **[분류 진행]**: bg2 분류기 로컬에서 택배 목적지를 직접 판단하고 분류 카운트 표시
-   * **[이송 시작]**: 적재 로봇이 작업대에 순차 적재 후 AMR 호출 및 작업대 회전/교체 시나리오 연동
-
----
-
-## 🎨 5. NVIDIA Isaac Sim 3D 시뮬레이터 연동 (분산 가동 모드)
-
-본 관제 시스템은 고성능 물리 시뮬레이션 환경(Isaac Sim)과 스케줄러/데이터베이스 서버의 리소스를 분리하기 위해 **2대 노트북 분산 가동 환경**으로 설계 및 고도화되었습니다. 내 PC에서는 시뮬레이션이나 USD 조작 스크립트를 일체 실행하지 않고, 오직 관제탑과 데이터베이스/대시보드만 가동합니다.
-
-* **상대방 PC (아이작 심 & AMR 실제 제어 머신)**:
-  * 물리 맵 파일(`floor_with_con,storage.usd`)과 실시간 AMR 제어 컨트롤러(`amr_live_existing_stage_true8_qr_camera_controller_gpu.py`), Bridge 노드(`fleet_manager_bridge_node_gpu.py`)를 실행합니다.
-  * 실행 및 설정 상세 지침은 [src/amr/amr.md](file:///home/rokey/cobot3_ws/src/amr/amr.md)를 참고하십시오.
-* **내 PC (관제 및 DB 머신)**:
-  * 로컬 시뮬레이션 및 USD 검사/생성/커넥터 스크립트(`isaac_amr_connector.py`, `run_full_simulation_robot.py` 등)는 소스 코드 다이어트 및 리소스 낭비 방지를 위해 **완전히 삭제**되었습니다.
-  * 오직 Docker DB, Redis, 관제탑 노드, FastAPI 대시보드 서버만 구동하며, 상대방 PC와 CycloneDDS 통신망 및 Redis 커넥션(`192.168.100.20:6379`)을 통해 실시간으로 명령을 주고받고 로봇 상태 정보를 업데이트합니다.
+3. 모든 기기가 연결되고 대기 패키지가 존재하면 **[🟢 영업 시작]** 버튼이 활성화되며, 클릭 시 시뮬레이션이 개시됩니다. (비활성화 상태 시 웹 페이지를 새로고침(F5) 해주십시오.)
 
 ---
 
@@ -185,47 +167,56 @@ cat ~/cobot3_ws/docker/warehouse_backup.sql | sudo docker exec -i warehouse_post
 ---
 
 ## 🤖 7. AI 에이전트 개발 정보 및 아키텍처
-
-본 관제탑 프로젝트를 이어 개발하는 후속 AI 에이전트를 위해 시스템의 데이터 흐름과 QR코드 매핑 규격을 아래에 명시합니다.
-
-### ① 시스템 아키텍처 구조
-```mermaid
-graph TD
-    Sorter[bg2: 컨베이어 분류 로봇] -->|GetDailyPackageList| CT[Control Tower Node]
-    Inbound[sg2_in_XX: 적재 로봇] -->|CheckWarehouseStatus / ReportInbound| CT
-    Outbound[sg2_out_00_A: 포장 로봇] -->|StartPackaging| CT
-    CT <-->|SQL / Real-time Query| DB[(PostgreSQL)]
-    CT <-->|ZADD / ZPOPMAX Priority Tasks| Redis[(Redis Command Queue)]
-    CT -->|1Hz JSON Broadcast / Event-driven| Fleet[/"/fleet/* Topics"/]
-    IsaacBG2[Isaac Sim A - bg2] -->|TransitPackage.srv| SimSync[sim_sync_node]
-    SimSync -->|sg2_spawn_trigger| IsaacSG2[Isaac Sim B - sg2]
-    SimSync <-->|status update| DB
-```
-
-### ② QR코드 식별자 매핑 규격
-| 대상군 (Entities) | QR코드 ID 포맷 | 매핑 식별자 (DB) | 비고 |
-| :--- | :--- | :--- | :--- |
-| **로봇 (Robots)** | `ROBOT_{robot_id}` | `bg2`, `sg2_in_01~03`, `sg2_out_00` | 로봇 타입 및 역할 식별 |
-| **작업대 (Workstations)**| `WORKSTATION_{workstation_id}` | `WS01` ~ `WS10` | 2x8 적재 플레이트 (총 10대) |
-| **상자 (Packages)** | `PKG_RAND_XXX` | `PKG_RAND_XXX` (임의생성) | 개별 택배 박스 |
-| **작업대 슬롯 (Slots)** | `WORKSTATION_WSxx_SLOT_y` | `WS01_SLOT_1` ~ `WS10_SLOT_8` | 각 작업대의 2x4 슬롯 (총 80개) |
-| **바닥 격자 (Floor Grid)**| `FLOOR_X_{x}_Y_{y}` | `FLOOR_X_{x}_Y_{y}` | 미터법 절대 좌표 마커 (총 143개, 1.5m 간격 11×13 격자) |
+* 이 가이드와 관련한 자세한 통신 규격 및 구조는 **[ROBOT_AMR_INTEGRATION_GUIDE.md](file:///home/yoon/cobot3_ws/ROBOT_AMR_INTEGRATION_GUIDE.md)**를 참조하십시오.
 
 ---
 
-## ⚠️ 8. 영업일 전환 및 이월 적재 운영 시 잠재적 대책
+## 🎬 8. 데모 시연 시나리오 및 진행 플레이북 (6월 8일 데모 기준)
 
-실제 영업일 날짜 기반 전환 및 이월 적재 시나리오를 가동할 때 발생할 수 있는 잠재적 이슈와 대처 방식입니다.
+### ① 시나리오 개요 (Overview)
+물류 창고는 매일 리셋되지 않고 전날의 잔여 물량이 누적되는 연속성을 가집니다. 본 데모는 **과거 2일간의 미처리 잔여 재고 18개**가 야간 자율 정렬(Shift-Left)을 통해 완벽하게 전진 배치되어 있는 6월 8일 아침 상황에서 시작합니다. 
 
-1. **작업대 공간 낭비 및 창고 포화**:
-   * **원인**: 전날 부분 적재되어 이월된 작업대가 있는데 오늘 날짜 물량을 새 작업대에 처음부터 쌓으면 자원이 조기 포화됩니다.
-   * **대책**: 입고 시뮬레이터가 현재 라인에 대기 중인 기존 이월 작업대를 조회하여, 남은 슬롯(1~8)에 순차적으로 상자를 이어서 누적 적재(Carry-over)하도록 스케줄링을 연동합니다.
-2. **창고 및 대기 구역 포화 데드락**:
-   * **원인**: 출고 속도가 입고를 따라가지 못해 창고 보관 공간(10개)과 대기 공간(4개)이 가득 차면 AMR 이송 경로가 막혀 시스템이 교착됩니다.
-   * **대책**: 창고 잔여 스팟을 모니터링하여 여유 스팟이 임계치(1~2개) 도달 시 입고 로봇(`bg2`)에 정지 명령을 주는 쓰로틀링(Throttling) 방식을 제어부에 탑재합니다.
-3. **미처리 누락 패키지로 인한 일자 전환 정체**:
-   * **원인**: 과거 패키지 중 처리가 누락되어 완료(`COMPLETED`)되지 못한 것이 1개라도 있으면 기준 영업일 승격이 불가합니다.
-   * **대책**: 전환 시점에 강제 완료 처리(Force-completed)하거나, 미처리 패키지를 다음 영업일 날짜로 일괄 수정하여 이월시키는 백오프 루틴을 구성합니다.
+* **당일(6/8) 출고 목표량**: 총 13개 (과거 이월분) + 당일 신규 유입분
+* **내일(6/9) 출고 대기량**: 총 5개 (과거 이월분) + 당일 신규 유입분
+
+### ② 초기 작업대(Workstation) 맵 배치 현황
+시뮬레이션 가동 직전, 총 10대의 작업대는 자원 효율성 규칙(사용하지 않는 예비대는 메인 창고에 바둑판 정렬)에 따라 다음과 같이 마스킹되어 있습니다.
+
+| 작업대 ID | 현재 위치 (Spot) | 적재 상태 | 대상 출고일 | 상태 설명 (야간 정렬 결과) |
+| :--- | :--- | :---: | :---: | :--- |
+| **`WS01`** | `stage_01` (스테이징) | **8 / 8 칸** | 오늘 (6/8) | 어제 완충되어 대기 중. **시작 즉시 출고장 이송 대상** |
+| **`WS02`** | `sg2_in_01_A` (1번 라인) | **5 / 8 칸** | 오늘 (6/8) | 2번 라인에서 전진 배치됨. **신규 택배 이어서 적재** |
+| **`WS03`** | `sg2_in_02_A` (2번 라인) | **5 / 8 칸** | 내일 (6/9) | 3번 라인에서 전진 배치됨. |
+| **`WS04`** | `sg2_in_03_A` (3번 라인) | **0 / 8 칸** | 모레 (6/10) | 새로 보충된 빈 작업대. |
+| **`WS05`**~**`WS10`** | `spot_01`~`06` (메인 창고) | **0 / 8 칸** | - | 주차장에 오와 열을 맞춰 대기 중인 예비 작업대들 |
+
+### ③ 시연 강조 하이라이트 (Demo Highlights)
+
+#### 1. Fail-Safe UI 및 잠금장치 (Data Integrity & Device Sync)
+* 데이터베이스에 6월 8일자 신규 CSV 명단이 업로드되고, **실제 구동 중인 AMR(1대 이상)의 Redis 연결 상태가 감지될 때까지** 대시보드의 **[영업 시작] 버튼이 잠금(Disabled) 상태로 유지**되어 운영자 실수 및 무연동 가동을 원천 차단합니다.
+
+#### 2. 단일 슬롯 JIT (Just-In-Time) 직렬 교체 및 인터로킹
+* 공간 최적화를 위해 라인당 단 1개의 Active 구역만 사용합니다.
+* `WS02`에 3개의 상자가 추가되어 **8칸이 가득 차는 순간**, 관제탑이 입고 로봇에게 **일시정지(Pause) 신호**를 쏴서 동작을 멈춥니다.
+* AMR 3대 한정 큐(Queue) 시스템이 만석 작업대를 인출하고 새 작업대를 안착시키면 **재가동(Resume) 신호**가 떨어져 공정이 이어집니다.
+
+#### 3. 이벤트 기반 무부하 마감(EOD) 스캔
+* 매초 DB를 조회하는 Polling 부하를 없앴습니다. 포장 로봇이 패키지를 `COMPLETED`로 만들 때마다 카운터를 차감하며, **오늘 날짜의 잔여물이 0이 되는 순간 단 한 번의 트리거**로 영업 종료(Shift-Left)를 발동시킵니다.
+
+### ④ 발표 진행 스크립트 (Step-by-Step Scenario)
+
+1. **환경 초기화 브리핑**
+   * 터미널에서 `python3 init_june_8th_state.py` 실행.
+   * **발표 멘트**: *"현재 시스템은 6월 8일 아침 9시로 세팅되었습니다. 맵을 보시면 어제 미처리된 5칸짜리 이월 작업대들이 1번, 2번 라인에 전진 배치되어 있고, 남은 예비대들은 주차장에 완벽하게 정돈되어 있습니다. 초기 상태이므로 실제 AMR이 켜져서 연결되기 전까지는 지도상에 AMR이 표시되지 않습니다."*
+2. **대시보드 CSV 업로드 및 AMR 기기 연동 (데이터 및 디바이스 주입)**
+   * 대시보드의 회색(잠금) 버튼 확인 후 `packages_2026-06-08.csv` 파일 업로드 및 가상 AMR/SG2 모의 노드 실행.
+   * **발표 멘트**: *"시스템은 당일 명단 CSV와 실제 물리/시뮬레이션 AMR 기기의 연결 상태가 모두 충족될 때까지 가동을 강제 차단합니다. 방금 CSV를 업로드하고 AMR이 연동되어 데이터 무결성과 통신 정합성이 확보되자 영업 시작 버튼이 초록색으로 활성화되었습니다."*
+3. **[영업 시작] 및 하이라이트 동시 다발 발동**
+   * 버튼 클릭과 동시에 시뮬레이터 및 관제탑 가동.
+   * **발표 멘트**: *"시작과 동시에 관제탑이 스테이징에 대기 중이던 8칸 완충 작업대(WS01)를 감지하고 AMR을 보내 즉시 출고를 시작합니다. 동시에 1번 라인에서는 어제 넘어온 WS02 작업대에 오늘 택배를 6번 슬롯부터 끊김 없이 누적(Carry-over) 적재하고 있습니다."*
+4. **JIT 작업대 교대 (Swapping) 연출**
+   * 1번 라인 8칸 만석 도달 시.
+   * **발표 멘트**: *"8칸이 가득 차자마자 로봇 팔이 일시 정지(Pause)합니다. 대기 큐에 있던 AMR들이 교대 진입하여 새 작업대를 안착시키고 나면 로봇 팔이 다시 깨어나 적재를 이어갑니다. 이 모든 과정에 충돌이나 데드락은 발생하지 않습니다."*
 
 ---
 
@@ -233,9 +224,8 @@ graph TD
 
 본 프로젝트의 관리 및 개발을 맡는 모든 AI 에이전트는 아래 규칙을 엄격하게 수행해야 합니다.
 
-1. **상시 동기화**: 소스코드, 데이터베이스 스펙, ROS 2 인터페이스 변경이 발생하면 관련 모든 마크다운 문서(`DATABASE_SCHEMA.md`, `ROBOT_AMR_INTEGRATION_GUIDE.md` 등)를 즉시 동시 수정해야 합니다.
-2. **이력 기록**: 작업 커밋 전 항상 `CHANGELOG.md` 문서 최상단에 수정 내역을 일자/시간별로 기록합니다.
-3. **경고 헤더 표준화**: 모든 마크다운 파일 최상단에는 반드시 아래 경고 안내문구가 포함되어 있어야 합니다.
+1. **상시 동기화**: 소스코드, 데이터베이스 스펙, ROS 2 인터페이스 변경이 발생하면 관련 모든 마크다운 문서(`ROBOT_AMR_INTEGRATION_GUIDE.md`, `PROJECT_REPORT.md` 등)를 즉시 동시 수정해야 합니다.
+2. **경고 헤더 표준화**: 모든 마크다운 파일 최상단에는 반드시 아래 경고 안내문구가 포함되어 있어야 합니다.
    ```markdown
    > [!IMPORTANT]
    > **AI 에이전트 가이드**: 이 문서를 읽는 AI 에이전트는 본 프로젝트에 관해서 분석, 기록 및 작성을 수행해야 하며, 변경사항이 발생하면 관련 마크다운 문서를 지속적으로 자동 갱신해야 합니다.

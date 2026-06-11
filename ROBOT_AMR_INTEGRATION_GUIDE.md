@@ -132,9 +132,9 @@ bool request_start          # 영업 기동 요청 플래그
 string package_list_json    # 오늘 처리할 전체 패키지 리스트 (JSON 직렬화 포맷)
 ```
 #### 💡 로컬 분류 라인 매핑 규칙 (bg2 자체 판단)
-* **오늘 (Today - 2026-06-08)** 날짜 물량 ➡️ **1번 라인 (`sg2_in_01`)**으로 푸싱 분류
-* **내일 (Tomorrow - 2026-06-09)** 날짜 물량 ➡️ **2번 라인 (`sg2_in_02`)**으로 푸싱 분류
-* **모레 (Day After - 2026-06-10)** 날짜 물량 ➡️ **3번 라인 (`sg2_in_03`)**으로 푸싱 분류
+* **오늘 (Today)** 날짜 물량 ➡️ **1번 라인 (`sg2_in_01`)**으로 푸싱 분류
+* **내일 (Tomorrow)** 날짜 물량 ➡️ **2번 라인 (`sg2_in_02`)**으로 푸싱 분류
+* **모레 (Day After)** 날짜 물량 ➡️ **3번 라인 (`sg2_in_03`)**으로 푸싱 분류
 
 ### ② `CheckWarehouseStatus.srv`
 * **서비스 경로**: `cobot3_interfaces/srv/CheckWarehouseStatus`
@@ -202,7 +202,7 @@ bool data  # true: 일시 정지 지시 (작업대 만석 또는 4칸 회전 대
 
 ---
 
-## ⚡ 4. Redis 실시간 상태 캐시 규격 (AMR 상태 모니터링)
+## ⚡ 5. Redis 실시간 상태 캐시 규격 (AMR 상태 모니터링)
 AMR의 고주파 주행 정보는 네트워크 대역폭과 DB 부하 절감을 위해 Redis에 캐싱됩니다.
 
 * **키 형식**: `amr:[amr_id]` (대문자 구분 필수, 예: `amr:AMR_01`)
@@ -257,7 +257,7 @@ void publish_amr_status(const std::string& amr_id, double x, double y, double ba
 
 ---
 
-## 📊 5. Fleet 상태 모니터링 JSON 토픽 상세
+## 📊 6. Fleet 상태 모니터링 JSON 토픽 상세
 관제탑 노드가 1Hz 주기로 발행하는 실시간 상태 모니터링용 ROS 2 토픽입니다 (메시지 유형: `std_msgs/msg/String` 내 직렬화된 JSON 문자열).
 
 ### ① `/fleet/amr_states` (1Hz 주기)
@@ -328,7 +328,180 @@ void publish_amr_status(const std::string& amr_id, double x, double y, double ba
 
 ---
 
-## 🌐 6. 분산 네트워크 & 실행 가이드 (2대 PC 환경)
+## 🗄️ 7. 데이터베이스 및 Redis 캐시 구조 정의서 (Database Schema Specifications)
+
+### 7.1 PostgreSQL ERD (Entity Relationship Diagram)
+
+```mermaid
+erDiagram
+    ROBOTS {
+        VARCHAR robot_id PK "로봇 고유 문자열 ID"
+        VARCHAR robot_type "로봇 역할군 (CONVEYOR, MANIPULATOR 등)"
+        VARCHAR qr_id UNIQUE "로봇 고유 QR코드 ID"
+    }
+    WORKSTATIONS {
+        VARCHAR workstation_id PK "작업대 고유 ID (WS01~10)"
+        VARCHAR current_location "작업대 물리적 위치 (sg2_in_01_A, spot_01 등)"
+        VARCHAR qr_id UNIQUE "작업대 고유 QR코드 ID"
+    }
+    WAREHOUSE_LOCATIONS {
+        VARCHAR spot_id PK "창고 주차 구역 (spot_01~10)"
+        VARCHAR workstation_id FK "보관된 작업대 ID"
+        VARCHAR status "점유 상태 (EMPTY / OCCUPIED)"
+    }
+    PACKAGES {
+        VARCHAR package_id PK "택배 고유 바코드 ID (PKG_RAND_XXX)"
+        VARCHAR customer_name "택배 수령인 성함"
+        VARCHAR route_zone "분류 목적지 날짜 (YYYY-MM-DD)"
+        VARCHAR status "진행 상태 (WAITING, IN_WORKSTATION, IN_WAREHOUSE, COMPLETED 등)"
+        VARCHAR outbound_id "출고 고유 ID"
+        VARCHAR workstation_id FK "적재된 작업대 ID"
+        INT slot_number "적재된 작업대의 슬롯 번호 (1~8)"
+        VARCHAR qr_id UNIQUE "택배 고유 QR코드 ID"
+    }
+    FLOOR_QR_MAP {
+        VARCHAR qr_id PK "바닥 QR코드 고유 ID (FLOOR_X_xx_Y_yy)"
+        DOUBLE x_coord "물리 X 좌표 (m)"
+        DOUBLE y_coord "물리 Y 좌표 (m)"
+        DOUBLE z_coord "물리 Z 좌표 (m)"
+        VARCHAR location_name "매핑 논리 위치명"
+        VARCHAR location_type "위치 타입"
+        TEXT description "설명"
+    }
+    
+    WORKSTATIONS ||--o{ PACKAGES : "contains"
+    WORKSTATIONS ||--o| WAREHOUSE_LOCATIONS : "parked at"
+```
+
+### 7.2 PostgreSQL 테이블 상세 정의
+
+#### ① 로봇 정보 테이블 (`robots`)
+관제 센터가 제어하는 모든 물류 로봇의 정보와 물리 QR코드 식별자의 매핑 테이블입니다.
+* **Primary Key**: `robot_id`
+
+| 열 이름 (Column) | 데이터 타입 (Type) | 제약 조건 (Constraints) | 설명 (Description) | 예시 데이터 |
+| :--- | :--- | :--- | :--- | :--- |
+| **`robot_id`** | `VARCHAR(50)` | `PRIMARY KEY` | 로봇 고유 문자열 ID | `'bg2'`, `'sg2_in_01'` |
+| **`robot_type`** | `VARCHAR(50)` | `NOT NULL` | 로봇의 분류/역할군 | `'CONVEYOR_SORTER'`, `'MANIPULATOR'` |
+| **`qr_id`** | `VARCHAR(100)` | `UNIQUE` | 로봇 고유 QR코드 ID | `'ROBOT_bg2'`, `'ROBOT_sg2_in_01'` |
+
+#### ② 작업대 정보 테이블 (`workstations`)
+로봇들이 상자를 싣는 2x4 슬롯 기반 작업대의 실시간 물리적 위치와 식별 QR코드 정보를 관리합니다.
+* **Primary Key**: `workstation_id`
+
+| 열 이름 (Column) | 데이터 타입 (Type) | 제약 조건 (Constraints) | 설명 (Description) | 예시 데이터 |
+| :--- | :--- | :--- | :--- | :--- |
+| **`workstation_id`** | `VARCHAR(50)` | `PRIMARY KEY` | 작업대 고유 문자열 ID | `'WS01'`, `'WS10'` |
+| **`current_location`** | `VARCHAR(50)` | `NOT NULL` | 작업대의 실시간 위치 | `'sg2_in_01_A'`, `'spot_01'`, `'sg2_out_00_A'`, `'sg2_out_00_B'` |
+| **`qr_id`** | `VARCHAR(100)` | `UNIQUE` | 작업대 고유 QR코드 ID | `'WORKSTATION_WS01'`, `'WORKSTATION_WS10'` |
+| **`status`** | `VARCHAR(50)` | `DEFAULT 'WAITING'` | 작업대의 제어 상태 | `'WAITING'`, `'PROCESSING'` |
+| **`reserved_by`** | `VARCHAR(50)` | - | 현재 작업대를 예약/선점 중인 AMR 식별자 | `'AMR_01'`, `NULL` |
+
+#### ③ 창고 세부 스팟 관리 테이블 (`warehouse_locations`)
+창고 내부의 개별 보관 슬롯 구역들의 점유 현황과 주차된 작업대 매핑을 관리합니다.
+* **Primary Key**: `spot_id`
+* **Foreign Key**: `workstation_id` (작업대 테이블 참조)
+
+| 열 이름 (Column) | 데이터 타입 (Type) | 제약 조건 (Constraints) | 설명 (Description) | 예시 데이터 |
+| :--- | :--- | :--- | :--- | :--- |
+| **`spot_id`** | `VARCHAR(50)` | `PRIMARY KEY` | 창고 내 고유 주차 구역 ID | `'spot_01'`, `'spot_10'` |
+| **`workstation_id`** | `VARCHAR(50)` | `FOREIGN KEY` | 주차된 작업대 고유 ID (비었을 시 `NULL`) | `'WS01'`, `NULL` |
+| **`status`** | `VARCHAR(20)` | `DEFAULT 'EMPTY'` | 스팟 점유 상태 (`EMPTY` / `OCCUPIED`) | `'OCCUPIED'`, `'EMPTY'` |
+
+#### ④ 택배 정보 테이블 (`packages`)
+입고되는 모든 택배의 상태 및 적재/출고 이력을 관리하는 데이터의 흐름 핵심 테이블입니다.
+* **Primary Key**: `package_id`
+* **Foreign Key**: `workstation_id` (작업대 테이블 참조)
+
+| 열 이름 (Column) | 데이터 타입 (Type) | 제약 조건 (Constraints) | 설명 (Description) | 예시 데이터 |
+| :--- | :--- | :--- | :--- | :--- |
+| **`package_id`** | `VARCHAR(50)` | `PRIMARY KEY` | 상자 바코드 또는 고유 ID | `'PKG_RAND_001'` |
+| **`customer_name`** | `VARCHAR(100)` | `NOT NULL` | 택배 수령인 | `'김철수'` |
+| **`route_zone`** | `VARCHAR(20)` | `NOT NULL` | 분류 배송 예정 날짜 | `'2026-06-01'` |
+| **`status`** | `VARCHAR(50)` | `DEFAULT 'WAITING'` | 상태 (`WAITING`/`IN_WORKSTATION`/`IN_WAREHOUSE`/`COMPLETED`) | `'IN_WORKSTATION'` |
+| **`outbound_id`** | `VARCHAR(100)` | `NULL 허용` | 포장 후 출고 고유 바코드 | `'sg2_out_00_WS01-1-202606021153'` |
+| **`workstation_id`** | `VARCHAR(50)` | `FOREIGN KEY` | 적재된 작업대 ID | `'WS01'`, `NULL` |
+| **`slot_number`** | `INT` | `NULL 허용` | 작업대 내 적재 슬롯 번호 (1~8) | `1`, `NULL` |
+| **`qr_id`** | `VARCHAR(100)` | `UNIQUE` | 택배 고유 QR코드 ID | `'PKG_RAND_001'` |
+
+#### ⑤ 공간 바닥 QR코드 격자 맵 테이블 (`floor_qr_map`)
+AMR의 3D 공간 자율주행 및 위치 좌표 해석(Localization)을 위해 바닥에 매핑된 QR코드 격자 맵 정보를 관리합니다.
+* **Primary Key**: `qr_id`
+
+| 열 이름 (Column) | 데이터 타입 (Type) | 제약 조건 (Constraints) | 설명 (Description) | 예시 데이터 |
+| :--- | :--- | :--- | :--- | :--- |
+| **`qr_id`** | `VARCHAR(100)` | `PRIMARY KEY` | 바닥 QR코드 고유 ID | `'FLOOR_X_1.5_Y_3.0'` |
+| **`x_coord`** | `DOUBLE PRECISION`| `NOT NULL` | 물리 X 좌표 (m) | `1.5` |
+| **`y_coord`** | `DOUBLE PRECISION`| `NOT NULL` | 물리 Y 좌표 (m) | `3.0` |
+| **`z_coord`** | `DOUBLE PRECISION`| `DEFAULT 0.0` | 물리 Z 좌표 (m) | `0.0` |
+| **`location_name`** | `VARCHAR(50)`| `NULL 허용` | 매핑되는 논리적 위치명 | `'spot_01'`, `'sg2_in_01_A'` |
+| **`location_type`** | `VARCHAR(50)`| `NULL 허용` | 위치 용도 분류 | `'PARKING_SPOT'`, `'PATHWAY'` |
+| **`description`** | `TEXT` | `NULL 허용` | 세부 위치 설명 | `'1번 주차장 구역 바닥 격자'` |
+
+### 7.3 Redis 실시간 제어 데이터 및 큐 구조
+* **AMR 상태 해시**: `amr:[amr_id]` (예: `amr:AMR_01`)
+* **AMR 비동기 명령 큐**: `queue:amr_tasks` (Sorted Set 구조, Score=우선순위 가중치)
+
+---
+
+## 🗺️ 8. 창고 물리 레이아웃 및 좌표 정의서 (Physical Layout Coordinates)
+
+### 8.1 메인 보관 창고 (Main Warehouse Spots) - 총 10개 스팟
+| 논리 Spot ID | X 물리 좌표 (m) | Y 물리 좌표 (m) | 설명 |
+| :--- | :---: | :---: | :--- |
+| **`spot_01`** | `-1.5` | `-9.0` | 메인 창고 1행 1열 |
+| **`spot_02`** | `-3.0` | `-9.0` | 메인 창고 1행 2열 |
+| **`spot_03`** | `-1.5` | `-6.0` | 메인 창고 2행 1열 |
+| **`spot_04`** | `-3.0` | `-6.0` | 메인 창고 2행 2열 |
+| **`spot_05`** | `-1.5` | `-3.0` | 메인 창고 3행 1열 |
+| **`spot_06`** | `-3.0` | `-3.0` | 메인 창고 3행 2열 |
+| **`spot_07`** | `-1.5` | `0.0` | 메인 창고 4행 1열 |
+| **`spot_08`** | `-3.0` | `0.0` | 메인 창고 4행 2열 |
+| **`spot_09`** | `-1.5` | `3.0` | 메인 창고 5행 1열 |
+| **`spot_10`** | `-3.0` | `3.0` | 메인 창고 5행 2열 |
+
+### 8.2 입고 분류 라인 (Inbound Line A/B Spots) - 총 6개 스팟 (3개 라인 x 2버퍼)
+* **오늘 (Line 1)**: `sg2_in_01_A` `(7.5, 1.5)` | `sg2_in_01_B` `(6.0, 1.5)`
+* **내일 (Line 2)**: `sg2_in_02_A` `(7.5, -3.0)` | `sg2_in_02_B` `(6.0, -3.0)`
+* **모레 (Line 3)**: `sg2_in_03_A` `(7.5, -7.5)` | `sg2_in_03_B` `(6.0, -7.5)`
+
+### 8.3 출고 대기 창고 / 스테이징 구역 (Outbound Staging Spots) - 총 4개 스팟
+| 논리 Spot ID | X 물리 좌표 (m) | Y 물리 좌표 (m) | 설명 |
+| :--- | :---: | :---: | :--- |
+| **`stage_01`** | `4.5` | `9.0` | 출고 대기 창고 스팟 1 |
+| **`stage_02`** | `4.5` | `7.5` | 출고 대기 창고 스팟 2 |
+| **`stage_03`** | `7.5` | `9.0` | 출고 대기 창고 스팟 3 |
+| **`stage_04`** | `7.5` | `7.5` | 출고 대기 창고 스팟 4 |
+
+### 8.4 출고 포장 라인 (Outbound Line A/B Spots) - 총 2개 스팟
+| 논리 Spot ID | X 물리 좌표 (m) | Y 물리 좌표 (m) | 설명 |
+| :--- | :---: | :---: | :--- |
+| **`sg2_out_00_A`** | `-4.5` | `9.0` | 출고 포장 A라인 Active 버퍼 |
+| **`sg2_out_00_B`** | `-4.5` | `7.5` | 출고 포장 B라인 Standby 버퍼 |
+
+### 8.5 AMR 충전 위치 (AMR Charging Spots) - 총 5개 스팟
+| 논리 Spot ID | X 물리 좌표 (m) | Y 물리 좌표 (m) | 설명 |
+| :--- | :---: | :---: | :--- |
+| **`charging_01`** | `-6.0` | `-9.0` | AMR 충전기 스팟 1 |
+| **`charging_02`** | `-6.0` | `-7.5` | AMR 충전기 스팟 2 |
+| **`charging_03`** | `-6.0` | `-6.0` | AMR 충전기 스팟 3 |
+| **`charging_04`** | `-6.0` | `-4.5` | AMR 충전기 스팟 4 |
+| **`charging_05`** | `-6.0` | `-3.0` | AMR 충전기 스팟 5 |
+
+### 8.6 로봇 제한 구역 (AMR 불가 진입 구역 - SG2)
+* **SG2_OUT**: `(-6.0, 9.0)`, `(-6.0, 7.5)`
+* **SG2_IN_1**: `(6.0, 3.0)`, `(7.5, 3.0)`
+* **SG2_IN_2**: `(6.0, -1.5)`, `(7.5, -1.5)`
+* **SG2_IN_3**: `(6.0, -6.0)`, `(7.5, -6.0)`
+
+### 8.7 중복 수령인 패키지 직송 픽업 위치 (MovePackage.action)
+* **sg2_in_01**: `(6.0, 3.0)`
+* **sg2_in_02**: `(6.0, -1.5)`
+* **sg2_in_03**: `(6.0, -6.0)`
+
+---
+
+## 🌐 9. 분산 네트워크 & 실행 가이드 (2대 PC 환경)
 시뮬레이터(PC A)와 관제 서버(PC B)를 분산 구동하기 위한 가이드입니다.
 
 * **PC A (시뮬레이터 & AMR 제어 노드)**: IP `192.168.100.10`
@@ -356,8 +529,7 @@ export REDIS_HOST=192.168.100.20
 
 ---
 
-## 🌐 6.5 분산 시뮬레이션 상자 동기화 노드 (sim_sync_node)
-
+## 🌐 9.5 분산 시뮬레이션 상자 동기화 노드 (sim_sync_node)
 Isaac Sim bg2(분류 라인)와 sg2(적재/포장 라인) 2대 분산 시뮬레이션 환경 간의 상자 순간이동(소멸/소환)을 전담하는 독립 마이크로 노드입니다.
 
 ### 통신 채널 규격
@@ -375,17 +547,9 @@ Isaac Sim bg2(분류 라인)와 sg2(적재/포장 라인) 2대 분산 시뮬레�
 5. sg2 시뮬레이터가 토픽을 구독하여 지정된 입구 좌표에 상자 Prim 동적 생성
 6. bg2 시뮬레이터는 서비스 응답(success) 수신 후 해당 상자 Prim 즉시 삭제
 
-### 구동 명령
-```bash
-cd ~/cobot3_ws
-source install/setup.bash
-export ROS_DOMAIN_ID=119
-ros2 run cobot3 sim_sync_node
-```
-
 ---
 
-## 📅 7. 영업일 전환 및 이월 적재 (Carry-over) 규칙
+## 📅 10. 영업일 전환 및 이월 적재 (Carry-over) 규칙
 1. **라인 역할 고정**:
    * **1번 라인 (`sg2_in_01`)**: **오늘 (Today)** 날짜 물량 적재
    * **2번 라인 (`sg2_in_02`)**: **내일 (Tomorrow)** 날짜 물량 적재
@@ -401,26 +565,22 @@ ros2 run cobot3 sim_sync_node
 
 ---
 
-## 🛠️ 8. Isaac Sim 연동 시 프레임 병목 분석 및 성능 최적화 가이드 (Performance Optimization)
+## 🛠️ 11. Isaac Sim 연동 시 프레임 병목 분석 및 성능 최적화 가이드 (Performance Optimization)
 다중 AMR을 Isaac Sim 물리 환경에서 구동할 때 발생할 수 있는 극심한 프레임 저하(2 FPS 이하)를 진단하고 해결하는 엔지니어링 가이드입니다.
 
-### 8.1 3대 핵심 성능 병목 요인
+### 11.1 3대 핵심 성능 병목 요인
 1. **`/tf` 및 `/tf_static` 토픽 폭주**
-   * **원인**: 1,813개의 바닥 격자 QR코드 메쉬 등 씬 내부의 모든 정적 프림들의 물리적 위치가 `/tf` 채널을 통해 초당 수천 번 발행되어 DDS 네트워크가 마비됩니다.
-   * **해결**: Isaac Sim 내 OmniGraph에서 로봇 본체를 제외한 정적 마크들의 TF Publish 설정을 차단해야 합니다.
+   * **원인**: 정적 마크들의 물리적 위치가 `/tf` 채널을 통해 초당 수천 번 발행되어 DDS 네트워크가 마비됩니다.
+   * **해결**: OmniGraph에서 정적 마크들의 TF Publish 설정을 차단합니다.
 2. **GPU-to-CPU 이미지 복사 (Readback) 지연**
-   * **원인**: 5대 AMR의 카메라 렌더링 픽셀 데이터를 GPU 메모리에서 CPU 메모리(NumPy)로 매 프레임 옮기는 연산 자체가 그래픽 버스 대역폭을 포화시킵니다.
+   * **원인**: 5대 AMR의 카메라 렌더링 데이터를 CPU 메모리로 매 프레임 옮기는 연산 자체가 버스 대역폭을 포화시킵니다.
 3. **단일 스레드 CPU 비전 디코딩 부하**
-   * **원인**: CPU로 가져온 이미지를 OpenCV 및 `zxingcpp` 라이브러리로 디코딩하는 작업이 멀티스레딩/GPU 가속 없이 단일 CPU 스레드를 점유하여 프레임이 중단됩니다.
+   * **원인**: CPU로 가져온 이미지를 OpenCV 및 `zxingcpp` 라이브러리로 디코딩하는 작업이 단일 CPU 스레드를 점유하여 프레임이 중단됩니다.
 
-### 8.2 해결 방안 및 GPU 가속 아키텍처
+### 11.2 해결 방안 및 GPU 가속 아키텍처
 * **가장 신속한 조치 (무비전 트랜스폼 매핑)**:
   * 실시간 비전 카메라 스캐닝을 생략하고, AMR 주행 좌표(Odometry)와 DB의 `floor_qr_map`을 트랜스폼 계산으로 매칭하는 **`QR_CAMERA_LOCALIZATION_ENABLED = False`** 옵션을 활성화하여 성능을 30 FPS 이상으로 보장합니다.
 * **GPU 텐서 직접 조회 (Zero-copy CUDA)**:
-  * Isaac Sim Replicator에서 픽셀 데이터를 뽑을 때, CPU용 NumPy 배열 대신 **GPU VRAM 내 PyTorch CUDA 텐서**를 직접 가져오도록 작성합니다.
-    ```python
-    # CPU 복사 오버헤드가 없는 GPU 다이렉트 텐서 수집
-    gpu_tensor = rep.annotators.get("rgb").get_data(device="cuda")
-    ```
+  * CPU 복사 오버헤드가 없는 GPU 다이렉트 텐서 수집: `rep.annotators.get("rgb").get_data(device="cuda")`
 * **NVIDIA Isaac ROS AprilTag/QR 가속 노드 도입**:
-  * 욜로(YOLO) 모델을 직접 학습시킬 필요 없이, 사전 준비된 **NVIDIA Isaac ROS 가속 노드**를 활용하여 GPU 내부에서 직접 QR/AprilTag 코드를 100+ FPS 속도로 초고속 디코딩합니다.
+  * NVIDIA Isaac ROS 가속 노드를 활용하여 GPU 내부에서 직접 QR/AprilTag 코드를 100+ FPS 속도로 초고속 디코딩합니다.
