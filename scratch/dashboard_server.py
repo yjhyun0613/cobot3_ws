@@ -1016,13 +1016,13 @@ def index():
                 // 🛠️ 병합되어 화면에서 렌더링되지 않아야 할 나머지 여분 타일들의 정확한 좌표 필터링
                 const skipCoords = [
                     '7.5,3.0', '7.5,-1.5', '7.5,-6.0',     // SG2_IN 로봇 오른쪽 절반 타일 (가로 2칸 병합용)
-                    '-1.5,9.0', '-3.0,7.5', '-1.5,7.5'     // SG2_OUT 로봇 3개 타일 (2x2 정사각형 병합용)
+                    '-6.0,7.5'                             // SG2_OUT 로봇 아래쪽 절반 타일 (세로 2칸 병합용)
                 ];
 
                 const renderLocations = gridCells.filter(cell => {
                     const coordKey = `${cell.x.toFixed(1)},${cell.y.toFixed(1)}`;
                     if (skipCoords.includes(coordKey)) return false; // 렌더링 스킵
-                    return cell.location_name || cell.location_type === 'STATIC_OBSTACLE' || coordKey === '-3.0,9.0';
+                    return cell.location_name || cell.location_type === 'STATIC_OBSTACLE';
                 });
 
                 renderLocations.forEach(cell => {
@@ -1041,18 +1041,18 @@ def index():
                     else if (name.startsWith('charging_')) { el.classList.add('charging'); labelText = 'C' + name.replace('charging_', ''); }
                     else if (name.startsWith('sg2_in_0')) { el.classList.add('conveyor'); labelText = 'I' + name.replace('sg2_in_0', '').replace('_a','A').replace('_b','B').toUpperCase(); }
                     else if (name.startsWith('sg2_out_0')) { el.classList.add('packaging'); labelText = 'O' + name.replace('sg2_out_00_', '').toUpperCase(); }
-                    else if (type === 'STATIC_OBSTACLE' || coordKey === '-3.0,9.0') {
+                    else if (type === 'STATIC_OBSTACLE') {
                         // 🛠️ SG2_IN (입고 로봇 영역 3개) - 가로 2칸 병합
                         if (['6.0,3.0', '6.0,-1.5', '6.0,-6.0'].includes(coordKey)) {
                             el.classList.add('fixed-sg2-robot');
                             labelText = 'SG2';
                             w = '58px'; // 가로 넓이 두 배 + gap
                         }
-                        // 🛠️ SG2_OUT (포장 로봇 영역 1개) - 2x2 정사각형 병합
-                        else if (coordKey === '-3.0,9.0') {
+                        // 🛠️ SG2_OUT (포장 로봇 영역 1개) - 세로 2칸 병합
+                        else if (coordKey === '-6.0,9.0') {
                             el.classList.add('fixed-sg2-robot');
                             labelText = 'SG2';
-                            w = '58px';
+                            w = '28px';
                             h = '58px';
                         }
                         // 그 외 (X=9.0 컨베이어 벨트 라인)
@@ -1063,8 +1063,12 @@ def index():
                     }
 
                     // 🚀 특정 구역(존) 좌표 감지하여 강력한 CSS 덧붙이기 (기존 클래스 유지)
-                    const outCoords = ['0.0,9.0', '0.0,7.5', '-3.0,9.0']; // 포장 작업대 버퍼 + SG2_OUT 로봇 영역
-                    const inCoords = ['6.0,3.0', '7.5,3.0', '6.0,-1.5', '7.5,-1.5', '6.0,-6.0', '7.5,-6.0'];
+                    const outCoords = ['-4.5,9.0', '-4.5,7.5']; // 포장 작업대 버퍼
+                    const inCoords = [
+                        '6.0,3.0', '7.5,3.0', '6.0,1.5', '7.5,1.5',
+                        '6.0,-1.5', '7.5,-1.5', '6.0,-3.0', '7.5,-3.0',
+                        '6.0,-6.0', '7.5,-6.0', '6.0,-7.5', '7.5,-7.5'
+                    ];
 
                     if (outCoords.includes(coordKey)) {
                         el.classList.add('zone-sg2-out'); 

@@ -12,7 +12,7 @@ from std_msgs.msg import String, Bool
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # 데이터베이스 연동 라이브러리 임포트 시도
 try:
@@ -222,6 +222,42 @@ class ControlTowerNode(Node):
         self.get_logger().info(f'[GetDailyPackageList] 총 {len(packages)}개의 패키지 명단 전송 완료')
         return response
 
+    def get_inbound_line_by_date(self, route_zone):
+        """route_zone 날짜를 기준으로 해당하는 입고 라인 반환"""
+        if not self.redis_client:
+            return 'sg2_in_01'
+        today_date = self.redis_client.get('system:today_date')
+        if not today_date:
+            today_date = datetime.now().strftime('%Y-%m-%d')
+        
+        # 바이트 문자열인 경우 디코딩
+        if isinstance(today_date, bytes):
+            today_date = today_date.decode('utf-8')
+            
+        try:
+            t_dt = datetime.strptime(today_date, '%Y-%m-%d')
+        except ValueError:
+            try:
+                t_dt = datetime.strptime(today_date, '%Y%m%d')
+            except Exception:
+                return 'sg2_in_01'
+                
+        tomorrow_date = (t_dt + timedelta(days=1)).strftime('%Y-%m-%d')
+        day_after_date = (t_dt + timedelta(days=2)).strftime('%Y-%m-%d')
+        
+        # route_zone이 바이트 문자열인 경우 디코딩
+        if isinstance(route_zone, bytes):
+            route_zone = route_zone.decode('utf-8')
+        
+        if route_zone == today_date:
+            return 'sg2_in_01'
+        elif route_zone == tomorrow_date:
+            return 'sg2_in_02'
+        elif route_zone == day_after_date:
+            return 'sg2_in_03'
+        else:
+            return 'sg2_in_01'
+
     def check_warehouse_status_callback(self, request, response):
         """sg2_in_XX 로봇이 적재 전 해당 수령인의 물품이 창고에 있는지 조회"""
         customer_name = request.customer_name
@@ -279,13 +315,47 @@ class ControlTowerNode(Node):
         
         if is_already_in_warehouse:
             self.get_logger().info(f'[CheckWarehouseStatus] {customer_name}님의 기존 물품이 창고에 감지되었습니다. 창고 직송을 결정합니다.')
+            
+            # 1. DB에서 이 수령인의 기존 보관 중인 패키지의 워크스테이션 위치(예: spot_03) 및 현재 패키지의 route_zone 조회
+            destination_zone = 'ZONE_A' # 기본 보관 구역 A
+            route_zone = None
+            with self.get_db_connection() as conn:
+                if conn:
+                    try:
+                        with conn.cursor() as cursor:
+                            cursor.execute("SELECT route_zone FROM packages WHERE package_id = %s;", (package_id,))
+                            p_row = cursor.fetchone()
+                            if p_row:
+                                route_zone = p_row[0]
+                                
+                            cursor.execute(
+                                """
+                                SELECT w.current_location 
+                                FROM packages p
+                                JOIN workstations w ON p.workstation_id = w.workstation_id
+                                WHERE p.customer_name = %s AND p.status = 'IN_WAREHOUSE'
+                                LIMIT 1;
+                                """,
+                                (customer_name,)
+                            )
+                            ws_row = cursor.fetchone()
+                            if ws_row and ws_row[0]:
+                                destination_zone = ws_row[0]
+                                self.get_logger().info(f'[CheckWarehouseStatus] 기존 물품 위치 확인 -> {destination_zone}')
+                    except Exception as db_err:
+                        self.get_logger().error(f'CheckWarehouseStatus 기존 물품 위치 조회 중 오류: {str(db_err)}')
+            
+            # 2. route_zone 기준으로 입고 라인 결정
+            inbound_line = self.get_inbound_line_by_date(route_zone)
+            
             # [AMR 직송 태스크 추가] 관제탑이 즉시 Redis 큐에 AMR 직송 명령을 적재 (QR ID 포함)
             self.push_amr_task({
                 'task_type': 'DIRECT_WAREHOUSE',
                 'package_id': package_id,
                 'customer_name': customer_name,
-                'destination_zone': 'ZONE_A', # 기본 보관 구역 A
-                'package_qr_id': qr_id
+                'destination_zone': destination_zone, 
+                'package_qr_id': qr_id,
+                'from': inbound_line
             })
         else:
             self.get_logger().info(f'[CheckWarehouseStatus] 기존 물품이 창고에 없습니다. 작업대 적재 진행.')
@@ -424,6 +494,9 @@ class ControlTowerNode(Node):
             'warehouse': (0.75, -3.0),
             'staging': (6.0, 8.25),
             'buffer': (1.5, 0.0),
+            'sg2_in_01': (6.0, 3.0),
+            'sg2_in_02': (6.0, -1.5),
+            'sg2_in_03': (6.0, -6.0),
         }
 
         if start_location_name in default_zone_coords:
@@ -691,7 +764,9 @@ class ControlTowerNode(Node):
             goal_msg.destination_zone = task.get('destination_zone', '')
             goal_msg.package_qr_id = task.get('package_qr_id', '')
 
-            self.get_logger().info(f'{assigned_amr}에게 단일 택배({goal_msg.package_id}, QR: {goal_msg.package_qr_id}) 창고 직송 액션 전송 중...')
+            start_location = task.get('from', 'bg2')
+
+            self.get_logger().info(f'{assigned_amr}에게 단일 택배({goal_msg.package_id}, QR: {goal_msg.package_qr_id}) 창고 직송 액션 전송 중... (출발: {start_location}, 목적지: {goal_msg.destination_zone})')
             if not self.move_package_action_client.wait_for_server(timeout_sec=5.0):
                 self.get_logger().error('AMR Action Server (move_package) is NOT available! Skipping DIRECT_WAREHOUSE.')
                 self.publish_task_event(
@@ -700,7 +775,7 @@ class ControlTowerNode(Node):
                     priority=100,
                     workstation_id="",
                     workstation_qr_id="",
-                    start_location="bg2",
+                    start_location=start_location,
                     target_location=goal_msg.destination_zone,
                     status='FAILED',
                     assigned_amr=assigned_amr
@@ -713,14 +788,14 @@ class ControlTowerNode(Node):
                 priority=100,
                 workstation_id="",
                 workstation_qr_id="",
-                start_location="bg2",
+                start_location=start_location,
                 target_location=goal_msg.destination_zone,
                 status='ASSIGNED',
                 assigned_amr=assigned_amr
             )
             send_goal_future = self.move_package_action_client.send_goal_async(goal_msg)
             send_goal_future.add_done_callback(
-                lambda future: self.move_package_response_callback(future, goal_msg.package_id, goal_msg.destination_zone, task_id, assigned_amr)
+                lambda future: self.move_package_response_callback(future, goal_msg.package_id, goal_msg.destination_zone, task_id, assigned_amr, start_location)
             )
 
     def check_completed_workstations(self):
@@ -1387,7 +1462,7 @@ class ControlTowerNode(Node):
             except Exception as e:
                 self.get_logger().error(f'AMR 상태 Redis IDLE 업데이트 실패: {str(e)}')
 
-    def move_package_response_callback(self, future, package_id, destination_zone, task_id, assigned_amr):
+    def move_package_response_callback(self, future, package_id, destination_zone, task_id, assigned_amr, start_location):
         """AMR의 단일 패키지 직송 액션 수락 여부 확인 콜백"""
         goal_handle = future.result()
         if not goal_handle.accepted:
@@ -1398,7 +1473,7 @@ class ControlTowerNode(Node):
                 priority=100,
                 workstation_id="",
                 workstation_qr_id="",
-                start_location="bg2",
+                start_location=start_location,
                 target_location=destination_zone,
                 status='FAILED',
                 assigned_amr=assigned_amr
@@ -1413,10 +1488,10 @@ class ControlTowerNode(Node):
         self.get_logger().info(f'패키지 {package_id} 직송 목표 수락됨. 이동 진행 중...')
         get_result_future = goal_handle.get_result_async()
         get_result_future.add_done_callback(
-            lambda res_future: self.move_package_completed_callback(res_future, package_id, destination_zone, task_id, assigned_amr)
+            lambda res_future: self.move_package_completed_callback(res_future, package_id, destination_zone, task_id, assigned_amr, start_location)
         )
 
-    def move_package_completed_callback(self, future, package_id, destination_zone, task_id, assigned_amr):
+    def move_package_completed_callback(self, future, package_id, destination_zone, task_id, assigned_amr, start_location):
         """AMR의 단일 패키지 직송 액션 완료 시 최종 DB 업데이트 및 Redis 상태 갱신"""
         result = future.result().result
         if result.success:
@@ -1425,10 +1500,46 @@ class ControlTowerNode(Node):
                 if conn:
                     try:
                         with conn.cursor() as cursor:
-                            cursor.execute(
-                                "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE package_id = %s;",
-                                (package_id,)
-                            )
+                            # 1. 패키지의 customer_name 조회
+                            cursor.execute("SELECT customer_name FROM packages WHERE package_id = %s;", (package_id,))
+                            cust_row = cursor.fetchone()
+                            if cust_row:
+                                customer_name = cust_row[0]
+                                # 2. 창고에 보관 중인 동일 수령인의 다른 패키지로부터 workstation_id 및 slot_number 조회
+                                cursor.execute(
+                                    """
+                                    SELECT workstation_id, slot_number 
+                                    FROM packages 
+                                    WHERE customer_name = %s AND status = 'IN_WAREHOUSE' AND package_id != %s
+                                    LIMIT 1;
+                                    """,
+                                    (customer_name, package_id)
+                                )
+                                ws_row = cursor.fetchone()
+                                if ws_row:
+                                    ws_id = ws_row[0]
+                                    slot_num = ws_row[1]
+                                    # 3. 같은 작업대, 같은 슬롯으로 업데이트하여 병합 처리
+                                    cursor.execute(
+                                        """
+                                        UPDATE packages 
+                                        SET status = 'IN_WAREHOUSE', workstation_id = %s, slot_number = %s 
+                                        WHERE package_id = %s;
+                                        """,
+                                        (ws_id, slot_num, package_id)
+                                    )
+                                    self.get_logger().info(f'[DB] 패키지 {package_id}를 기존 물품과 같은 작업대 {ws_id}(슬롯 {slot_num})에 배정 완료.')
+                                else:
+                                    # 폴백: 그냥 status만 업데이트
+                                    cursor.execute(
+                                        "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE package_id = %s;",
+                                        (package_id,)
+                                    )
+                            else:
+                                cursor.execute(
+                                    "UPDATE packages SET status = 'IN_WAREHOUSE' WHERE package_id = %s;",
+                                    (package_id,)
+                                )
                     except Exception as e:
                         self.get_logger().error(f'패키지 직송 DB 최종 반영 실패: {str(e)}')
 
@@ -1438,7 +1549,7 @@ class ControlTowerNode(Node):
                 priority=100,
                 workstation_id="",
                 workstation_qr_id="",
-                start_location="bg2",
+                start_location=start_location,
                 target_location=destination_zone,
                 status='COMPLETED',
                 assigned_amr=assigned_amr
@@ -1451,7 +1562,7 @@ class ControlTowerNode(Node):
                 priority=100,
                 workstation_id="",
                 workstation_qr_id="",
-                start_location="bg2",
+                start_location=start_location,
                 target_location=destination_zone,
                 status='FAILED',
                 assigned_amr=assigned_amr
@@ -1461,8 +1572,19 @@ class ControlTowerNode(Node):
         if self.redis_client:
             try:
                 self.redis_client.hset(f"amr:{assigned_amr}", "state", "IDLE")
-                # destination_zone 에 따라 적절한 창고 영역 QR 지정
-                target_qr = "FLOOR_X_1.5_Y_3.0" if destination_zone == 'ZONE_A' else "FLOOR_X_-3.0_Y_3.0"
+                target_qr = ""
+                with self.get_db_connection() as conn:
+                    if conn:
+                        try:
+                            with conn.cursor() as cursor:
+                                cursor.execute("SELECT qr_id FROM floor_qr_map WHERE location_name = %s;", (destination_zone,))
+                                row = cursor.fetchone()
+                                if row:
+                                    target_qr = row[0]
+                        except Exception:
+                            pass
+                if not target_qr:
+                    target_qr = "FLOOR_X_1.5_Y_3.0" if destination_zone == 'ZONE_A' else "FLOOR_X_-3.0_Y_3.0"
                 self.redis_client.hset(f"amr:{assigned_amr}", "current_qr_id", target_qr)
                 self.get_logger().info(f"[Redis] {assigned_amr}의 현재 위치를 {target_qr}로 업데이트 완료.")
             except Exception as e:

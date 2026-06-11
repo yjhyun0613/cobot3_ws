@@ -49,12 +49,12 @@ def generate_layout_nodes():
     spots[(7.5, 7.5)] = ('stage_04', 'STAGING_SPOT', '출고 대기 창고 스팟 4', 7.5)
     
     # 5. Outbound Spots (sg2_out_00_A/B)
-    spots[(0.0, 9.0)] = ('sg2_out_00_A', 'PACKAGING_SPOT', '출고 포장 A라인 Active 버퍼', 9.0)
-    spots[(0.0, 7.5)] = ('sg2_out_00_B', 'PACKAGING_SPOT', '출고 포장 B라인 Standby 버퍼', 7.5)
+    spots[(-4.5, 9.0)] = ('sg2_out_00_A', 'PACKAGING_SPOT', '출고 포장 A라인 Active 버퍼', 9.0)
+    spots[(-4.5, 7.5)] = ('sg2_out_00_B', 'PACKAGING_SPOT', '출고 포장 B라인 Standby 버퍼', 7.5)
     
     # Static Obstacles definitions
     conveyor_x = 9.0
-    sg2_out_robot_zone = {(-1.5, 9.0), (-3.0, 9.0), (-1.5, 7.5), (-3.0, 7.5)}
+    sg2_out_robot_zone = {(-6.0, 9.0), (-6.0, 7.5)}
     sg2_in_1_zone = {(6.0, 3.0), (7.5, 3.0)}
     sg2_in_2_zone = {(6.0, -1.5), (7.5, -1.5)}
     sg2_in_3_zone = {(6.0, -6.0), (7.5, -6.0)}

@@ -7,6 +7,20 @@
 
 ## 📅 2026년 6월 11일 (목요일)
 
+* **12:10** - **입고(Inbound) 및 출고(Outbound) 작업대 물리적 좌표 재배치**:
+  - 사용자 요구사항에 맞춰 출고 작업대 위치를 `(-4.5, 9.0)` (Active A) 및 `(-4.5, 7.5)` (Standby B)로, 입고 작업대(AMR 픽업 위치)를 `(6.0, 3.0)` (오늘 A), `(6.0, -1.5)` (내일 A), `(6.0, -6.0)` (모레 A)로 재배치했습니다.
+  - 입고라인 Standby B 버퍼를 각각 `(7.5, 3.0)`, `(7.5, -1.5)`, `(7.5, -6.0)`으로 변경하고, SG2_IN 로봇 정적 장애물 구역을 Y축으로 한 칸 이동한 `(6.0/7.5, 1.5)`, `(6.0/7.5, -3.0)`, `(6.0/7.5, -7.5)`로 조정하는 Y레벨 스왑을 수행했습니다. SG2_OUT 로봇 장애물 구역은 작업대와 공동 배치되어 제거되었습니다.
+  - 이에 따라 DB 시드 재생성 스크립트 `scratch/regenerate_init_sql.py`를 수정하고 가동하여 `docker/init.sql` 및 live PostgreSQL DB `floor_qr_map` 테이블 갱신을 성공적으로 완료했습니다.
+  - `scratch/build_ground_qr_usd.py`를 재가동하여 `src/cobot3/resource/GroundPlane.usd`에 QR코드 Mesh와 Material 바인딩을 143개 전체 격자 기준으로 재생성 완료했습니다.
+  - 웹 대시보드 서버(`scratch/dashboard_server.py`)의 HTML/JS 2D 격자 렌더링 로직(병합 및 스킵 영역, 핑크/스카이블루 존 강조 필터 등)을 개편된 좌표에 완벽히 정렬 및 수정했습니다.
+  - 관련 기술 문서인 `PHYSICAL_LAYOUT.md`, `SYSTEM_IMPROVEMENT_PLAN.md`, `PROJECT_REPORT.md`, `REARRANGEMENT_AND_CHANGES_REPORT.md` 내 물리 좌표 설명 테이블과 제한 영역 매핑 내역을 전부 최신화했습니다.
+
+* **11:38** - **1.5m 간격 바닥 QR코드 생성 및 GroundPlane.usd 통합 (Material/Texture 포함)**:
+  - 17.5m x 20m 크기(중심 1.5, 0.0)의 맵 영역 내에 1.5m 간격으로 143개(11x13 격자)의 바닥 QR코드 이미지(RGB PNG)를 생성하는 `scratch/build_ground_qr_usd.py` 스크립트를 작성하여 구동했습니다.
+  - 기존의 미사용/비규격 격자 이미지 1,952개를 일괄 삭제하여 깔끔하게 정리했습니다.
+  - `GroundPlane.usd` 파일 내에 143개의 QR Mesh를 배치하고, 각 Mesh에 `UsdPreviewSurface` 및 `UsdUVTexture`를 바인딩하여 Isaac Sim에서 실제 QR 텍스처(RGB PNG)가 올바르게 렌더링되도록 구현했습니다.
+  - 텍스처 파일 경로를 상대 경로 (`./floor_qr_textures/...`)로 명시하여 USD 씬의 이식성을 유지했습니다.
+
 * **08:48** - **분산 환경 지원을 위한 DB/Redis 접속 환경변수(`POSTGRES_HOST`, `REDIS_HOST`) 연동**:
   - 다른 컴퓨터에서 DB/Redis가 구동 중인 메인 PC로 스크립트를 실행할 때 발생하는 `localhost` 연결 실패 문제를 수정했습니다.
   - `docker/init_june_8th_state.py`, `scratch/reset_db.py`, `scratch/check_db_status.py`, `scratch/generate_all_qr_codes.py`, `scratch/migrate_layout.py`, `scratch/dashboard_server.py` 파일 내 DB/Redis 연결부가 환경변수 `POSTGRES_HOST` 및 `REDIS_HOST`를 읽어 동적으로 접속하도록 수정했습니다. (미지정 시 `localhost` 기본값 사용)

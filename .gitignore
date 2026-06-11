@@ -16,6 +16,7 @@ src/cobot3/resource/Collected_factory
 src/cobot3/resource/finalfac
 src/cobot3/resource/finalfac.zip
 src/cobot3/resource/Collected_finalfac
+src/cobot3/resource/floor_qr_textures
 # OS generated files
 .DS_Store
 .DS_Store?

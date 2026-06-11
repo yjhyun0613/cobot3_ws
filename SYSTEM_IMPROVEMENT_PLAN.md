@@ -36,8 +36,8 @@ ORDER BY slot_number;
 > [!NOTE]
 > **적용 완료**: 2026년 6월 4일 구현 완료. 
 > - 패키지 및 설비용 QR코드 자동 생성 패키지(`scratch/qr_handler.py`)와 종단간 테스트(`scratch/run_qr_simulation_test.py`) 완료.
-> - `warehouse.yaml` 기반 월드 좌표계 파싱 및 1,813개 바닥 격자/80개 작업대 슬롯 QR코드 일괄 생성 완료 (`scratch/generate_all_qr_codes.py`).
-> - Isaac Sim `map.usd` 내 1,813개 바닥 QR코드 메쉬/재질 자동 배치 완료 (`scratch/add_all_qr_to_usd.py`).
+> - `warehouse.yaml` 기반 월드 좌표계 파싱 및 143개 바닥 격자/80개 작업대 슬롯 QR코드 일괄 생성 완료 (`scratch/build_ground_qr_usd.py`).
+> - Isaac Sim `GroundPlane.usd` 내 143개 바닥 QR코드 메쉬/재질/텍스처 자동 배치 완료 (`scratch/build_ground_qr_usd.py`).
 > - 바닥 글레어 현상 방지용 환경광(DomeLight) 보강 및 조명 최적화 완료 (`scratch/adjust_usd_lighting.py`).
 
 일회용 택배 박스에 영구 마커인 ArUco ID를 직접 인쇄하여 매칭하는 방식의 비현실성을 극복하고, 자율주행 AMR의 격자 주행(Grid-based Navigation)을 지원하기 위해 바코드/QR코드 매핑 방식을 전면 도입합니다.
@@ -45,12 +45,12 @@ ORDER BY slot_number;
 ### 2.1 QR코드 생성 및 적용
 * **택배 박스 및 로봇/설비**: 파이썬 `qrcode` 라이브러리를 활용해 고유 ID 정보를 담은 PNG 코드를 동적 생성하고, 가상 3D 모델의 텍스처로 바인딩합니다.
 * **바닥 격자 마커 (Floor Grid)**: 
-  * 맵 설정(`warehouse.yaml`) 및 사용자 지정 창고 영역 경계 제한(X: [-38.0, 38.0], Y: [-36.08472, 25.0])을 적용하여 1.5m 간격으로 1,813개의 격자점 좌표를 산출.
-  * 각 격자의 실제 미터법 좌표 값(예: `FLOOR_X_-34.775_Y_-29.025`)을 인코딩한 QR코드를 일괄 생성.
+  * 맵 설정 및 사용자 지정 창고 영역 경계 제한(X 크기 17.5m, Y 크기 20m / 중심: 1.5, 0.0)을 적용하여 1.5m 간격으로 143개의 격자점 좌표를 산출.
+  * 각 격자의 실제 미터법 좌표 값(예: `FLOOR_X_-6.0_Y_-9.0`)을 인코딩한 QR코드를 일괄 생성.
 * **작업대 슬롯 마커 (Slots)**: 10개 작업대의 슬롯별 식별자(예: `WORKSTATION_WS01_SLOT_1` ~ `WORKSTATION_WS10_SLOT_8`, 총 80개) 생성 완료.
 
 ### 2.2 USD 3D 맵 매핑 및 시각화
-* Isaac Sim의 `SimulationApp` 및 Pixar USD (`pxr`) API를 이용해 `src/cobot3/resource/map.usd` 맵 상에 1,813개의 30cm 크기의 격자 메쉬(Plane)와 개별 QR 텍스처를 바인딩한 재질(Material)을 자동 배치하여 맵을 갱신하였습니다.
+* Isaac Sim의 `SimulationApp` 및 Pixar USD (`pxr`) API를 이용해 `src/cobot3/resource/GroundPlane.usd` 맵 상에 143개의 30cm 크기의 격자 메쉬(Plane)와 개별 QR 텍스처를 바인딩한 재질(Material)을 자동 배치하여 맵을 갱신하였습니다.
 
 ### 2.3 비전 인식용 조명 최적화
 * **문제점**: 강한 스포트라이트 성격의 직사광선이 바닥에 맺혀 빛 반사(Specular Glare)로 인해 QR코드 시인성이 떨어지고 인식이 실패함.
@@ -229,13 +229,13 @@ AMR 이송 속도가 로봇의 적재 및 포장 속도보다 느려 발생하�
 ## 🗺️ 9. 바닥 QR코드 공간 격자 맵 데이터베이스(Spatial Floor QR Map DB) 연동 설계 - [완료]
 
 > [!NOTE]
-> **적용 완료**: 2026년 6월 5일 구현 완료 (2026년 6월 7일 신규 물리 좌표 및 Offset 1,819개 노드 적재 추가, 2026년 6월 9일 init.sql 시드 데이터 추가).
+> **적용 완료**: 2026년 6월 5일 구현 완료 (2026년 6월 11일 신규 물리 좌표 및 143개 노드 적재 추가, 2026년 6월 9일 init.sql 시드 데이터 추가).
 > - PostgreSQL 데이터베이스 초기화 스크립트(`docker/init.sql`)에 `floor_qr_map` 테이블 정의 및 **시드 데이터(INSERT) 약 117개 노드** 추가 완료. Docker 최초 기동 시 자동 적재.
-> - 격자 생성기(`scratch/generate_all_qr_codes.py`) 실행 시 1,819개의 물리 격자 좌표 및 논리 스팟(`spot_XX`, `sg2_in_XX_A/B`, `sg2_out_00_A/B`) 정보를 PostgreSQL DB로 자동 적재 연동 완료.
+> - 격자 생성기(`scratch/build_ground_qr_usd.py`) 실행 시 143개의 물리 격자 좌표 및 논리 스팟(`spot_XX`, `sg2_in_XX_A/B`, `sg2_out_00_A/B`) 정보를 PostgreSQL DB로 자동 적재 연동 완료.
 > - 관제탑(`control_tower_node.py`) 및 모의 로봇 에뮬레이터(`run_full_simulation_robot.py`) 기동 시 하드코딩된 목적지 명칭 대신 `floor_qr_map` 데이터베이스를 실시간으로 쿼리하여 물리 coordinates와 바닥 QR 마커 식별자를 해석(Resolution)하는 구조 구현 및 검증 완료.
 
 ### 9.1 배경 및 필요성
-* 바닥에 배치된 격자형 QR코드(예: 1,819개의 바닥 QR)는 AMR이 이동 및 로컬라이제이션(Localization)을 수행하는 물리적 기준 역할을 합니다.
+* 바닥에 배치된 격자형 QR코드(예: 143개의 바닥 QR)는 AMR이 이동 및 로컬라이제이션(Localization)을 수행하는 물리적 기준 역할을 합니다.
 * 창고 내 보관 위치(`spot_01` ~ `spot_12`), 인바운드 대기/작업 위치(`sg2_in_01_A`, `sg2_in_01_B`), 아웃바운드 포장 위치(`sg2_out_00_A`, `sg2_out_00_B`) 등의 논리적 위치가 AMR의 물리적 목적지 좌표와 매핑되어야 합니다.
 * 이러한 매핑과 좌표 정보를 소스코드 내부에 하드코딩할 경우, 레이아웃 변경 시 소스코드를 전면 재수정해야 하는 심각한 유지보수 문제가 발생합니다. 따라서 이를 관계형 데이터베이스(PostgreSQL)의 전용 공간 매핑 테이블에서 관리하여 **단일 진실 공급원(Single Source of Truth)**을 구축해야 합니다.
 
@@ -475,7 +475,7 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 * **통합 연동 스크립트**: [scratch/isaac_amr_connector.py](file:///home/rokey/cobot3_ws/scratch/isaac_amr_connector.py) (AMR + 작업대 동시 동기화, PostgreSQL & Redis 사용)
 * **AMR 전용 연동 스크립트**: [scratch/isaac_only_amr_connector.py](file:///home/rokey/cobot3_ws/scratch/isaac_only_amr_connector.py) (AMR 단독 동기화, Redis만 사용)
 * **사용 맵 파일**: `src/cobot3/resource/floor_with_con,storage.usd`
-  * 바닥 QR 격자(1,813개), 입고 컨베이어(`IN_conveyor`), 출고 컨베이어(`OUT_conveyor`), 메인 스토리지(`MAIN_storage`), 출고 스토리지(`OUT_storage`), 작업대 선반(`custom_rack`) 등이 **이미 사전 세팅**되어 있는 완성된 3D 창고 맵입니다.
+  * 바닥 QR 격자(143개), 입고 컨베이어(`IN_conveyor`), 출고 컨베이어(`OUT_conveyor`), 메인 스토리지(`MAIN_storage`), 출고 스토리지(`OUT_storage`), 작업대 선반(`custom_rack`) 등이 **이미 사전 세팅**되어 있는 완성된 3D 창고 맵입니다.
 * **작동 메커니즘**:
   1. `isaacsim.SimulationApp`을 3D GUI 모드로 가동하여 위 맵 스테이지를 로드합니다.
   2. (통합형만 해당) PostgreSQL `floor_qr_map` 테이블에서 위치 좌표 정보를 로드하여 물리적 좌표 체계를 동적으로 구성합니다.
@@ -621,15 +621,15 @@ PC A의 AMR 제어 노드가 PC B의 데이터베이스와 Redis에 접근할 �
 * **논리 스팟 매핑 세부 규격**:
   * **주차 구역 (spot_01 ~ spot_10)**: X는 `1.5` / `0.0`, Y는 `-9.0` ~ `3.0` 구간에 1.5m 간격으로 10개 배치.
   * **출고 대기 창고 (stage_01 ~ stage_04)**: X는 `4.5` / `7.5`, Y는 `9.0` / `7.5` 에 4개 배치 (st05, st06 제거 완료).
-  * **포장 작업대 (sg2_out_00_A/B)**: `(0.0, 9.0)` 및 `(0.0, 7.5)`에 배치.
+  * **포장 작업대 (sg2_out_00_A/B)**: `(-4.5, 9.0)` 및 `(-4.5, 7.5)`에 배치.
   * **입고라인 (오늘 / 내일 / 모레)**:
-    * 오늘(Line 1): `(7.5, 1.5)` (Active), `(6.0, 1.5)` (Standby)
-    * 내일(Line 2): `(7.5, -3.0)` (Active), `(6.0, -3.0)` (Standby)
-    * 모레(Line 3): `(7.5, -7.5)` (Active), `(6.0, -7.5)` (Standby)
+    * 오늘(Line 1): `(6.0, 3.0)` (Active), `(7.5, 3.0)` (Standby)
+    * 내일(Line 2): `(6.0, -1.5)` (Active), `(7.5, -1.5)` (Standby)
+    * 모레(Line 3): `(6.0, -6.0)` (Active), `(7.5, -6.0)` (Standby)
     * (A/B구역 2칸을 하나의 직사각형 작업대로 합치고 중심에 이름을 기재하도록 시인성 개선)
-  * **AMR 충전기 (charging_01 ~ charging_05)**: X는 `-3.0` 고정, Y는 `-9.0` ~ `-3.0` 구간에 1.5m 간격 배치.
+  * **AMR 충전기 (charging_01 ~ charging_05)**: X는 `-6.0` 고정, Y는 `-9.0` ~ `-3.0` 구간에 1.5m 간격 배치.
 * **정적 장애물 (STATIC_OBSTACLE) 구역 설정**:
-  * **SG2 로봇 구역**: SG2_OUT `(-1.5, 7.5)`, `(-3.0, 7.5)`, `(-1.5, 9.0)`, `(-3.0, 9.0)` 및 입고라인 로봇 구역 `(6.0/7.5, 3.0)`, `(6.0/7.5, -1.5)`, `(6.0/7.5, -6.0)` 차단.
+  * **SG2 로봇 구역**: SG2_OUT 없음 (작업대와 공동 배치) 및 입고라인 로봇 구역 `(6.0/7.5, 1.5)`, `(6.0/7.5, -3.0)`, `(6.0/7.5, -7.5)` 차단.
   * **컨베이어벨트 구역**: X = `9.0` 라인 전체 (Y: `-9.0` ~ `9.0`) 차단.
 * **자동화 스크립트 구축 및 A* 회피**:
   * `scratch/update_20x20_grid_assets.py` 스크립트를 사용하여 117개 유효 활성 노드 및 장애물을 DB(`floor_qr_map`)에 TRUNCATE 및 Bulk Insert로 자동 적재했습니다.

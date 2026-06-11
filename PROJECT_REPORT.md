@@ -33,7 +33,7 @@ NVIDIA Isaac Sim 시뮬레이터 환경에서 다중 로봇(컨베이어 분류 
 * **`packages`**: 택배 라이프사이클 추적, 적재된 작업대 번호/슬롯 번호 및 QR코드 ID(`qr_id`) 기록.
 * **`workstations`**: 2x8 작업대의 현재 물리적 위치, 제어 상태(`status`), AMR 선점 예약 정보(`reserved_by`), 슬롯별 적재 상태 및 QR코드 ID(`qr_id`) 모니터링.
 * **`robots`**: 관제 시스템에 등록된 제어 대상 로봇 목록 및 QR코드 ID(`qr_id`).
-* **`floor_qr_map`**: AMR 격자 주행 및 위치 좌표 매핑용 1,813개 바닥 QR코드 절대 좌표(`x_coord`, `y_coord`, `z_coord`) 관리.
+* **`floor_qr_map`**: AMR 격자 주행 및 위치 좌표 매핑용 143개(1.5m 간격 11×13 격자) 바닥 QR코드 절대 좌표(`x_coord`, `y_coord`, `z_coord`) 관리.
 
 ### ② Redis (인메모리 NoSQL - 실시간 제어 및 우선순위 큐)
 * **AMR 상태 해시 (`amr:[id]:status` 또는 `amr:[id]`)**: 실시간 물리적 3D 좌표, 구동 상태, 배터리 잔량 캐싱.
@@ -58,7 +58,7 @@ NVIDIA Isaac Sim 시뮬레이터 환경에서 다중 로봇(컨베이어 분류 
   * **분산 네트워크 가이드 및 스크립트 정비**: `start_test_env.sh`에서 `ROS_LOCALHOST_ONLY` 환경 변수를 외부 설정을 통해 `0` (분산 환경 통신) 또는 `1` (로컬 단독)로 유연하게 제어할 수 있도록 쉘스크립트 기본값 로직을 통합 개편했습니다.
   * **물리 레이아웃 및 맵 스케일 일괄 업데이트 (12.1)**:
     * 맵 규격을 중심 `(3.0, 0.0)`, X길이 13.5m, Y길이 20m 범위의 물리 레이아웃 스케일로 개편했습니다.
-    * 보관 스팟(`spot_01~10`) 10개, 출고 대기 창고(`stage_01~04`) 4개, 포장 작업대 2개(`sg2_out_00_A/B` - `(0.0, 7.5)` & `(0.0, 9.0)`)로 스펙을 최적화하고 좌표를 완전 동기화했습니다.
+    * 보관 스팟(`spot_01~10`) 10개, 출고 대기 창고(`stage_01~04`) 4개, 포장 작업대 2개(`sg2_out_00_A/B` - `(-4.5, 7.5)` & `(-4.5, 9.0)`)로 스펙을 최적화하고 좌표를 완전 동기화했습니다.
     * 대시보드 및 관제 노드에서 `SG2_IN_1 ~ 3` 구역을 2칸 병합형 단일 직사각형으로 렌더링하고, 컨베이어 벨트 영역을 청록색(Cyan) 테마로 변경하여 시각적 가독성 및 공간 분리성을 극대화했습니다.
   * **동적 출고 예정일 필터링**: 창고에서 포장존 A/B구역으로 완충 작업대를 공급하는 Keep-Alive 스케줄러에 미완료 패키지의 `route_zone` 중 가장 빠른 날짜를 동적으로 감지하여 공급하도록 고도화.
   * **중복 입고 검증 수정**: `CheckWarehouseStatus` 호출 시 수령인 이름이 아닌 패키지 고유 ID(`package_id`) 기준으로 정확히 중복 보관 여부를 검증하여 오작동 차단.
@@ -73,10 +73,10 @@ NVIDIA Isaac Sim 시뮬레이터 환경에서 다중 로봇(컨베이어 분류 
   * `run_full_simulation_robot.py`: 통합 로봇 에뮬레이션 시뮬레이터로, 중복 적재 감지 시 패키지 상태를 `IN_WAREHOUSE`로 즉시 업데이트하여 중복 요청에 따른 무한 루프 교착 상태를 방지하는 Fail-safe 로직을 적용했습니다.
 * **QR코드 생성 및 USD 매핑 모듈 (`scratch/` 디렉토리)**:
   * `qr_handler.py`: `qrcode` 라이브러리를 사용한 QR 생성 및 C 의존성 없이 안정적인 `zxing-cpp` 기반 비전 디코딩 패키지.
-  * `generate_all_qr_codes.py`: `warehouse.yaml` 및 창고 경계 제한을 연산하여 안전 구역(2m)을 준수한 1,813개 바닥 격자 및 10개 작업대 * 8슬롯(=80개) QR 이미지 일괄 생성 모듈.
-  * `add_all_qr_to_usd.py`: Pixar USD (`pxr`) API를 사용해 `map.usd` 파일에 1,813개의 평면 메쉬와 PBR 텍스처를 100% 자동 배치하여 맵을 갱신하는 자동화 모듈.
+  * `generate_all_qr_codes.py`: `warehouse.yaml` 및 창고 경계 제한을 연산하여 안전 구역(2m)을 준수한 바닥 격자 및 10개 작업대 × 8슬롯(=80개) QR 이미지 일괄 생성 모듈.
+  * `build_ground_qr_usd.py`: Pixar USD (`pxr`) API를 사용해 `GroundPlane.usd` 파일에 143개(1.5m 간격 11×13 격자)의 QR Mesh + Material(UsdPreviewSurface) + Texture(UsdUVTexture)를 자동 배치하고 미사용 QR코드를 삭제하는 통합 빌드 모듈. 텍스처 파일은 `src/cobot3/resource/floor_qr_textures/`에 RGB PNG로 저장.
   * `adjust_usd_lighting.py`: 바닥 반사(글레어)로 인한 QR 인식률 저하를 해결하기 위해 DistantLight 강도를 600.0으로 낮추고, DomeLight(1200.0)를 보강한 조명 자동 최적화 모듈.
-  * `isaac_only_amr_connector.py` (신규): DB 쿼리 오버헤드가 없도록 PostgreSQL을 배제하고, Redis의 AMR 상태 정보(`amr:AMR_XX`)만 단독 구독하여 Isaac Sim 시뮬레이터 상에 로봇 좌표를 실시간 매핑하는 경량 연동 모듈.
+  * `isaac_only_amr_connector.py`: DB 쿼리 오버헤드가 없도록 PostgreSQL을 배제하고, Redis의 AMR 상태 정보(`amr:AMR_XX`)만 단독 구독하여 Isaac Sim 시뮬레이터 상에 로봇 좌표를 실시간 매핑하는 경량 연동 모듈.
 
 
 ---

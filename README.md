@@ -209,7 +209,7 @@ graph TD
 | **작업대 (Workstations)**| `WORKSTATION_{workstation_id}` | `WS01` ~ `WS10` | 2x8 적재 플레이트 (총 10대) |
 | **상자 (Packages)** | `PKG_RAND_XXX` | `PKG_RAND_XXX` (임의생성) | 개별 택배 박스 |
 | **작업대 슬롯 (Slots)** | `WORKSTATION_WSxx_SLOT_y` | `WS01_SLOT_1` ~ `WS10_SLOT_8` | 각 작업대의 2x4 슬롯 (총 80개) |
-| **바닥 격자 (Floor Grid)**| `FLOOR_X_{x}_Y_{y}` | `FLOOR_X_{x}_Y_{y}` | 미터법 절대 좌표 마커 (총 1,819개) |
+| **바닥 격자 (Floor Grid)**| `FLOOR_X_{x}_Y_{y}` | `FLOOR_X_{x}_Y_{y}` | 미터법 절대 좌표 마커 (총 143개, 1.5m 간격 11×13 격자) |
 
 ---
 
