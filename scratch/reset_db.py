@@ -65,6 +65,9 @@ def reset_database():
         r = redis.Redis(host=redis_host, port=6379, decode_responses=True)
         r.flushall()
         print("2.1 Redis 데이터 완전 소거 (FLUSHALL) 완료.")
+        r.set('system:today_date', '2026-06-06')
+        r.set('system:day_status', 'WAITING_FOR_START')
+        print("2.2 Redis 기본 날짜(2026-06-06) 및 상태(WAITING_FOR_START) 설정 완료.")
     except Exception as e:
         print(f"[ERROR] Redis 연결 실패: {e}")
         sys.exit(1)

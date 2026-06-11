@@ -17,6 +17,19 @@
 
 ### 📅 2026년 6월 11일 (목요일)
 
+* **20:25** - **대시보드 DB 초기화 후 CSV 파일 업로드 실패 및 영업 시작 버튼 잠김 버그 수정**:
+  - 대시보드 웹 화면에서 CSV 파일을 업로드한 후 `🔄 데이터베이스 초기화`를 수행하면 Redis가 소거되어 `system:day_status` 값이 사라져, 대시보드 서버가 이를 `'RUNNING'`으로 오인하여 `영업 시작` 버튼이 계속 잠겨(disabled) 있던 기본값 오류를 수정했습니다. (`dashboard_server.py`의 기본값을 `'WAITING_FOR_START'`로 수정하고, `reset_db.py` 실행 시 Redis 기본 키를 자동 주입하도록 보완)
+  - 웹 GUI 프론트엔드에서 동일한 CSV 파일을 연속해서 다시 업로드(Re-upload)할 때 브라우저의 파일 입력 요소(`csv-file-input`)의 value가 초기화되지 않아 `onchange` 이벤트가 발생하지 않고 업로드가 먹통이 되던 HTML input 제어 문제를 해결하기 위해, 업로드 완료 혹은 DB 초기화 시 파일 입력 값을 공백(`''`)으로 리셋하는 로직을 통합 반영했습니다.
+
+* **16:45** - **PostgreSQL 및 Redis 데이터베이스 상세 구조 정의 및 Jupyter Notebook 가이드 통합**:
+  - `main_code_guide.ipynb` 노트북 파일 내에 PostgreSQL 데이터베이스의 5대 테이블 스키마(`robots`, `workstations`, `warehouse_locations`, `packages`, `floor_qr_map`) 및 컬럼 정의와 상세 속성 명세를 완벽히 추가 작성했습니다.
+  - 데이터베이스 테이블 간의 1:N 조인 관계 및 외래키 연동성을 시각화하는 Mermaid ERD(Entity Relationship Diagram)를 설계하여 문서 내에 삽입 완료했습니다.
+
+* **16:30** - **관제탑 노드(control_tower_node.py) 180도 회전 트리거 상태 복구 핫픽스**:
+  - 적재 로봇이 4번째 상자 적재를 완료할 때 작업대를 180도 제자리 회전하는 제어 시퀀스 과정에서, `self.rotation_triggered` 집합(Set)이 시뮬레이터 재시작이나 신규 적재 사이클 전환 시 정상적으로 비워지지 않던 문제를 수정했습니다.
+  - `report_inbound_progress_callback` 함수 내부에서 적재된 슬롯 수(`filled_slots_count`)가 4 미만으로 떨어질 때(즉, 빈 작업대로 교체되거나 이월 적재 초기화 시) 해당 작업대의 회전 트리거 상태를 원자적으로 초기화하도록 예외 처리 코드를 반영했습니다.
+  - `workstation_move_completed_callback` 함수 내부에서 회전이 아닌 일반 이송(비회전 이동)이 성공적으로 완료될 때에도 `self.rotation_triggered`에서 해당 작업대 ID를 정상적으로 제거(Remove)하여, 다음 입/출고 공정에서 제자리 회전 제어 명령이 누락 없이 정상적으로 발행되고 로봇이 JIT 정지할 수 있도록 버그를 완벽히 해결했습니다.
+
 * **15:39** - **가상 출고 포장 로봇 모의 노드(mock_sg2_out_node) 개발 및 패키지 통합**:
   - 실물/시뮬레이터 출고 로봇의 공백을 채우기 위해 `StartPackaging.action` 규격을 그대로 준수하는 가상 액션 서버 노드를 구축했습니다.
   - `/sg2_out_00/pause_status` 토픽(std_msgs/msg/Bool)을 실시간 구독하여, 관제탑에서 발행하는 일시 정지(Pause) 및 작업 재개(Resume) 명령에 따라 8칸 적재 루프가 정지 및 시작하는 내부 스레드 제어(MultiThreadedExecutor 기반)를 완벽히 구현했습니다.
@@ -517,6 +530,194 @@ SELECT slot_number, package_id, customer_name
 FROM packages 
 WHERE workstation_id = 'WS01' 
 ORDER BY slot_number;
+```
+
+#### 1.3 데이터베이스 테이블 구조 상세 정의 (DB 스키마)
+본 관제 시스템은 아래와 같이 총 5개의 테이블로 구성되어 실시간 물류와 로봇의 상태 정보를 관리합니다.
+
+##### ① 로봇 정보 테이블 (`robots`)
+관제 센터가 제어하는 모든 물류 로봇의 정보와 물리 QR코드 식별자의 매핑 테이블입니다.
+* **Primary Key**: `robot_id`
+* **컬럼 구조**:
+  * `robot_id` (`VARCHAR(50)`): 로봇 고유 문자열 ID (예: `'bg2'`, `'sg2_in_01'`)
+  * `robot_type` (`VARCHAR(50)`): 로봇의 분류/역할군 (예: `'CONVEYOR_SORTER'`, `'MANIPULATOR'`)
+  * `qr_id` (`VARCHAR(100)`): 로봇 고유 QR코드 ID (예: `'ROBOT_bg2'`, `'ROBOT_sg2_in_01'`)
+
+##### ② 작업대 정보 테이블 (`workstations`)
+로봇들이 상자를 싣는 2x4 슬롯 기반 작업대의 실시간 물리적 위치와 식별 QR코드 정보를 관리합니다.
+* **Primary Key**: `workstation_id`
+* **컬럼 구조**:
+  * `workstation_id` (`VARCHAR(50)`): 작업대 고유 문자열 ID (예: `'WS01'`, `'WS10'`)
+  * `current_location` (`VARCHAR(50)`): 작업대의 실시간 위치 (예: `'sg2_in_01_A'`, `'spot_01'`, `'sg2_out_00_A'`)
+  * `qr_id` (`VARCHAR(100)`): 작업대 고유 QR코드 ID (예: `'WORKSTATION_WS01'`, `'WORKSTATION_WS10'`)
+  * `status` (`VARCHAR(50)`): 작업대의 제어 상태 (예: `'WAITING'`, `'PROCESSING'`)
+  * `reserved_by` (`VARCHAR(50)`): 현재 작업대를 예약/선점 중인 AMR 식별자 (예: `'AMR_01'`, `NULL`)
+
+##### ③ 창고 세부 스팟 관리 테이블 (`warehouse_locations`)
+창고 내부의 개별 보관 슬롯 구역들의 점유 현황과 주차된 작업대 매핑을 관리합니다.
+* **Primary Key**: `spot_id`
+* **Foreign Key**: `workstation_id` (작업대 테이블 참조)
+* **컬럼 구조**:
+  * `spot_id` (`VARCHAR(50)`): 창고 내 고유 주차 구역 ID (예: `'spot_01'`, `'spot_10'`)
+  * `workstation_id` (`VARCHAR(50)`): 주차된 작업대 고유 ID (비었을 시 `NULL`)
+  * `status` (`VARCHAR(20)`): 스팟 점유 상태 (`EMPTY` / `OCCUPIED`)
+
+##### ④ 택배 정보 테이블 (`packages`)
+입고되는 모든 택배의 상태 및 적재/출고 이력을 관리하는 데이터의 흐름 핵심 테이블입니다.
+* **Primary Key**: `package_id`
+* **Foreign Key**: `workstation_id` (작업대 테이블 참조)
+* **컬럼 구조**:
+  * `package_id` (`VARCHAR(50)`): 상자 바코드 또는 고유 ID (예: `'PKG_20260608_001'`)
+  * `customer_name` (`VARCHAR(100)`): 택배 수령인 성함 (예: `'김철수'`)
+  * `route_zone` (`VARCHAR(20)`): 분류 배송 예정 날짜 (예: `'2026-06-08'`)
+  * `status` (`VARCHAR(50)`): 진행 상태 (예: `'WAITING'`, `'IN_WORKSTATION'`, `'IN_WAREHOUSE'`, `'COMPLETED'`)
+  * `outbound_id` (`VARCHAR(100)`): 포장 후 출고 고유 바코드
+  * `workstation_id` (`VARCHAR(50)`): 적재된 작업대 ID
+  * `slot_number` (`INT`): 작업대 내 적재 슬롯 번호 (1~8)
+  * `qr_id` (`VARCHAR(100)`): 택배 고유 QR코드 ID
+
+##### ⑤ 공간 바닥 QR코드 격자 맵 테이블 (`floor_qr_map`)
+AMR의 3D 공간 자율주행 및 위치 좌표 해석(Localization)을 위해 바닥에 매핑된 QR코드 격자 맵 정보를 관리합니다.
+* **Primary Key**: `qr_id`
+* **컬럼 구조**:
+  * `qr_id` (`VARCHAR(100)`): 바닥 QR코드 고유 ID (예: `'FLOOR_X_1.5_Y_3.0'`)
+  * `x_coord` (`DOUBLE PRECISION`): 물리 X 좌표 (m)
+  * `y_coord` (`DOUBLE PRECISION`): 물리 Y 좌표 (m)
+  * `z_coord` (`DOUBLE PRECISION`): 물리 Z 좌표 (m)
+  * `location_name` (`VARCHAR(50)`): 매핑되는 논리적 위치명 (예: `'spot_01'`, `'sg2_in_01_A'`)
+  * `location_type` (`VARCHAR(50)`): 위치 용도 분류 (예: `'PARKING_SPOT'`, `'PATHWAY'`)
+  * `description` (`TEXT`): 세부 위치 설명
+
+##### ⑥ 데이터베이스 테이블 ERD 관계도
+```mermaid
+erDiagram
+    WORKSTATIONS ||--o{ PACKAGES : "contains"
+    WORKSTATIONS ||--o| WAREHOUSE_LOCATIONS : "parked at"
+    ROBOTS {
+        VARCHAR robot_id PK
+        VARCHAR robot_type
+        VARCHAR qr_id UNIQUE
+    }
+    WORKSTATIONS {
+        VARCHAR workstation_id PK
+        VARCHAR current_location
+        VARCHAR qr_id UNIQUE
+        VARCHAR status
+        VARCHAR reserved_by
+    }
+    WAREHOUSE_LOCATIONS {
+        VARCHAR spot_id PK
+        VARCHAR workstation_id FK
+        VARCHAR status
+    }
+    PACKAGES {
+        VARCHAR package_id PK
+        VARCHAR customer_name
+        VARCHAR route_zone
+        VARCHAR status
+        VARCHAR outbound_id
+        VARCHAR workstation_id FK
+        INT slot_number
+        VARCHAR qr_id UNIQUE
+    }
+    FLOOR_QR_MAP {
+        VARCHAR qr_id PK
+        DOUBLE x_coord
+        DOUBLE y_coord
+        DOUBLE z_coord
+        VARCHAR location_name
+        VARCHAR location_type
+        TEXT description
+    }
+```
+
+#### 1.4 컨트롤 타워 노드(`control_tower_node.py`) 제어 알고리즘 및 규칙 상세
+관제탑 노드는 물류 창고 내 다중 AMR(자율이송로봇)과 적재/포장 매니퓰레이터 로봇들의 실시간 제어, DB 상태 동기화 및 인터로킹(Interlocking)을 총괄하는 **중앙 관제 허브**입니다.
+
+##### ① 컨트롤 타워 핵심 아키텍처 및 테스크 매니저 구조
+관제탑 노드는 비동기 멀티스레드 콜백 실행기(`MultiThreadedExecutor`)를 사용하여 다음과 같은 핵심 스레드 및 관리 루프들을 병렬로 운용합니다.
+* **모니터링 매니저 (`check_completed_workstations`)**: 1.5초 타이머 콜백으로 작동하며, WMS 데이터베이스(PostgreSQL)의 작업대 및 패키지 상태를 상시 스캔하여 신규 이송이 필요한 작업대를 감지하고 태스크를 자동 생성해 명령 큐에 푸시합니다.
+  - **입고 완충 감지**: 입고라인 Active 구역(`sg2_in_XX_A`)에 위치한 작업대의 적재 패키지 수량이 **8개**에 도달하면 해당 작업대 인출 태스크(`RETRIEVE_FULL_WORKSTATION`)와 빈 작업대 공급 태스크(`SUPPLY_EMPTY_WORKSTATION`)를 동시에 생성합니다.
+  - **출고 요청 감지**: 출고라인 포장대(`sg2_out_00_A`)가 비어 있고(Empty), 보관 창고 또는 대기 구역에 오늘 배송 마감 날짜(`route_zone`)에 해당하는 패키지를 담은 작업대가 존재할 경우 해당 작업대의 출고 이송 태스크(`PRE_FETCH_WORKSTATION`)를 생성합니다.
+  - **출고 완료 감지**: 출고라인 포장대에서 모든 패키지의 포장 작업이 완료(`status = 'COMPLETED'`)되면 빈 작업대 반납 태스크(`RETURN_EMPTY_WORKSTATION`)를 생성합니다.
+* **스케줄러 매니저 (`task_scheduler_loop`)**: 1.0초 타이머 콜백으로 작동하며, Redis Sorted Set 우선순위 큐(`queue:amr_tasks`)를 모니터링하여 적절한 가용 AMR에게 최적 매핑 후 이송 명령(Action)을 하달합니다.
+  - **동시 가동 제한 (Fleet Mutex)**: 창고 주행 통로의 병목 및 주행 데드락(교착) 방지를 위해 동시 구동 중인 AMR 대수(`active_amr_tasks`)를 **최대 3대**로 강제 제한합니다. 카운터가 3 이상인 경우 추가 배정을 중단하고 큐에서 대기시킵니다.
+  - **리소스 락 (Resource Lock)**: 동일한 작업대 ID 또는 동일한 목표 주차 위치(`target_location`)에 대해 이중 배정이 일어나 충돌이 발생하는 것을 원천 차단하기 위해, 태스크를 팝하기 전 `is_workstation_or_target_busy` 함수를 통해 대상 자원의 점유 여부를 검증합니다.
+
+##### ② Redis ZSET 기반 우선순위 큐 스케줄링 규칙
+모든 이송 태스크는 긴급도와 작업 흐름 상의 선후 관계를 고려하여 가중치(Priority Score)를 부여받아 Redis ZSET에 삽입됩니다.
+* **1순위 (최우선 / Score 100)**: `ROTATE_WORKSTATION`, `RETRIEVE_FULL_WORKSTATION`, `PRE_FETCH_WORKSTATION`, `DIRECT_WAREHOUSE` (생산 라인 중단 방지 목적)
+* **2순위 (중간 / Score 50)**: `REARRANGE_TO_WAREHOUSE` (영업 종료 후 야간 정리 작업)
+* **3순위 (최하 / Score 20)**: `SUPPLY_EMPTY_WORKSTATION`, `RETURN_EMPTY_WORKSTATION` (비긴급 보조 작업)
+
+##### ③ JIT (Just-In-Time) 일시정지 및 인터로킹(Interlocking) 알고리즘
+매니퓰레이터 로봇(적재/포장)과 자율주행 AMR 간의 안전한 협업과 시뮬레이터 상의 물리 붕괴(오브젝트 낙하/충돌) 방지를 위해 하드웨어 인터로킹 프로토콜을 사용합니다.
+1. **4슬롯 적재/포장 완료 (180도 회전 시점)**:
+   - 로봇이 4번째 상자 적재(입고) 또는 포장(출고) 완료 시 관제탑으로 `ReportInboundProgress` 호출 또는 피드백 전송.
+   - 관제탑은 즉시 `/{robot_id}/pause_status` 토픽에 `True`를 발행하여 로봇을 일시정지시킵니다.
+   - 관제탑은 큐에 `ROTATE_WORKSTATION` 태스크를 발행하여 AMR에게 180도 회전을 명령합니다.
+   - AMR이 제자리 회전을 성공적으로 마쳐 `workstation_move_completed_callback`이 트리거되면, 관제탑은 로봇의 일시정지 토픽에 `False`를 발행하여 5~8번째 슬롯의 작업을 안전하게 재개하도록 잠금을 해제합니다.
+2. **8슬롯 적재 완료 (작업대 만석 교체 시점)**:
+   - 8번째 상자 적재 즉시 로봇을 일시정지(`True`)하고, 완충 작업대를 인출(`RETRIEVE`)한 뒤 새 빈 작업대를 안착(`SUPPLY`)시킵니다.
+   - 새 빈 작업대가 무사히 도킹 완료되는 즉시 일시정지를 해제(`False`)하여 적재를 다시 이어나갑니다.
+
+##### ④ 최단 거리 기반 AMR 최적 매핑 알고리즘
+* **수식**: Euclidean Distance $d = \sqrt{(x_{start} - x_{amr})^2 + (y_{start} - y_{amr})^2}$
+* **배정 메커니즘**:
+  1. 배정할 태스크의 출발지(예: `sg2_in_01_A`)의 3D 공간 물리 좌표 $(x_{start}, y_{start})$를 PostgreSQL DB의 `floor_qr_map` 테이블에서 획득합니다.
+  2. Redis 캐시에 등록된 모든 AMR 중 현재 상태가 `'IDLE'` 이면서 가동 가능한(`available = true`) AMR들의 실시간 좌표 $(x_{amr}, y_{amr})$를 조회합니다.
+  3. 출발지 좌표와의 유클리드 거리가 최소($d$)인 최단거리 AMR을 최적의 적합 로봇으로 선정하여 ROS 2 Action 이송 명령을 하달합니다.
+
+##### ⑤ Control Tower 전체 의사결정 및 제어 흐름도
+```mermaid
+graph TD
+    Start([1.5초 주기 모니터링 시작]) --> QueryDB[WMS PostgreSQL DB 상태 조회]
+    QueryDB --> CheckInbound{입고 Active 작업대<br>상자 적재 8칸 완충?}
+    
+    CheckInbound -->|Yes| PushFull[Redis ZSET에 인출/공급 태스크 생성<br>RETRIEVE_FULL & SUPPLY_EMPTY / Priority: 100 & 20]
+    CheckInbound -->|No| CheckOutbound{출고 포장대 sg2_out_00_A<br>비어있고 대기 물량 존재?}
+    
+    CheckOutbound -->|Yes| PushPrefetch[Redis ZSET에 출고 준비 태스크 생성<br>PRE_FETCH_WORKSTATION / Priority: 100]
+    CheckOutbound -->|No| CheckEmptyWS{출고 포장대 작업대<br>모든 포장 완료 COMPLETED?}
+    
+    CheckEmptyWS -->|Yes| PushReturn[Redis ZSET에 작업대 반납 태스크 생성<br>RETURN_EMPTY_WORKSTATION / Priority: 20]
+    CheckEmptyWS -->|No| End[모니터링 종료 및 대기]
+    
+    PushFull --> End
+    PushPrefetch --> End
+    PushReturn --> End
+    
+    subgraph SchedulerLoop [1.0초 주기 스케줄러 실행 루프]
+        CheckLimit{실행 중인 AMR 태스크<br>active_amr_tasks >= 3?}
+        CheckLimit -->|Yes| Wait[명령 배정 대기 및 보존]
+        CheckLimit -->|No| PopQueue[우선순위 ZSET 큐 최상단 태스크 POP]
+        PopQueue --> CheckLock{작업대 또는 목표 스팟이<br>현재 다른 작업에 점유/락 상태?}
+        CheckLock -->|Yes| SkipTask[태스크를 건너뛰고 큐에 유지]
+        CheckLock -->|No| FindAMR[IDLE 상태 중 최단거리 AMR 배정]
+        FindAMR --> Dispatch[AMR Action Goal 발송 및 active_amr_tasks 1 증가]
+    end
+```
+
+##### ⑥ JIT 180도 회전 및 일시정지 인터로킹 흐름도
+```mermaid
+sequenceDiagram
+    participant Robot as Sorter/Packaging Robot
+    participant CT as Control Tower (ROS 2)
+    participant Redis as Redis Priority Queue (ZSET)
+    participant AMR as AMR (Mobile Robot)
+
+    Note over Robot, CT: 1. Inbound 4번째 상자 적재 완료 또는 Outbound 4번째 상자 포장 완료
+    Robot->>CT: Progress Event (ReportInboundProgress / Packaging Feedback)
+    CT->>Robot: Pause Status = True (로봇 일시 정지 발행)
+    Note over Robot: 매니퓰레이터 팔 동작 정지 및 안전 대기
+    CT->>Redis: Push ROTATE_WORKSTATION (Priority = 100)
+    Note over Redis: Task Scheduler가 팝하여 가용한 최단거리 AMR 선정
+    CT->>AMR: Send MoveWorkstation Action (ROTATE)
+    AMR->>AMR: 물리적 180도 제자리 회전 수행
+    AMR->>CT: Action Completed (Succeeded)
+    CT->>Robot: Pause Status = False (로봇 일시 정지 해제 발행)
+    CT->>CT: Clear rotation_triggered flag
+    Robot->>Robot: 5~8번째 슬롯 적재/포장 작업 재개
 ```
 
 ---

@@ -15,6 +15,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ReportInboundProgress.srv"
   "srv/GetDailyPackageList.srv"
   "srv/TransitPackage.srv"
+  "msg/WorkstationSimTrigger.msg"
   "action/MovePackage.action"
   "action/ManageWorkstation.action"
   "action/StartPackaging.action"

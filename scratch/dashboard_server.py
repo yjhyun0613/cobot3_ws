@@ -243,7 +243,7 @@ def get_status():
                 print(f"Redis Queue Query Error: {re}")
 
         # Day transition 상태 조회
-        day_status = 'RUNNING'
+        day_status = 'WAITING_FOR_START'
         completed_day = ''
         if redis_client:
             try:
@@ -1137,9 +1137,15 @@ def index():
             if (fileInput.files.length === 0) return;
             const reader = new FileReader();
             reader.onload = async function(e) {
-                const res = await fetch('/api/upload_packages', { method: 'POST', body: e.target.result });
-                const d = await res.json();
-                showToast(d.message);
+                try {
+                    const res = await fetch('/api/upload_packages', { method: 'POST', body: e.target.result });
+                    const d = await res.json();
+                    showToast(d.message);
+                } catch (err) {
+                    showToast("업로드 중 오류가 발생했습니다: " + err);
+                } finally {
+                    fileInput.value = '';
+                }
             };
             reader.readAsText(fileInput.files[0]);
         }
@@ -1155,6 +1161,7 @@ def index():
             const res = await fetch('/api/reset', { method: 'POST' });
             const d = await res.json();
             showToast(d.message);
+            document.getElementById('csv-file-input').value = '';
             lastDataHash = { spots: '', workstations: '', redis_tasks: '', packages: '' };
         }
 

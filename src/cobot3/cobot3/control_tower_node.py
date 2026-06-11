@@ -2,12 +2,14 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.action import ActionClient
+from rclpy.callback_groups import ReentrantCallbackGroup
 import os
 import threading
 
 # 커스텀 ROS2 인터페이스 임포트
 from cobot3_interfaces.srv import CheckWarehouseStatus, ReportInboundProgress, GetDailyPackageList
 from cobot3_interfaces.action import MovePackage, ManageWorkstation, StartPackaging
+from cobot3_interfaces.msg import WorkstationSimTrigger
 from std_msgs.msg import String, Bool
 
 import json
@@ -43,33 +45,42 @@ class ControlTowerNode(Node):
         self.redis_client = None
         self.init_databases()
 
+        # ROS2 콜백 동시 실행을 위한 ReentrantCallbackGroup 정의 (블로킹 방지)
+        self.callback_group = ReentrantCallbackGroup()
+
         # 2. ROS2 서비스 서버 등록 (로봇들로부터의 요청 수신)
         self.warehouse_status_service = self.create_service(
             CheckWarehouseStatus,
             'check_warehouse_status',
-            self.check_warehouse_status_callback
+            self.check_warehouse_status_callback,
+            callback_group=self.callback_group
         )
         self.inbound_progress_service = self.create_service(
             ReportInboundProgress,
             'report_inbound_progress',
-            self.report_inbound_progress_callback
+            self.report_inbound_progress_callback,
+            callback_group=self.callback_group
         )
         self.get_daily_package_list_service = self.create_service(
             GetDailyPackageList,
             'get_daily_package_list',
-            self.get_daily_package_list_callback
+            self.get_daily_package_list_callback,
+            callback_group=self.callback_group
         )
 
         # 3. ROS2 액션 클라이언트 등록 (AMR 및 포장 로봇에게 명령 하달)
-        self.move_package_action_client = ActionClient(self, MovePackage, 'move_package')
-        self.manage_workstation_action_client = ActionClient(self, ManageWorkstation, 'manage_workstation')
-        self.start_packaging_action_client = ActionClient(self, StartPackaging, 'start_packaging')
+        self.move_package_action_client = ActionClient(self, MovePackage, 'move_package', callback_group=self.callback_group)
+        self.manage_workstation_action_client = ActionClient(self, ManageWorkstation, 'manage_workstation', callback_group=self.callback_group)
+        self.start_packaging_action_client = ActionClient(self, StartPackaging, 'start_packaging', callback_group=self.callback_group)
 
         # 3.5 fleet 상태 모니터링용 JSON 토픽 퍼블리셔 등록
         self.amr_states_pub = self.create_publisher(String, '/fleet/amr_states', 10)
         self.workstation_states_pub = self.create_publisher(String, '/fleet/workstation_states', 10)
         self.package_states_pub = self.create_publisher(String, '/fleet/package_states', 10)
         self.task_events_pub = self.create_publisher(String, '/fleet/task_events', 10)
+
+        # 시뮬레이션용 작업대 동기화(소멸/소환) 토픽 퍼블리셔 등록
+        self.sim_workstation_trigger_pub = self.create_publisher(WorkstationSimTrigger, '/sim/sg2_workstation_trigger', 10)
 
         # 3.6 입고 및 출고 로봇(sg2_in, sg2_out) 일시 정지 제어 퍼블리셔 등록
         self.sg2_pause_pubs = {
@@ -80,9 +91,9 @@ class ControlTowerNode(Node):
         }
 
         # 4. 주기적 상태 체크 및 스케줄러 타이머 구동 (1초마다 실행)
-        self.scheduler_timer = self.create_timer(1.0, self.task_scheduler_loop)
+        self.scheduler_timer = self.create_timer(1.0, self.task_scheduler_loop, callback_group=self.callback_group)
         # fleet 상태 브로드캐스트 타이머 구동 (1초마다 실행)
-        self.fleet_states_timer = self.create_timer(1.0, self.publish_fleet_states_callback)
+        self.fleet_states_timer = self.create_timer(1.0, self.publish_fleet_states_callback, callback_group=self.callback_group)
         
         self.get_logger().info('ROS2 서비스 서버, 액션 클라이언트 및 Fleet 퍼블리셔 준비 완료.')
 
@@ -427,6 +438,13 @@ class ControlTowerNode(Node):
                 self.sg2_pause_pubs[robot_id].publish(msg)
                 self.get_logger().info(f'[Pause Robot] {robot_id} 일시 정지 명령 발행 (8칸 완충)')
 
+        # 4번째 칸 미만 적재 시, 이전 회전 이력을 초기화하여 다음 4번째 칸에서 정상 회전하도록 보장
+        if filled_slots_count < 4:
+            with self.trigger_lock:
+                if workstation_id in self.rotation_triggered:
+                    self.rotation_triggered.remove(workstation_id)
+                    self.get_logger().info(f'[Trigger Reset] {workstation_id}의 회전 트리거 상태를 초기화했습니다. (수량: {filled_slots_count}/4)')
+
         # [180도 회전 최적화] 4번째 칸 적재 완료 시 제자리 180도 회전 수행 및 로봇 대기 유도
         if filled_slots_count == 4:
             with self.trigger_lock:
@@ -760,6 +778,15 @@ class ControlTowerNode(Node):
         self.task_events_pub.publish(msg)
         self.get_logger().info(f"[Task Event Published] Task {task_id} -> {status}")
 
+    def publish_sim_workstation_trigger(self, workstation_id, location, action):
+        """시뮬레이션 환경용 작업대 소멸/소환 트리거 발행"""
+        msg = WorkstationSimTrigger()
+        msg.workstation_id = workstation_id
+        msg.location = location
+        msg.action = action
+        self.sim_workstation_trigger_pub.publish(msg)
+        self.get_logger().info(f"[Sim Workstation Trigger] {workstation_id} @ {location} -> {action}")
+
 
     # ==========================================
     # 주기적 스케줄링 및 액션 제어 루프
@@ -894,7 +921,8 @@ class ControlTowerNode(Node):
                 target=target_location,
                 workstation_qr_id=workstation_qr_id,
                 task_id=task_id,
-                assigned_amr=assigned_amr
+                assigned_amr=assigned_amr,
+                task_type=task_type
             )
 
 
@@ -1250,7 +1278,7 @@ class ControlTowerNode(Node):
         except Exception as e:
             self.get_logger().error(f'Keep-Alive Dispatcher 실행 중 에러: {str(e)}')
 
-    def trigger_workstation_move(self, workstation_id, start, target, workstation_qr_id="", task_id=None, assigned_amr="AMR_01"):
+    def trigger_workstation_move(self, workstation_id, start, target, workstation_qr_id="", task_id=None, assigned_amr="AMR_01", task_type="MOVE_WORKSTATION"):
         """AMR에게 작업대 통째로 이송하도록 액션 골 전송 및 DB 위치 선점 업데이트"""
         import uuid
         if not task_id:
@@ -1411,6 +1439,10 @@ class ControlTowerNode(Node):
             assigned_amr=assigned_amr
         )
 
+        # 시뮬레이션용 작업대 소멸(DESPAWN) 트리거 발행 (회수 작업에 한함)
+        if task_type == 'RETRIEVE_FULL_WORKSTATION' and actual_start in ['sg2_in_01_A', 'sg2_in_02_A', 'sg2_in_03_A', 'sg2_out_00_A']:
+            self.publish_sim_workstation_trigger(workstation_id, actual_start, "DESPAWN")
+
         # 액션 완료 시 결과를 받아 실제 DB 최종 위치를 수정하도록 콜백 설정
         send_goal_future = self.manage_workstation_action_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(
@@ -1510,6 +1542,10 @@ class ControlTowerNode(Node):
                     self.sg2_pause_pubs[line].publish(msg)
                     self.get_logger().info(f'[Resume Robot] {line} 로봇 작업 재개 명령 발행 (작업대 배치/회전 완료)')
 
+            # 시뮬레이션용 작업대 생성(SPAWN) 트리거 발행 (회전 배치 제외, 신규 배치에 한함)
+            if target in ['sg2_in_01_A', 'sg2_in_02_A', 'sg2_in_03_A', 'sg2_out_00_A'] and not ('ROTATING' in start or 'rotating' in start.lower()):
+                self.publish_sim_workstation_trigger(workstation_id, target, "SPAWN")
+
             # task_events 토픽 발행 (COMPLETED)
             self.publish_task_event(
                 task_id=task_id,
@@ -1522,6 +1558,13 @@ class ControlTowerNode(Node):
                 status='COMPLETED',
                 assigned_amr=assigned_amr
             )
+
+            # 비회전 이동(일반 이송) 완료 시, 이전 회전 이력을 초기화하여 새로운 영역에서 정상적으로 회전하도록 보장
+            if not ('ROTATING' in start or 'ROTATING' in target or 'rotating' in start.lower() or 'rotating' in target.lower()):
+                with self.trigger_lock:
+                    if workstation_id in self.rotation_triggered:
+                        self.rotation_triggered.remove(workstation_id)
+                        self.get_logger().info(f'[Trigger Clear] {workstation_id}의 회전 트리거 상태를 비회전 이동(출발: {start}, 도착: {target}) 완료에 따라 해제했습니다.')
 
             # 만약 포장 구역 A(sg2_out_00_A)에 안전하게 도착했고, 180도 회전 동작이 아니었다면 포장 공정(Action) 트리거
             if target == 'sg2_out_00_A' and not (start == 'sg2_out_00_A_ROTATING' or 'ROTATING' in start):
