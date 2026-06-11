@@ -9,16 +9,19 @@
 
 ## 📂 프로젝트 문서 지도 (Documentation Map)
 
-프로젝트 루트의 문서를 효율적으로 찾아볼 수 있도록 다음과 같이 3대 핵심 문서로 단순화하여 통합하였습니다.
+모든 기술 문서는 `docs/` 폴더에 통합 관리됩니다.
 
 ### 1. 📖 [README.md](file:///home/yoon/cobot3_ws/README.md) (사용 매뉴얼 및 데모 시나리오)
 * 전체 시스템의 기동 프로세스, 사전 요구사항, 데이터 백업/복원, 그리고 실제 발표 현장에서 활용할 **6월 8일 데모 시연 진행 스크립트** 수록.
 
-### 2. 🔌 [ROBOT_AMR_INTEGRATION_GUIDE.md](file:///home/yoon/cobot3_ws/ROBOT_AMR_INTEGRATION_GUIDE.md) (기술 연동 명세 및 아키텍처 규격서)
+### 2. 🔌 [ROBOT_AMR_INTEGRATION_GUIDE.md](file:///home/yoon/cobot3_ws/docs/ROBOT_AMR_INTEGRATION_GUIDE.md) (기술 연동 명세 및 아키텍처 규격서)
 * ROS 2 서비스/액션 메시지 정의, Redis 캐시 구조, Cyclone DDS 무선 통신 설정, 데이터베이스 스키마(PostgreSQL ERD) 및 창고 물리 격자 좌표(X, Y) 매핑 총망라.
 
-### 3. 📊 [PROJECT_REPORT.md](file:///home/yoon/cobot3_ws/PROJECT_REPORT.md) (종합 구축 결과 및 개선 보고서)
+### 3. 📊 [PROJECT_REPORT.md](file:///home/yoon/cobot3_ws/docs/PROJECT_REPORT.md) (종합 구축 결과 및 개선 보고서)
 * 4단계 비즈니스 시나리오, JIT 교체/인터로킹 아키텍처 결정 사항, 데이터베이스 정규화/이중 버퍼/우선순위 큐 등의 시스템 개선 내역 및 마일스톤 이력 요약.
+
+### 4. 🏗️ [PROJECT_OVERVIEW.md](file:///home/yoon/cobot3_ws/docs/PROJECT_OVERVIEW.md) (프로젝트 개요 및 아키텍처 요약)
+* 시스템 아키텍처 다이어그램, 핵심 제어 알고리즘 요약, 기술 스택 및 비즈니스 파이프라인 흐름도.
 
 ---
 
@@ -167,7 +170,7 @@ cat ~/cobot3_ws/docker/warehouse_backup.sql | sudo docker exec -i warehouse_post
 ---
 
 ## 🤖 7. AI 에이전트 개발 정보 및 아키텍처
-* 이 가이드와 관련한 자세한 통신 규격 및 구조는 **[ROBOT_AMR_INTEGRATION_GUIDE.md](file:///home/yoon/cobot3_ws/ROBOT_AMR_INTEGRATION_GUIDE.md)**를 참조하십시오.
+* 이 가이드와 관련한 자세한 통신 규격 및 구조는 **[ROBOT_AMR_INTEGRATION_GUIDE.md](file:///home/yoon/cobot3_ws/docs/ROBOT_AMR_INTEGRATION_GUIDE.md)**를 참조하십시오.
 
 ---
 

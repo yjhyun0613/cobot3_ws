@@ -2,10 +2,10 @@
 
 > [!IMPORTANT]
 > **통합 정보**: 본 문서는 기존에 개별적으로 관리되던 다음 4개의 시스템 개선 및 이력 관련 마크다운 문서들을 하나로 통합한 마스터 보고서입니다.
-> 1. **[프로젝트 개발 히스토리 (CHANGELOG.md)](file:///home/yoon/cobot3_ws/CHANGELOG.md)**
-> 2. **[시스템 개선 및 고도화 계획서 (SYSTEM_IMPROVEMENT_PLAN.md)](file:///home/yoon/cobot3_ws/SYSTEM_IMPROVEMENT_PLAN.md)**
-> 3. **[AMR 동적 풀링 관제 고도화 계획서 (AMR_DYNAMIC_POOLING_PLAN.md)](file:///home/yoon/cobot3_ws/AMR_DYNAMIC_POOLING_PLAN.md)**
-> 4. **[시스템 변경사항 및 아키텍처 개정 보고서 (REARRANGEMENT_AND_CHANGES_REPORT.md)](file:///home/yoon/cobot3_ws/REARRANGEMENT_AND_CHANGES_REPORT.md)**
+> 1. **[프로젝트 개발 히스토리 (CHANGELOG.md)](file:///home/yoon/cobot3_ws/docs/CHANGELOG.md)**
+> 2. **[시스템 개선 및 고도화 계획서 (SYSTEM_IMPROVEMENT_PLAN.md)](file:///home/yoon/cobot3_ws/docs/SYSTEM_IMPROVEMENT_PLAN.md)**
+> 3. **[AMR 동적 풀링 관제 고도화 계획서 (AMR_DYNAMIC_POOLING_PLAN.md)](file:///home/yoon/cobot3_ws/docs/AMR_DYNAMIC_POOLING_PLAN.md)**
+> 4. **[시스템 변경사항 및 아키텍처 개정 보고서 (REARRANGEMENT_AND_CHANGES_REPORT.md)](file:///home/yoon/cobot3_ws/docs/REARRANGEMENT_AND_CHANGES_REPORT.md)**
 > 
 > 각 문서의 핵심 설계 지침, 물리 좌표 테이블, A* 알고리즘 세부 설계, 하드웨어 일시정지(Pause) 인터록 구조, 3대 자율주행 제한 큐잉, 그리고 날짜 및 시간별 상세 수정 이력(Changelog)의 모든 텍스트와 다이어그램을 단 한 자의 유실도 없이 완벽하게 통합하였습니다.
 
