@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'control_tower = cobot3.control_tower_node:main',
             'sim_sync_node = cobot3.sim_sync_node:main',
+            'mock_sg2_out = cobot3.mock_sg2_out_node:main',
         ],
     },
 )

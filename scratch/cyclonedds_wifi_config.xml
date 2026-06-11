@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS xmlns="https://cdds.io/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+    <Domain id="any">
+        <General>
+            <!-- 1. 와이파이 네트워크 인터페이스 명시 (예: wlan0, wlp3s0 등 실제 인터페이스명으로 변경 필요) -->
+            <NetworkInterfaceAddress>wlan0</NetworkInterfaceAddress>
+            <AllowMulticast>true</AllowMulticast>
+            <MaxMessageSize>65500B</MaxMessageSize>
+        </General>
+        <Discovery>
+            <!-- 2. 와이파이 AP에서 멀티캐스트를 차단하는 경우를 대비한 유니캐스트 피어 설정 -->
+            <!-- 통신하려는 모든 PC(관제탑, AMR, SG2, BG2)의 IP 주소를 적어줍니다 -->
+            <Peers>
+                <Peer address="192.168.100.10"/> <!-- 예: PC 1 (관제탑) -->
+                <Peer address="192.168.100.11"/> <!-- 예: PC 2 (AMR) -->
+                <Peer address="192.168.100.12"/> <!-- 예: PC 3 (SG2) -->
+                <Peer address="192.168.100.13"/> <!-- 예: PC 4 (BG2) -->
+            </Peers>
+            <ParticipantIndex>auto</ParticipantIndex>
+        </Discovery>
+    </Domain>
+</CycloneDDS>

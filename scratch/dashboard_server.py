@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse
 import uvicorn
 from psycopg2 import pool
 
+# Trigger reload to clear location and grid cells caches v3
 # ----------------------------------------------------
 # 1. 웹소켓 커넥션 매니저 클래스
 # ----------------------------------------------------
@@ -276,29 +277,7 @@ def get_status():
             except Exception as e:
                 print(f"AMR query error: {e}")
 
-        if not amr_states:
-            moving_ws = [w for w in workstations if w["current_location"].lower().startswith("moving_to_") or w["current_location"].lower().endswith("_rotating")]
-            for idx, ws in enumerate(moving_ws):
-                amr_name = f"AMR_{idx+1:02d}"
-                amr_states[amr_name] = {
-                    "state": "BUSY",
-                    "current_qr_id": ws["current_location"],
-                    "target_qr_id": "",
-                    "carrying_workstation_id": ws["workstation_id"],
-                    "battery": "95"
-                }
-            for idx in range(1, 6):
-                amr_name = f"AMR_{idx:02d}"
-                if amr_name not in amr_states:
-                    # Y 물리 좌표가 -9.0, -7.5, -6.0, -4.5, -3.0 인 충전 포지션에 대응
-                    y_val = -9.0 + (idx - 1) * 1.5
-                    amr_states[amr_name] = {
-                        "state": "IDLE",
-                        "current_qr_id": f"FLOOR_X_-6.0_Y_{y_val:.1f}",
-                        "target_qr_id": "",
-                        "carrying_workstation_id": "",
-                        "battery": f"{85 + idx * 2}"
-                    }
+
 
         # grid_cells 캐시 활용
         global _grid_cells_cache
@@ -440,8 +419,9 @@ def reset_db():
             redis_client.set('system:today_date', '2026-06-06')
             redis_client.set('system:day_status', 'WAITING_FOR_START')
 
-        global _grid_cells_cache
+        global _grid_cells_cache, _locations_cache
         _grid_cells_cache = None
+        _locations_cache = None
             
         release_db_connection(pg_conn)
         return {"success": True, "message": "데이터베이스와 바닥 QR 격자 맵이 성공적으로 초기화 및 복구되었습니다."}
@@ -1208,7 +1188,8 @@ def index():
             if (startBtn) {
                 const systemRunning = data.day_status === 'RUNNING';
                 const packagesWaiting = (data.packages || []).some(pkg => pkg.status === 'WAITING');
-                const ready = packagesWaiting && !systemRunning && data.day_status !== 'PENDING_TRANSITION';
+                const hasConnectedAMR = data.amr_states && Object.keys(data.amr_states).length > 0;
+                const ready = packagesWaiting && !systemRunning && data.day_status !== 'PENDING_TRANSITION' && hasConnectedAMR;
 
                 if (systemRunning) {
                     startBtn.classList.remove('ready');
