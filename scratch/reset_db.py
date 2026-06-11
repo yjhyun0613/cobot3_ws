@@ -11,9 +11,10 @@ def reset_database():
     print("=== [Reset Test Env] 데이터베이스 및 캐시 완전 초기화 시작 ===")
     
     # 1. PostgreSQL 초기화
+    pg_host = os.environ.get('POSTGRES_HOST', 'localhost')
     try:
         conn = psycopg2.connect(
-            host="localhost",
+            host=pg_host,
             database="warehouse_db",
             user="rokey",
             password="rokey_pass",
@@ -59,8 +60,9 @@ def reset_database():
         sys.exit(1)
 
     # 2. Redis 캐시 초기화
+    redis_host = os.environ.get('REDIS_HOST', 'localhost')
     try:
-        r = redis.Redis(host="localhost", port=6379, decode_responses=True)
+        r = redis.Redis(host=redis_host, port=6379, decode_responses=True)
         r.flushall()
         print("2.1 Redis 데이터 완전 소거 (FLUSHALL) 완료.")
     except Exception as e:

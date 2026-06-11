@@ -5,17 +5,21 @@ import redis
 def init_june_8th_simulation():
     print("=== 🚀 6월 8일 오전 09:00 관제탑 초기 상태 마스킹 시작 ===")
     
+    import os
+    pg_host = os.environ.get('POSTGRES_HOST', 'localhost')
+    redis_host = os.environ.get('REDIS_HOST', 'localhost')
+    
     # 1. DB 및 Redis 연결 설정 (파트너님의 환경 정보 반영)
     try:
         conn = psycopg2.connect(
-            host="localhost",
+            host=pg_host,
             port=5432,
             user="rokey",
             password="rokey_pass",
             database="warehouse_db"
         )
         cursor = conn.cursor()
-        r_client = redis.Redis(host='localhost', port=6379, db=0)
+        r_client = redis.Redis(host=redis_host, port=6379, db=0)
     except Exception as e:
         print(f"❌ 서비스 연결 실패 (도커 컨테이너 구동 확인 필요): {e}")
         return

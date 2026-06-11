@@ -109,219 +109,63 @@ def main():
         print(f"  │  └─ 슬롯 1~8 QR코드 생성 완료: {ws_id}")
 
 
-    # 3. 바닥 격자 QR코드 생성
-    print("\n[3] 바닥 격자 QR코드 생성 중...")
-    margin = 2.0
-    spacing = 1.5
-    
-    x_start = map_info['origin_x'] + margin
-    y_start = map_info['origin_y'] + margin
-    x_end = map_info['origin_x'] + map_info['width_m'] - margin
-    y_end = map_info['origin_y'] + map_info['height_m'] - margin
-
-    # 좌표 리스트 계산 (사용자 요청에 따른 창고 영역 크기 필터 적용)
-    x_min, x_max = -38.0, 38.0
-    y_min, y_max = -36.08472, 25.0
-
-    x_coords = []
-    x = x_start
-    while x <= x_end:
-        rx = round(x, 3)
-        if x_min <= rx <= x_max:
-            x_coords.append(rx)
-        x += spacing
-
-    y_coords = []
-    y = y_start
-    while y <= y_end:
-        ry = round(y, 3)
-        if y_min <= ry <= y_max:
-            y_coords.append(ry)
-        y += spacing
-
-    total_points = len(x_coords) * len(y_coords)
-    print(f"  - 격자 크기: {len(x_coords)}열 x {len(y_coords)}행 = 총 {total_points}개 노드")
-    print(f"  - 범위: X [{x_coords[0]} ~ {x_coords[-1]}], Y [{y_coords[0]} ~ {y_coords[-1]}]")
-
-    # 4. 데이터베이스 floor_qr_map 테이블 연동 및 데이터 적재
-    print("\n[4] PostgreSQL floor_qr_map 테이블 연동 및 데이터 적재 시작...")
+    # 3. 바닥 격자 QR코드 생성 및 데이터베이스 연동
+    print("\n[3] PostgreSQL floor_qr_map 테이블 연동 및 바닥 QR코드 생성...")
     db_conn = None
+    pg_host = os.environ.get('POSTGRES_HOST', 'localhost')
     try:
         import psycopg2
         db_conn = psycopg2.connect(
-            host='localhost',
+            host=pg_host,
             port=5432,
             user='rokey',
             password='rokey_pass',
             database='warehouse_db'
         )
-        db_conn.autocommit = True
         print("  - PostgreSQL 데이터베이스 연결 성공.")
     except Exception as db_err:
-        print(f"  - [경고] 데이터베이스 연결 실패 (psycopg2 미설치 또는 컨테이너 미구동): {db_err}")
-        print("    (격자 맵 파일 생성을 계속 진행합니다)")
+        print(f"  - [에러] 데이터베이스 연결 실패 (컨테이너 구동 또는 환경변수 확인 필요): {db_err}")
+        return
 
-    if db_conn:
-        try:
-            with db_conn.cursor() as cursor:
-                # 테이블 비우기
-                cursor.execute("TRUNCATE TABLE floor_qr_map CASCADE;")
-                
-                # 논리 스팟 정의
-                logical_spots = {}
-                
-                # 1) 주차 구역 (spot_01 ~ spot_12)
-                parking_coords = [
-                    (-10.775, -9.525), (-9.275, -9.525),
-                    (-10.775, -6.525), (-9.275, -6.525),
-                    (-10.775, -3.525), (-9.275, -3.525),
-                    (-10.775, -0.525), (-9.275, -0.525),
-                    (-10.775, 2.475),  (-9.275, 2.475),
-                    (-10.775, 5.475),  (-9.275, 5.475)
-                ]
-                for idx, (px, py) in enumerate(parking_coords, 1):
-                    spot_name = f"spot_{idx:02d}"
-                    logical_spots[(px, py)] = {
-                        "name": spot_name,
-                        "type": "PARKING_SPOT",
-                        "desc": f"Warehouse workstation parking slot {idx:02d}"
-                    }
-                
-                # 2) 입고 로봇 구역 (sg2_in_01_A/B ~ sg2_in_03_A/B)
-                inbound_coords = [
-                    ((-24.275, -11.025), (-25.775, -11.025)),  # Line 1 (오늘)
-                    ((-24.275, -6.525), (-25.775, -6.525)),  # Line 2 (내일)
-                    ((-24.275, -2.025), (-25.775, -2.025)) # Line 3 (모레)
-                ]
-                for robot_idx, (a_coord, b_coord) in enumerate(inbound_coords, 1):
-                    # A구역 (Loading)
-                    logical_spots[a_coord] = {
-                        "name": f"sg2_in_{robot_idx:02d}_A",
-                        "type": "LOADING_SPOT",
-                        "desc": f"Inbound {robot_idx:02d} A-buffer (Loading)"
-                    }
-                    # B구역 (Standby)
-                    logical_spots[b_coord] = {
-                        "name": f"sg2_in_{robot_idx:02d}_B",
-                        "type": "STANDBY_SPOT",
-                        "desc": f"Inbound {robot_idx:02d} B-buffer (Standby)"
-                    }
-                
-                # 3) 출고 포장 구역 (sg2_out_00_A/B)
-                logical_spots[(-3.275, -23.025)] = {
-                    "name": "sg2_out_00_A",
-                    "type": "PACKAGING_SPOT",
-                    "desc": "Outbound packing zone A (Active)"
-                }
-                logical_spots[(-3.275, -24.525)] = {
-                    "name": "sg2_out_00_B",
-                    "type": "PACKAGING_SPOT",
-                    "desc": "Outbound packing zone B (Standby)"
-                }
-
-                # 4) 출고 대기 구역 (stage_01 ~ stage_06)
-                staging_coords = [
-                    (-18.275, -23.025), (-18.275, -21.525),
-                    (-21.275, -23.025), (-21.275, -21.525),
-                    (-24.275, -23.025), (-24.275, -21.525)
-                ]
-                for idx, (sx, sy) in enumerate(staging_coords, 1):
-                    spot_name = f"stage_{idx:02d}"
-                    logical_spots[(sx, sy)] = {
-                        "name": spot_name,
-                        "type": "STAGING_SPOT",
-                        "desc": f"Outbound staging slot {idx:02d}"
-                    }
-
-                # 5) AMR 충전 구역 (charging_01 ~ charging_05)
-                charging_coords = [
-                    (-10.775, 23.475),
-                    (-12.275, 23.475),
-                    (-13.775, 23.475),
-                    (-15.275, 23.475),
-                    (-16.775, 23.475)
-                ]
-                for idx, (cx, cy) in enumerate(charging_coords, 1):
-                    spot_name = f"charging_{idx:02d}"
-                    logical_spots[(cx, cy)] = {
-                        "name": spot_name,
-                        "type": "CHARGING_SPOT",
-                        "desc": f"AMR charging slot {idx:02d}"
-                    }
-
-
-                # 대량 삽입용 쿼리 리스트
-                insert_data = []
-                inserted_logical_spots = set()
-                
-                for xc in x_coords:
-                    for yc in y_coords:
-                        qr_id = f"FLOOR_X_{xc}_Y_{yc}"
-                        spot_info = logical_spots.get((xc, yc))
-                        if spot_info:
-                            loc_name = spot_info["name"]
-                            loc_type = spot_info["type"]
-                            desc = spot_info["desc"]
-                            inserted_logical_spots.add((xc, yc))
-                        else:
-                            loc_name = None
-                            loc_type = "PATHWAY"
-                            desc = "Warehouse floor grid pathway"
-                        
-                        insert_data.append((qr_id, xc, yc, 0.0, loc_name, loc_type, desc))
-
-                # 격자에 포함되지 않은 논리 스팟 추가 삽입 (예: offset 배치된 출고 대기 창고 등)
-                for (l_x, l_y), spot_info in logical_spots.items():
-                    if (l_x, l_y) not in inserted_logical_spots:
-                        qr_id = f"FLOOR_X_{l_x}_Y_{l_y}"
-                        loc_name = spot_info["name"]
-                        loc_type = spot_info["type"]
-                        desc = spot_info["desc"]
-                        insert_data.append((qr_id, l_x, l_y, 0.0, loc_name, loc_type, desc))
-
-                # Bulk insert using executemany
-                cursor.executemany(
-                    "INSERT INTO floor_qr_map (qr_id, x_coord, y_coord, z_coord, location_name, location_type, description) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s);",
-                    insert_data
-                )
-                print(f"  - floor_qr_map 테이블에 총 {len(insert_data)}개 레코드 적재 완료!")
-        except Exception as insert_err:
-            print(f"  - [에러] floor_qr_map 데이터 적재 중 오류 발생: {insert_err}")
-        finally:
+    floor_qrs = []
+    try:
+        with db_conn.cursor() as cursor:
+            cursor.execute("SELECT qr_id FROM floor_qr_map;")
+            floor_qrs = [row[0] for row in cursor.fetchall()]
+        print(f"  - floor_qr_map 테이블에서 총 {len(floor_qrs)}개의 바닥 QR ID를 조회했습니다.")
+    except Exception as query_err:
+        print(f"  - [에러] floor_qr_map 조회 실패: {query_err}")
+        db_conn.close()
+        return
+    finally:
+        if db_conn:
             db_conn.close()
 
-    # 모든 격자점을 파일로 출력할지 결정
-    if args.all_floor:
-        print(f"  - 모든 {total_points}개의 격자점 QR코드 생성을 시작합니다. 잠시만 기다려주세요...")
-        count = 0
-        for xc in x_coords:
-            for yc in y_coords:
-                floor_str = f"FLOOR_X_{xc}_Y_{yc}"
-                path = os.path.join(output_dir, "floor", f"{floor_str}.png")
-                generate_qr(floor_str, path)
-                count += 1
-                if count % 200 == 0:
-                    print(f"    - 진행률: {count}/{total_points}개 생성 완료...")
-        print(f"  └─ 모든 {total_points}개 바닥 QR코드 생성 완료!")
-    else:
-        print("  - [안내] 디스크 공간과 시간 절약을 위해 대표 노드(모퉁이 4개 및 중심부) 샘플만 생성합니다.")
-        print("    (전체 생성을 원하시면 `python3 scratch/generate_all_qr_codes.py --all-floor` 명령어를 실행하세요)")
-        
-        # 샘플 노드 목록 지정
-        corners = [
-            (x_coords[0], y_coords[0]),  # 좌하단
-            (x_coords[-1], y_coords[0]), # 우하단
-            (x_coords[0], y_coords[-1]), # 좌상단
-            (x_coords[-1], y_coords[-1]),# 우상단
-            (x_coords[len(x_coords)//2], y_coords[len(y_coords)//2]) # 중심부
-        ]
-        
-        for xc, yc in corners:
-            floor_str = f"FLOOR_X_{xc}_Y_{yc}"
-            path = os.path.join(output_dir, "floor", f"{floor_str}.png")
-            generate_qr(floor_str, path)
-            print(f"  └─ 샘플 생성 완료: {path}")
+    # 4. QR코드 이미지 파일 생성 및 동기화 (불필요한 파일 삭제)
+    print("\n[4] 바닥 QR코드 이미지 파일 생성 및 동기화...")
+    # 이미지 생성
+    for qr_id in floor_qrs:
+        path = os.path.join(output_dir, "floor", f"{qr_id}.png")
+        generate_qr(qr_id, path)
+    print(f"  └─ 총 {len(floor_qrs)}개의 바닥 QR코드 이미지 생성 완료.")
+
+    # 미사용 파일 제거 (동기화)
+    floor_dir = os.path.join(output_dir, "floor")
+    existing_files = os.listdir(floor_dir)
+    deleted_count = 0
+    for filename in existing_files:
+        if filename.endswith(".png"):
+            qr_name = filename[:-4]
+            if qr_name not in floor_qrs:
+                file_path = os.path.join(floor_dir, filename)
+                try:
+                    os.remove(file_path)
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"    [경고] 파일 삭제 실패 ({filename}): {e}")
+
+    if deleted_count > 0:
+        print(f"  └─ 레이아웃에 존재하지 않는 미사용 바닥 QR코드 {deleted_count}개 삭제 완료.")
 
     print(f"\n=== 모든 자산 QR코드 생성 프로세스 종료! 저장 폴더: {output_dir} ===")
 

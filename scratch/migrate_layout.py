@@ -1,10 +1,12 @@
 import psycopg2
 
 def main():
+    import os
+    pg_host = os.environ.get('POSTGRES_HOST', 'localhost')
     try:
         # Connect to DB
         conn = psycopg2.connect(
-            host="localhost",
+            host=pg_host,
             database="warehouse_db",
             user="rokey",
             password="rokey_pass",

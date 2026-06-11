@@ -62,15 +62,17 @@ def normalize_qr_id(qr_id: str) -> str:
 
 def get_db_connections():
     global db_pool, global_redis
+    pg_host = os.environ.get('POSTGRES_HOST', 'localhost')
+    redis_host = os.environ.get('REDIS_HOST', 'localhost')
     if db_pool is None:
         try:
-            db_pool = pool.ThreadedConnectionPool(1, 20, host='localhost', port=5432, user='rokey', password='rokey_pass', database='warehouse_db')
+            db_pool = pool.ThreadedConnectionPool(1, 20, host=pg_host, port=5432, user='rokey', password='rokey_pass', database='warehouse_db')
         except Exception as e:
             print(f"DB Pool Error: {e}")
             
     if global_redis is None:
         try:
-            global_redis = redis.Redis(host='localhost', port=6379, decode_responses=True)
+            global_redis = redis.Redis(host=redis_host, port=6379, decode_responses=True)
         except Exception as e:
             print(f"Redis Error: {e}")
             
@@ -292,7 +294,7 @@ def get_status():
                     y_val = -9.0 + (idx - 1) * 1.5
                     amr_states[amr_name] = {
                         "state": "IDLE",
-                        "current_qr_id": f"FLOOR_X_-3.0_Y_{y_val:.1f}",
+                        "current_qr_id": f"FLOOR_X_-6.0_Y_{y_val:.1f}",
                         "target_qr_id": "",
                         "carrying_workstation_id": "",
                         "battery": f"{85 + idx * 2}"
@@ -864,7 +866,7 @@ def index():
         @keyframes pulse-border { 0%, 100% { border-color: rgba(0, 242, 254, 0.2); } 50% { border-color: rgba(0, 242, 254, 0.8); } }
         
         /* 🗺️ 2D 그리드 레이아웃 (새로운 존 하이라이팅 및 셀 병합 포함) */
-        .grid-map-container { position: relative; width: 272px; height: 392px; border: 2px solid rgba(255, 255, 255, 0.12); background-color: rgba(10, 15, 30, 0.9); border-radius: 14px; margin: 0 auto; overflow: hidden; }
+        .grid-map-container { position: relative; width: 332px; height: 392px; border: 2px solid rgba(255, 255, 255, 0.12); background-color: rgba(10, 15, 30, 0.9); border-radius: 14px; margin: 0 auto; overflow: hidden; }
         .grid-loc { position: absolute; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 5px; font-size: 0.55rem; font-weight: 700; color: rgba(255, 255, 255, 0.8); text-align: center; }
         
         /* 기본 맵 요소 스타일 */
@@ -999,7 +1001,7 @@ def index():
         let gridInitialized = false;
         let pathTraceQueue = [];
         let locCellMap = {};
-        const X_MIN = -3.0; const Y_MAX = 9.0; const GRID_STEP = 1.5; const CELL_PX = 30;
+        const X_MIN = -6.0; const Y_MAX = 9.0; const GRID_STEP = 1.5; const CELL_PX = 30;
 
         function xToPx(x) { return Math.round((x - X_MIN) / GRID_STEP) * CELL_PX + 1; }
         function yToPx(y) { return Math.round((Y_MAX - y) / GRID_STEP) * CELL_PX + 1; }

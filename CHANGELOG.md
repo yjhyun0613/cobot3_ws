@@ -5,6 +5,12 @@
 
 이 문서는 **쿠팡 물류창고 관제 시스템(Control Tower)** 프로젝트의 날짜 및 시간별 수정 이력을 관리하는 파일입니다.
 
+## 📅 2026년 6월 11일 (목요일)
+
+* **08:48** - **분산 환경 지원을 위한 DB/Redis 접속 환경변수(`POSTGRES_HOST`, `REDIS_HOST`) 연동**:
+  - 다른 컴퓨터에서 DB/Redis가 구동 중인 메인 PC로 스크립트를 실행할 때 발생하는 `localhost` 연결 실패 문제를 수정했습니다.
+  - `docker/init_june_8th_state.py`, `scratch/reset_db.py`, `scratch/check_db_status.py`, `scratch/generate_all_qr_codes.py`, `scratch/migrate_layout.py`, `scratch/dashboard_server.py` 파일 내 DB/Redis 연결부가 환경변수 `POSTGRES_HOST` 및 `REDIS_HOST`를 읽어 동적으로 접속하도록 수정했습니다. (미지정 시 `localhost` 기본값 사용)
+
 ---
 
 ## 📅 2026년 6월 10일 (화요일)

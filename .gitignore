@@ -15,6 +15,7 @@ __pycache__/
 src/cobot3/resource/Collected_factory
 src/cobot3/resource/finalfac
 src/cobot3/resource/finalfac.zip
+src/cobot3/resource/Collected_finalfac
 # OS generated files
 .DS_Store
 .DS_Store?
