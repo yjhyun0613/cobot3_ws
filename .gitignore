@@ -26,9 +26,9 @@ ehthumbs.db
 Thumbs.db
 
 # Generated QR code images
-scratch/qr_codes/
-scratch/aruco_markers/
-scratch/qr_assets/
+
+
+
 
 # Large simulator assets
 *.usd
