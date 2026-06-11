@@ -14,7 +14,8 @@ if [ -z "$ROS_LOCALHOST_ONLY" ]; then
 fi
 
 echo -e "${BLUE}================================================================${NC}"
-echo -e "${BLUE}   🚀 쿠팡 물류창고 Multi-AMR 통합 관제 시뮬레이션 테스트 가동   ${NC}"
+echo -e "${BLUE}   🚀 [Core Only] 관제탑 코어 및 백엔드 서비스 독립 가동 스크립트   ${NC}"
+echo -e "${BLUE}   (주의: 가상 AMR 및 로봇 암 시뮬레이션 노드는 실행하지 않습니다.)  ${NC}"
 echo -e "${BLUE}================================================================${NC}"
 
 # 1. 작업 디렉토리 확보
@@ -52,7 +53,7 @@ read -p "선택 (1/2/3): " RUN_MODE
 case $RUN_MODE in
     1)
         if command -v gnome-terminal >/dev/null 2>&1; then
-            echo -e "${GREEN}gnome-terminal을 통해 4개의 노드를 독립 탭으로 실행합니다.${NC}"
+            echo -e "${GREEN}gnome-terminal을 통해 2개의 코어 프로세스를 독립 탭으로 실행합니다.${NC}"
             
             # 대시보드 서버 실행
             gnome-terminal --tab --title="FastAPI Dashboard" -- bash -c "python3 scratch/dashboard_server.py; exec bash"
@@ -60,21 +61,11 @@ case $RUN_MODE in
             # ROS 2 관제 노드 실행
             gnome-terminal --tab --title="ROS2 Control Tower" -- bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY && ros2 run cobot3 control_tower; exec bash"
             
-            # AMR 에뮬레이터 실행
-            gnome-terminal --tab --title="ROS2 Mock AMR" -- bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY && ros2 run cobot3 mock_amr; exec bash"
-            
-            # 로봇 에뮬레이터 실행
-            gnome-terminal --tab --title="ROS2 Mock SG2" -- bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY && ros2 run cobot3 mock_sg2; exec bash"
-            
         elif command -v x-terminal-emulator >/dev/null 2>&1; then
             echo -e "${GREEN}x-terminal-emulator를 통해 실행합니다.${NC}"
             x-terminal-emulator -e bash -c "python3 scratch/dashboard_server.py" &
             sleep 0.5
             x-terminal-emulator -e bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY && ros2 run cobot3 control_tower" &
-            sleep 0.5
-            x-terminal-emulator -e bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY && ros2 run cobot3 mock_amr" &
-            sleep 0.5
-            x-terminal-emulator -e bash -c "source install/setup.bash && export ROS_DOMAIN_ID=119 && export ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY && ros2 run cobot3 mock_sg2" &
         else
             echo -e "${RED}새 터미널 창을 띄울 수 있는 도구(gnome-terminal 등)를 찾지 못했습니다.${NC}"
             echo -e "백그라운드 실행 모드로 전환합니다."
@@ -84,13 +75,11 @@ case $RUN_MODE in
 esac
 
 if [ "$RUN_MODE" = "2" ]; then
-    echo -e "${GREEN}백그라운드에서 백엔드, 관제탑, 가상 에뮬레이터들을 구동합니다...${NC}"
+    echo -e "${GREEN}백그라운드에서 백엔드 및 관제탑 코어를 구동합니다...${NC}"
     
     # 기존 백그라운드 프로세스가 있다면 안전하게 정리
     pkill -f "scratch/dashboard_server.py" || true
     pkill -f "cobot3/control_tower" || true
-    pkill -f "cobot3/mock_amr" || true
-    pkill -f "cobot3/mock_sg2" || true
     
     # 로그 디렉토리 생성
     mkdir -p log
@@ -106,16 +95,6 @@ if [ "$RUN_MODE" = "2" ]; then
     export ROS_DOMAIN_ID=119
     export ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY
     nohup ros2 run cobot3 control_tower > log/control_tower.log 2>&1 &
-    sleep 1
-    
-    # 3. AMR 에뮬레이터 구동
-    echo "  - ROS 2 가상 AMR 플릿 노드 가동 중 (로그: log/mock_amr.log)"
-    nohup ros2 run cobot3 mock_amr > log/mock_amr.log 2>&1 &
-    sleep 1
-    
-    # 4. 로봇 에뮬레이터 구동
-    echo "  - ROS 2 가상 로봇 암 노드 가동 중 (로그: log/mock_sg2.log)"
-    nohup ros2 run cobot3 mock_sg2 > log/mock_sg2.log 2>&1 &
     
     echo -e "${GREEN}모든 백그라운드 노드 가동 완료!${NC}"
     echo -e "종료하려면 터미널에 ${YELLOW}killall python3${NC} 및 ${YELLOW}killall control_tower${NC} 또는 개별 프로세스를 정지하세요."
@@ -132,24 +111,11 @@ if [ "$RUN_MODE" = "3" ] || [ -z "$RUN_MODE" ]; then
     echo "  export ROS_DOMAIN_ID=119"
     echo "  export ROS_LOCALHOST_ONLY=\$ROS_LOCALHOST_ONLY"
     echo "  ros2 run cobot3 control_tower"
-    
-    echo -e "${BLUE}[터미널 3] ROS 2 가상 AMR 플릿 구동${NC}"
-    echo "  source install/setup.bash"
-    echo "  export ROS_DOMAIN_ID=119"
-    echo "  export ROS_LOCALHOST_ONLY=\$ROS_LOCALHOST_ONLY"
-    echo "  ros2 run cobot3 mock_amr"
-    
-    echo -e "${BLUE}[터미널 4] ROS 2 가상 로봇 암(SG2) 구동${NC}"
-    echo "  source install/setup.bash"
-    echo "  export ROS_DOMAIN_ID=119"
-    echo "  export ROS_LOCALHOST_ONLY=\$ROS_LOCALHOST_ONLY"
-    echo "  ros2 run cobot3 mock_sg2"
 fi
 
 echo -e "\n${BLUE}================================================================${NC}"
-echo -e "${GREEN}💡 통합 테스트 준비 완료!${NC}"
-echo -e "1. 브라우저에서 ${YELLOW}http://localhost:8009${NC} 에 접속합니다."
-echo -e "2. 상단 우측의 [CSV 입고 명단 업로드] 버튼을 눌러"
-echo -e "   ${YELLOW}scratch/packages_2026-06-08.csv${NC} 파일을 업로드합니다."
-echo -e "3. CSV 업로드 즉시 시뮬레이션 동작 및 AMR 주행이 시작됩니다."
+echo -e "${GREEN}💡 관제탑 코어 준비 완료!${NC}"
+echo -e "가상 시뮬레이션 없이 실행되었으므로, 실제 AMR 하드웨어 또는 외부 Isaac Sim 물리"
+echo -e "시뮬레이션 기기가 기동된 후 관제 신호가 수신되면 스케줄링이 작동합니다."
+echo -e "대시보드는 ${YELLOW}http://localhost:8009${NC} 에서 모니터링 가능합니다."
 echo -e "${BLUE}================================================================${NC}"
