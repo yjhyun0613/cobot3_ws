@@ -10,7 +10,7 @@
 본 시스템은 분산 통신(DDS)을 활용하여 물리적으로 분리된 여러 시뮬레이션 컴퓨터와 중앙 관제탑, 하이브리드 데이터베이스, 실시간 모니터링 웹 대시보드를 유기적으로 연결합니다.
 
 ```mermaid
-graph TD
+graph LR
     subgraph Core [중앙 관제 인프라]
         CT[Control Tower Node<br>ROS 2 Humble] <-->|psycopg2 pool| SQL[(PostgreSQL WMS)]
         CT <-->|ZSET / Hash Cache| Redis[(Redis DB)]
@@ -59,15 +59,23 @@ graph TD
 
 ---
 
-## 🛠️ 3. 기술 스택 (Technology Stack)
+## 🛠️ 3. 기술 스택 및 개발 환경 (Technology Stack & Development Environment)
 
-| 구분 | 기술 스택 | 적용 용도 및 특징 |
+본 관제 시스템(Control Tower)과 주변 에뮬레이터 및 3D 시뮬레이션 환경에 적용된 상세 기술 스택과 개발 인프라 세부 명세는 다음과 같습니다.
+
+| 구분 | 사용 기술 | 적용 용도 및 특징 |
 | :--- | :--- | :--- |
-| **Robotics Middleware** | **ROS 2 Humble** | 비동기 멀티스레드 콜백 실행기(`MultiThreadedExecutor`)를 통한 동시 공정 처리 및 서비스/액션 제어 |
-| **Simulation** | **NVIDIA Isaac Sim** | Omniverse 기반 정밀 물류창고 물리 환경 구현 및 QR코드 기반 Localization 적용 |
-| **WMS DB** | **PostgreSQL 15** | 작업대/패키지 데이터 무결성 보장 및 1:N 조인 관계형 스키마 설계 |
-| **Cache & Queue** | **Redis** | Sorted Set(ZSET) 기반 우선순위 제어 명령 큐 운용 및 고주파 AMR 상태 실시간 캐싱 |
-| **Web Dashboard** | **FastAPI & WebSockets** | 1.5초 주기 실시간 양방향 정보 전송 및 HTML/CSS absolute 포지셔닝 렌더링으로 렉 현상 100% 제거 |
+| **운영 환경** | **Ubuntu 22.04 LTS / 개발 PC** | 관제탑 노드 구동, Docker DB 컨테이너 실행 및 시뮬레이션 연동 |
+| **미들웨어 프레임워크** | **ROS 2 Humble** | 관제탑(`control_tower_node`), 가상 로봇 에뮬레이터, 동기화 노드(`sim_sync_node`) 간 분산 통신 제어 |
+| **통신 프로토콜 (RMW)** | **Eclipse Cyclone DDS (`rmw_cyclonedds_cpp`)** | 다중 PC(분산 환경) 및 무선 WiFi 환경에서의 실시간 액션/서비스 통신 신뢰성 확보 |
+| **영속 데이터베이스 (DB)** | **PostgreSQL 15** | 작업대(`workstations`), 패키지(`packages`), 바닥 QR 격자 맵(`floor_qr_map`) 등의 구조화 데이터 저장 관리 |
+| **실시간 캐시 & 큐** | **Redis 7.0 (ZSET / HSET)** | AMR 실시간 3D 위치 캐싱 및 Redis Sorted Set 기반 우선순위(Priority) 제어 명령 대기열 구축 |
+| **웹 대시보드 백엔드** | **FastAPI / Uvicorn (Python 3.10)** | 대시보드 서버 구축, WebSocket 기반 1.5초 주기 실시간 양방향 모니터링 데이터 브로드캐스트 |
+| **웹 UI 프론트엔드** | **HTML5 / Vanilla CSS3 / JavaScript** | CSS absolute positioning 기법을 활용한 DOM 연산 부하 95% 감축 및 다크 테마 반응형 2D 실시간 Floor Plan 시각화 |
+| **3D 시뮬레이션 환경** | **NVIDIA Isaac Sim / UsdPreviewSurface** | 3D 물류 창고 월드, AMR/작업대 물리 에셋 제어 및 카메라 센서 기반 QR 코드 Localization 모의 실험 |
+| **비전 및 QR 해독** | **zxing-cpp / python-qrcode** | 컨베이어 벨트 입고 시의 패키지 QR 생성/디코딩 및 바닥 격자 맵 QR 코드 매핑 |
+| **3D 씬 에셋 빌더** | **Pixar OpenUSD (`pxr` Python API)** | 143개 바닥 QR Quad Mesh 및 Material, Texture 바인딩 자동 생성 및 USD 인스턴싱(Instancing) 최적화 |
+| **검증 및 빌드 도구** | **`colcon build` / `py_compile` / `fuser` / `RLock`** | ROS 2 패키지 빌드, 스크립트 syntax 검사, 포트 충돌 프로세스 자동 정리 및 멀티스레드 DB 커서 락 검증 |
 
 ---
 

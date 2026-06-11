@@ -37,7 +37,18 @@ AMR이나 로봇 팔처럼 수 초에서 수 분이 걸리는 긴 호흡의 트�
     *   **Response**: `success` (처리 성공 여부), `message` (결과 메시지)
     *   **사용 노드**: `sim_sync_node` (서비스 서버), Isaac Sim bg2 스크립트 (서비스 클라이언트)
 
-## 🛑 3. JIT 교대 제어용 표준 토픽 (Topic)
+### 3. Message 인터페이스 (`/msg`) _(신규)_
+단방향으로 구조화된 데이터 구조체를 브로드캐스트 토픽으로 발행할 때 사용합니다.
+
+*   **`WorkstationSimTrigger.msg`**
+    *   **역할**: **시뮬레이션 작업대 동기화 전용**. AMR이 완충 작업대를 회수하거나 새 빈 작업대를 도킹할 때, 분산된 시뮬레이션 환경 간의 작업대 소멸(`DESPAWN`) 및 생성(`SPAWN`) 상태를 실시간으로 동기화하기 위해 발행합니다.
+    *   **Fields**:
+        *   `string workstation_id` : 작업대 ID (예: `"WS01"`)
+        *   `string location` : 작업대 도킹/회수 위치 (예: `"sg2_in_01_A"`, `"sg2_out_00_A"`)
+        *   `string action` : 발생할 트리거 종류 (`"SPAWN"` 또는 `"DESPAWN"`)
+    *   **사용 노드**: `control_tower_node` (발행자 `/sim/sg2_workstation_trigger`), Isaac Sim sg2 스크립트 (구독자)
+
+## 🛑 4. JIT 교대 제어용 표준 토픽 (Topic)
 단일 슬롯(A Only) 환경에서는 작업대가 교체되는 동안 로봇 팔이 동작을 멈춰야 합니다. 이를 위해 커스텀 인터페이스가 아닌 표준 `std_msgs` 토픽을 활용하여 즉각적인 인터로킹을 수행합니다.
 
 *   **토픽 명**: `/{robot_id}/pause_status` (예: `/sg2_in_01/pause_status`, `/sg2_out_00/pause_status`)
@@ -46,7 +57,7 @@ AMR이나 로봇 팔처럼 수 초에서 수 분이 걸리는 긴 호흡의 트�
     *   `true` 발행: 8칸이 모두 적재된 순간, 혹은 양면 작업(4칸) 완료 후 180도 회전(ROTATE_WORKSTATION)이 시작될 때 로봇 팔 작동 일시 정지 (관제탑이 발행)
     *   `false` 발행: 텅 빈 새 작업대가 A구역에 배치 완료된 순간, 혹은 180도 회전이 완료되어 작업이 가능한 순간 로봇 팔 작동 재개 (관제탑이 발행)
 
-## 🌐 4. 분산 시뮬레이션 동기화 전용 토픽 (Simulation Sync Topics)
+## 🌐 5. 분산 시뮬레이션 동기화 전용 토픽 (Simulation Sync Topics)
 두 대의 독립된 Isaac Sim 인스턴스(bg2, sg2) 간 상자 순간이동(소멸/소환)을 제어하기 위해 `sim_sync_node`가 전담하는 통신 채널입니다.
 
 *   **`/sim/bg2_exit_event`** (`std_msgs/msg/String` JSON)
