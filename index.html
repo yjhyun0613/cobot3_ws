@@ -1,0 +1,2891 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Skynet FC (SKFC) - Isaac Sim & ROS 2 지능형 다중 로봇 관제 시스템</title>
+
+  <!-- Google Fonts: Outfit & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap"
+    rel="stylesheet">
+
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+  <style>
+    :root {
+      --bg-primary: #07090e;
+      --bg-secondary: #0d0f16;
+      --bg-tertiary: #141722;
+      --bg-card: rgba(22, 25, 36, 0.7);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --accent-cyan: #00f5d4;
+      --accent-blue: #3b82f6;
+      --accent-purple: #9d4edd;
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #475569;
+      --color-success: #10b981;
+      --color-warning: #f59e0b;
+      --color-danger: #ef4444;
+
+      --font-outfit: 'Outfit', 'Inter', sans-serif;
+      --font-inter: 'Inter', sans-serif;
+      --font-mono: 'Courier New', Courier, monospace;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: var(--font-inter);
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      overflow-x: hidden;
+      line-height: 1.6;
+      background-image:
+        radial-gradient(circle at 10% 20%, rgba(59, 130, 246, 0.08) 0%, transparent 40%),
+        radial-gradient(circle at 90% 80%, rgba(157, 78, 221, 0.08) 0%, transparent 40%),
+        linear-gradient(rgba(255, 255, 255, 0.003) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.003) 1px, transparent 1px);
+      background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;
+    }
+
+    /* Background Glow Elements */
+    .bg-glow {
+      position: absolute;
+      width: 400px;
+      height: 400px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(0, 245, 212, 0.1) 0%, transparent 70%);
+      filter: blur(50px);
+      pointer-events: none;
+      z-index: -1;
+      animation: float-glow 10s ease-in-out infinite alternate;
+    }
+
+    .bg-glow-1 {
+      top: 15%;
+      left: 10%;
+    }
+
+    .bg-glow-2 {
+      top: 60%;
+      right: 5%;
+      background: radial-gradient(circle, rgba(157, 78, 221, 0.1) 0%, transparent 70%);
+    }
+
+    @keyframes float-glow {
+      0% {
+        transform: translateY(0) scale(1);
+      }
+
+      100% {
+        transform: translateY(-50px) scale(1.1);
+      }
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+    }
+
+    /* --- Navigation Bar --- */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      background: rgba(7, 9, 14, 0.8);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-color);
+      z-index: 1000;
+      height: 70px;
+      display: flex;
+      align-items: center;
+    }
+
+    .nav-container {
+      width: 100%;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--font-outfit);
+      font-size: 1.4rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--accent-blue) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: -0.5px;
+    }
+
+    .logo i {
+      background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--accent-blue) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 2rem;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 0.95rem;
+      font-weight: 500;
+      transition: all 0.3s ease;
+      position: relative;
+    }
+
+    .nav-links a::after {
+      content: '';
+      position: absolute;
+      bottom: -6px;
+      left: 0;
+      width: 0;
+      height: 2px;
+      background: var(--accent-cyan);
+      transition: width 0.3s ease;
+    }
+
+    .nav-links a:hover {
+      color: var(--text-primary);
+      text-shadow: 0 0 10px rgba(0, 245, 212, 0.5);
+    }
+
+    .nav-links a:hover::after {
+      width: 100%;
+    }
+
+    .btn-github {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      padding: 8px 16px;
+      border-radius: 9999px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.3s ease;
+    }
+
+    .btn-github:hover {
+      background: var(--text-primary);
+      color: var(--bg-primary);
+      transform: translateY(-2px);
+    }
+
+    /* --- Hero Section --- */
+    .hero {
+      padding: 150px 0 60px 0;
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 3rem;
+      align-items: center;
+    }
+
+    .hero-content h1 {
+      font-family: var(--font-outfit);
+      font-size: 3.2rem;
+      font-weight: 800;
+      line-height: 1.15;
+      margin-bottom: 1.5rem;
+      background: linear-gradient(135deg, #fff 40%, var(--text-secondary) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero-content p {
+      color: var(--text-secondary);
+      font-size: 1.1rem;
+      margin-bottom: 2rem;
+      max-width: 600px;
+    }
+
+    .hero-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(0, 245, 212, 0.08);
+      border: 1px solid rgba(0, 245, 212, 0.15);
+      color: var(--accent-cyan);
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 1.5rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 1rem;
+    }
+
+    .btn {
+      padding: 12px 28px;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--accent-blue) 100%);
+      border: none;
+      color: #000;
+      box-shadow: 0 4px 20px rgba(0, 245, 212, 0.25);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 30px rgba(0, 245, 212, 0.4);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.2);
+      transform: translateY(-2px);
+    }
+
+    /* Spec Widget Card */
+    .spec-widget {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      padding: 2rem;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+      position: relative;
+    }
+
+    .spec-widget::before {
+      content: '';
+      position: absolute;
+      top: -1px;
+      left: -1px;
+      right: -1px;
+      bottom: -1px;
+      border-radius: 24px;
+      background: linear-gradient(135deg, rgba(0, 245, 212, 0.15), transparent 60%);
+      pointer-events: none;
+      z-index: -1;
+    }
+
+    .spec-widget h3 {
+      font-family: var(--font-outfit);
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin-bottom: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .spec-widget h3 i {
+      color: var(--accent-purple);
+    }
+
+    .spec-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 12px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      font-size: 0.9rem;
+    }
+
+    .spec-item:last-child {
+      border-bottom: none;
+    }
+
+    .spec-label {
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .spec-value {
+      color: var(--text-primary);
+      font-weight: 600;
+      text-align: right;
+    }
+
+    /* --- Metrics Grid --- */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1.5rem;
+      margin-bottom: 80px;
+    }
+
+    .metric-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 20px;
+      padding: 1.75rem;
+      text-align: center;
+      backdrop-filter: blur(12px);
+      transition: all 0.3s ease;
+    }
+
+    .metric-card:hover {
+      transform: translateY(-5px);
+      border-color: rgba(0, 245, 212, 0.2);
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
+    }
+
+    .metric-num {
+      font-family: var(--font-outfit);
+      font-size: 2.2rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--accent-blue) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 4px;
+    }
+
+    .metric-label {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .metric-desc {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* --- Sections General --- */
+    section {
+      padding: 80px 0;
+      border-top: 1px solid var(--border-color);
+    }
+
+    .section-title {
+      font-family: var(--font-outfit);
+      font-size: 2.2rem;
+      font-weight: 800;
+      margin-bottom: 1rem;
+      text-align: center;
+    }
+
+    .section-subtitle {
+      color: var(--text-secondary);
+      text-align: center;
+      max-width: 600px;
+      margin: 0 auto 3.5rem auto;
+      font-size: 1rem;
+    }
+
+    /* --- Overview Section --- */
+    .overview-layout {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 3.5rem;
+      align-items: center;
+    }
+
+    .overview-text h3 {
+      font-family: var(--font-outfit);
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 1.25rem;
+      color: var(--text-primary);
+    }
+
+    .overview-text p {
+      color: var(--text-secondary);
+      margin-bottom: 1.5rem;
+      font-size: 0.98rem;
+    }
+
+    .overview-feature-list {
+      list-style: none;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }
+
+    .overview-feature-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 0.92rem;
+      color: var(--text-secondary);
+    }
+
+    .overview-feature-list li i {
+      color: var(--accent-cyan);
+      margin-top: 4px;
+      font-size: 0.9rem;
+    }
+
+    /* Node Pipeline Visualizer */
+    .pipeline-visual {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      padding: 2.25rem;
+      box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.4);
+    }
+
+    .pipeline-node {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 14px 18px;
+      margin-bottom: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      position: relative;
+      transition: all 0.3s ease;
+    }
+
+    .pipeline-node:last-child {
+      margin-bottom: 0;
+    }
+
+    .pipeline-node:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      bottom: -22px;
+      left: 30px;
+      width: 2px;
+      height: 20px;
+      background: linear-gradient(to bottom, var(--accent-blue), transparent);
+    }
+
+    .pipeline-node-num {
+      width: 26px;
+      height: 26px;
+      background: rgba(59, 130, 246, 0.15);
+      border: 1.5px solid var(--accent-blue);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: #93c5fd;
+    }
+
+    .pipeline-node:hover {
+      border-color: rgba(59, 130, 246, 0.3);
+      background: rgba(22, 25, 36, 0.95);
+      transform: translateX(5px);
+    }
+
+    .pipeline-node-info h4 {
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .pipeline-node-info p {
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+
+    /* --- Contributions Section --- */
+    .contributions-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 2rem;
+    }
+
+    .contribution-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      padding: 2.25rem;
+      backdrop-filter: blur(12px);
+      transition: all 0.3s ease;
+    }
+
+    .contribution-card:hover {
+      transform: translateY(-5px);
+      border-color: rgba(157, 78, 221, 0.3);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+    }
+
+    .contribution-icon {
+      width: 46px;
+      height: 46px;
+      background: rgba(157, 78, 221, 0.1);
+      border: 1.5px solid var(--accent-purple);
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.3rem;
+      color: #d8b4fe;
+      margin-bottom: 1.5rem;
+    }
+
+    .contribution-card h3 {
+      font-family: var(--font-outfit);
+      font-size: 1.35rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+    }
+
+    .contribution-card ul {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .contribution-card li {
+      font-size: 0.88rem;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    .contribution-card li i {
+      color: var(--accent-purple);
+      margin-top: 4px;
+      font-size: 0.75rem;
+    }
+
+    /* --- Interactive Digital Twin Simulator --- */
+    .sim-layout {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 2rem;
+      align-items: start;
+    }
+
+    .sim-map-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      padding: 2rem;
+      backdrop-filter: blur(16px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .sim-controls-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      padding: 2rem;
+      backdrop-filter: blur(16px);
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+      height: 100%;
+    }
+
+    /* Legend */
+    .map-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 24px;
+      padding: 12px;
+      background: rgba(15, 23, 42, 0.45);
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      justify-content: center;
+      width: 100%;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .legend-box {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+    }
+
+    /* Warehouse 2D Grid Plan */
+    .grid-container {
+      position: relative;
+      width: 436px;
+      height: 516px;
+      border: 2px solid rgba(255, 255, 255, 0.12);
+      background-color: #0b0f19;
+      border-radius: 16px;
+      overflow: hidden;
+    }
+
+    .grid-cell {
+      position: absolute;
+      width: 36px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      font-size: 0.62rem;
+      font-weight: 700;
+      color: rgba(255, 255, 255, 0.7);
+      text-align: center;
+      transition: background-color 0.2s ease, border-color 0.2s ease;
+    }
+
+    .grid-cell.spot {
+      border: 1.5px solid rgba(59, 130, 246, 0.5);
+      background: rgba(59, 130, 246, 0.1);
+    }
+
+    .grid-cell.stage {
+      border: 1.5px solid rgba(245, 158, 11, 0.5);
+      background: rgba(245, 158, 11, 0.1);
+    }
+
+    .grid-cell.charging {
+      border: 1.5px solid rgba(157, 78, 221, 0.5);
+      background: rgba(157, 78, 221, 0.1);
+    }
+
+    .grid-cell.conveyor {
+      border: 1px dashed rgba(0, 245, 212, 0.4);
+      background: rgba(0, 245, 212, 0.05);
+    }
+
+    .grid-cell.conveyor-belt {
+      border: 1.5px solid rgba(6, 182, 212, 0.6);
+      background: rgba(6, 182, 212, 0.2);
+      color: transparent;
+    }
+
+    .grid-cell.packaging {
+      border: 1.5px solid rgba(236, 72, 153, 0.6);
+      background: rgba(236, 72, 153, 0.12);
+    }
+
+    .grid-cell.fixed-sg2-robot {
+      border: 2px solid rgba(14, 165, 233, 0.8) !important;
+      background: rgba(14, 165, 233, 0.3) !important;
+      color: #38bdf8 !important;
+      font-weight: bold;
+      z-index: 2;
+    }
+
+    .grid-cell.zone-sg2-in,
+    .grid-cell.zone-sg2-out {
+      border: 1.5px solid rgba(14, 165, 233, 0.6) !important;
+      background: rgba(14, 165, 233, 0.15) !important;
+      color: #38bdf8 !important;
+      box-shadow: 0 0 6px rgba(14, 165, 233, 0.15);
+    }
+
+    .grid-cell.has-ws {
+      background: #1e1b4b !important;
+      border: 2.2px solid #eab308 !important;
+      color: #fde047 !important;
+      font-weight: 800;
+      z-index: 5;
+    }
+
+    .grid-cell.path-trace {
+      background: rgba(0, 245, 212, 0.08);
+      box-shadow: inset 0 0 6px rgba(0, 245, 212, 0.2);
+    }
+
+    .amr-dot {
+      position: absolute;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 2px solid #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.65rem;
+      font-weight: 800;
+      color: #fff;
+      z-index: 20;
+      transform: translate(-50%, -50%);
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+      transition: left 0.25s linear, top 0.25s linear;
+    }
+
+    /* Console logs */
+    .sim-console {
+      flex-grow: 1;
+      background: #06080c;
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 12px;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: #a7f3d0;
+      overflow-y: auto;
+      max-height: 180px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.6);
+    }
+
+    .console-line {
+      line-height: 1.3;
+    }
+
+    .console-line.error {
+      color: #fecaca;
+    }
+
+    .console-line.warn {
+      color: #fef08a;
+    }
+
+    .console-line.info {
+      color: #93c5fd;
+    }
+
+    .sim-btn-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+
+    .btn-sim {
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+      border: 1px solid var(--border-color);
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--text-primary);
+    }
+
+    .btn-sim:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .btn-sim-primary {
+      background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--accent-blue) 100%);
+      border: none;
+      color: #000;
+    }
+
+    .btn-sim-primary:hover:not(:disabled) {
+      box-shadow: 0 0 10px rgba(0, 245, 212, 0.3);
+      transform: translateY(-1px);
+    }
+
+    .btn-sim-start {
+      background: rgba(16, 185, 129, 0.1);
+      border-color: rgba(16, 185, 129, 0.3);
+      color: var(--color-success);
+    }
+
+    .btn-sim-start.active {
+      background: var(--color-success);
+      color: #000;
+      border: none;
+    }
+
+    .btn-sim-danger {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.3);
+      color: var(--color-danger);
+    }
+
+    .btn-sim-danger:hover:not(:disabled) {
+      background: var(--color-danger) !important;
+      color: #fff !important;
+    }
+
+    .sim-status-indicator {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      font-size: 0.85rem;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 700;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: var(--text-muted);
+      display: inline-block;
+    }
+
+    .status-dot.active {
+      background-color: var(--color-success);
+      box-shadow: 0 0 8px var(--color-success);
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.4;
+      }
+    }
+
+    /* Bottom simulator monitoring widgets */
+    .sim-widgets-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 1.5rem;
+      margin-top: 2rem;
+      width: 100%;
+    }
+
+    .sim-widget-panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 20px;
+      padding: 1.5rem;
+      backdrop-filter: blur(12px);
+    }
+
+    .sim-widget-panel h4 {
+      font-family: var(--font-outfit);
+      font-size: 1.05rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      border-left: 3px solid var(--accent-cyan);
+      padding-left: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .panel-count {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .widget-items {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: 240px;
+      overflow-y: auto;
+    }
+
+    .widget-spot {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 0.8rem;
+    }
+
+    .widget-spot.occupied {
+      border-color: rgba(245, 158, 11, 0.25);
+      background: rgba(245, 158, 11, 0.03);
+    }
+
+    .badge-status {
+      font-size: 0.68rem;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 9999px;
+    }
+
+    .badge-status.empty {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--color-success);
+    }
+
+    .badge-status.occupied {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--color-warning);
+    }
+
+    .widget-ws {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 10px 14px;
+    }
+
+    .ws-title-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .ws-loc-text {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    .ws-slots-visual {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 3px;
+    }
+
+    .ws-slot-dot {
+      height: 8px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color);
+      border-radius: 2px;
+    }
+
+    .ws-slot-dot.full {
+      background: var(--accent-cyan);
+      box-shadow: 0 0 6px rgba(0, 245, 212, 0.5);
+      border: none;
+    }
+
+    .widget-task {
+      background: rgba(59, 130, 246, 0.05);
+      border: 1px solid rgba(59, 130, 246, 0.2);
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 0.78rem;
+    }
+
+    .task-title {
+      font-weight: 700;
+      color: var(--accent-blue);
+      margin-bottom: 2px;
+    }
+
+    .task-desc {
+      color: var(--text-secondary);
+      font-size: 0.72rem;
+    }
+
+    /* Package Table */
+    .packages-table-wrapper {
+      margin-top: 2rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      border-radius: 20px;
+      overflow: hidden;
+      max-height: 280px;
+      overflow-y: auto;
+      width: 100%;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.8rem;
+    }
+
+    th {
+      background: #0f111a;
+      padding: 12px 16px;
+      color: var(--text-secondary);
+      font-weight: 600;
+      border-bottom: 1px solid var(--border-color);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    td {
+      padding: 10px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+      color: var(--text-secondary);
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.01);
+      color: var(--text-primary);
+    }
+
+    .status-pill {
+      font-size: 0.68rem;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      display: inline-block;
+    }
+
+    .status-pill.waiting {
+      background: rgba(71, 85, 105, 0.15);
+      color: var(--text-secondary);
+    }
+
+    .status-pill.in_workstation {
+      background: rgba(59, 130, 246, 0.15);
+      color: #93c5fd;
+    }
+
+    .status-pill.in_warehouse {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--color-warning);
+    }
+
+    .status-pill.completed {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--color-success);
+    }
+
+    /* --- Troubleshooting Sections --- */
+    .trouble-container {
+      display: grid;
+      grid-template-columns: 0.3fr 0.7fr;
+      gap: 2rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      padding: 2rem;
+      backdrop-filter: blur(16px);
+      min-height: 480px;
+    }
+
+    .trouble-tabs {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      border-right: 1px solid var(--border-color);
+      padding-right: 1.5rem;
+    }
+
+    .trouble-tab {
+      background: none;
+      border: 1px solid transparent;
+      color: var(--text-secondary);
+      text-align: left;
+      padding: 12px 16px;
+      border-radius: 12px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: all 0.25s ease;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .trouble-tab:hover {
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--text-primary);
+    }
+
+    .trouble-tab.active {
+      background: rgba(0, 245, 212, 0.06);
+      border-color: rgba(0, 245, 212, 0.15);
+      color: var(--accent-cyan);
+      box-shadow: 0 0 15px rgba(0, 245, 212, 0.05);
+    }
+
+    .trouble-tab i {
+      font-size: 0.95rem;
+      width: 20px;
+      text-align: center;
+    }
+
+    .trouble-content {
+      padding-left: 1rem;
+      display: none;
+    }
+
+    .trouble-content.active {
+      display: block;
+      animation: fadeIn 0.4s ease forwards;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .trouble-header {
+      margin-bottom: 1.5rem;
+    }
+
+    .trouble-header h3 {
+      font-family: var(--font-outfit);
+      font-size: 1.45rem;
+      font-weight: 800;
+      margin-bottom: 4px;
+      color: var(--text-primary);
+    }
+
+    .trouble-header p {
+      font-size: 0.85rem;
+      color: var(--accent-cyan);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .trouble-details {
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .trouble-section-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .trouble-section-title i {
+      font-size: 0.8rem;
+    }
+
+    .trouble-section-title.symptom i {
+      color: var(--color-danger);
+    }
+
+    .trouble-section-title.cause i {
+      color: var(--color-warning);
+    }
+
+    .trouble-section-title.solution i {
+      color: var(--color-success);
+    }
+
+    .trouble-text {
+      font-size: 0.92rem;
+      color: var(--text-secondary);
+      background: rgba(255, 255, 255, 0.01);
+      border: 1px solid rgba(255, 255, 255, 0.02);
+      border-radius: 8px;
+      padding: 10px 14px;
+    }
+
+    .code-snippet {
+      background: #06080b;
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1.25rem;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      overflow-x: auto;
+      color: #cbd5e1;
+      max-height: 250px;
+    }
+
+    /* --- History Timeline --- */
+    .timeline {
+      position: relative;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px 0;
+    }
+
+    .timeline::after {
+      content: '';
+      position: absolute;
+      width: 2px;
+      background: var(--border-color);
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      margin-left: -1px;
+    }
+
+    .timeline-item {
+      padding: 10px 40px;
+      position: relative;
+      background-color: inherit;
+      width: 50%;
+    }
+
+    .timeline-item::after {
+      content: '';
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      right: -8px;
+      background-color: var(--bg-primary);
+      border: 3px solid var(--accent-purple);
+      top: 15px;
+      border-radius: 50%;
+      z-index: 1;
+      box-shadow: 0 0 10px var(--accent-purple);
+    }
+
+    .left {
+      left: 0;
+    }
+
+    .right {
+      left: 50%;
+    }
+
+    .right::after {
+      left: -8px;
+    }
+
+    .timeline-content {
+      padding: 1.5rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      position: relative;
+      border-radius: 16px;
+      backdrop-filter: blur(12px);
+    }
+
+    .timeline-content:hover {
+      border-color: rgba(157, 78, 221, 0.2);
+    }
+
+    .timeline-date {
+      font-size: 0.8rem;
+      color: var(--accent-purple);
+      font-weight: 700;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .timeline-content h3 {
+      font-family: var(--font-outfit);
+      font-size: 1.15rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .timeline-content p {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+    }
+
+    /* --- Footer --- */
+    footer {
+      border-top: 1px solid var(--border-color);
+      padding: 40px 0;
+      background: #040508;
+      text-align: center;
+    }
+
+    footer p {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .footer-logo {
+      font-family: var(--font-outfit);
+      font-size: 1.25rem;
+      font-weight: 800;
+      margin-bottom: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--accent-blue) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    /* --- Responsiveness --- */
+    @media (max-width: 1024px) {
+      .hero {
+        grid-template-columns: 1fr;
+        text-align: center;
+        padding-top: 120px;
+      }
+
+      .hero-content p {
+        margin-left: auto;
+        margin-right: auto;
+      }
+
+      .hero-actions {
+        justify-content: center;
+      }
+
+      .metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .overview-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .contributions-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .sim-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .trouble-container {
+        grid-template-columns: 1fr;
+      }
+
+      .trouble-tabs {
+        border-right: none;
+        border-bottom: 1px solid var(--border-color);
+        padding-right: 0;
+        padding-bottom: 1.5rem;
+        flex-direction: row;
+        overflow-x: auto;
+      }
+
+      .trouble-content {
+        padding-left: 0;
+        padding-top: 1.5rem;
+      }
+
+      .timeline::after {
+        left: 31px;
+      }
+
+      .timeline-item {
+        width: 100%;
+        padding-left: 70px;
+        padding-right: 25px;
+      }
+
+      .timeline-item::after {
+        left: 23px;
+      }
+
+      .right {
+        left: 0%;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="bg-glow bg-glow-1"></div>
+  <div class="bg-glow bg-glow-2"></div>
+
+  <!-- --- Navigation Bar --- -->
+  <nav>
+    <div class="nav-container">
+      <a href="#" class="logo" style="text-decoration: none;">
+        <i class="fa-solid fa-server"></i>
+        <span>Skynet FC <span style="font-weight: 300; font-size: 0.9em; color: var(--text-secondary);">Twin</span></span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="#overview">개요</a></li>
+        <li><a href="#contributions">담당 업무</a></li>
+        <li><a href="#simulator">시뮬레이션 데모</a></li>
+        <li><a href="#troubleshooting">트러블슈팅</a></li>
+        <li><a href="#history">히스토리</a></li>
+      </ul>
+      <a href="https://github.com/yjhyun0613/cobot3_ws" class="btn-github" target="_blank">
+        <i class="fa-brands fa-github"></i> GitHub
+      </a>
+    </div>
+  </nav>
+
+  <!-- --- Hero Section --- -->
+  <div class="container">
+    <div class="hero">
+      <div class="hero-content">
+        <div class="hero-tag">
+          <i class="fa-solid fa-circle-nodes"></i> NVIDIA Isaac Sim + ROS 2 Skynet FC System
+        </div>
+        <h1>NVIDIA Isaac Sim<br>Skynet FC (SKFC)</h1>
+        <p>NVIDIA Isaac Sim과 ROS 2 Humble을 통합하여 입고 분류, 적재, 자율 이송(AMR), 포장 및 출고에 이르는 전 과정을 중앙에서 최적 스케줄링하고, PostgreSQL
+          WMS와 Redis 실시간 캐시를 결합하여 구현한 스마트 디지털 트윈 관제 플랫폼입니다.</p>
+        <div class="hero-actions">
+          <a href="#simulator" class="btn btn-primary">
+            <i class="fa-solid fa-play"></i> 시뮬레이션 테스트
+          </a>
+          <a href="#overview" class="btn btn-secondary">프로젝트 개요</a>
+        </div>
+      </div>
+
+      <div class="spec-widget">
+        <h3><i class="fa-solid fa-microchip"></i> System Specifications</h3>
+        <div class="spec-item">
+          <span class="spec-label">관제 로봇단</span>
+          <span class="spec-value">분류기(bg2) 1대, 적재(sg2_in) 3대, 포장(sg2_out) 1대, AMR 5대</span>
+        </div>
+        <div class="spec-item">
+          <span class="spec-label">통신 미들웨어</span>
+          <span class="spec-value">ROS 2 Humble (Cyclone DDS)</span>
+        </div>
+        <div class="spec-item">
+          <span class="spec-label">데이터베이스</span>
+          <span class="spec-value">PostgreSQL 15 (WMS) & Redis 7.0 (ZSET)</span>
+        </div>
+        <div class="spec-item">
+          <span class="spec-label">스케줄러 주기</span>
+          <span class="spec-value">1Hz Loop (psycopg2 Connection Pool)</span>
+        </div>
+        <div class="spec-item">
+          <span class="spec-label">웹 대시보드</span>
+          <span class="spec-value">FastAPI + WebSockets (Port 8009)</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- --- Quick Metrics --- -->
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-num">3 AMRs</div>
+        <div class="metric-label">AMR 동시 기동 한계</div>
+        <div class="metric-desc">통로 주행 병목 및 데드락 방지</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-num">143 Nodes</div>
+        <div class="metric-label">바닥 QR코드 격자</div>
+        <div class="metric-desc">1.5m 간격 2D 주행 네트워크 매핑</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-num">10 Spots</div>
+        <div class="metric-label">메인 보관 창고</div>
+        <div class="metric-desc">5행 2열 레이아웃 작업대 파킹</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-num">100%</div>
+        <div class="metric-label">JIT 인터로킹 성공</div>
+        <div class="metric-desc">적재/포장 180도 회전 시 물리충돌 제로</div>
+      </div>
+    </div>
+
+    <!-- --- Overview Section --- -->
+    <section id="overview">
+      <h2 class="section-title">프로젝트 개요</h2>
+      <p class="section-subtitle">지능형 다중 로봇 물류창고 관제 시스템의 핵심 아키텍처 및 동작 매커니즘을 소개합니다.</p>
+
+      <div class="overview-layout">
+        <div class="overview-text">
+          <h3>분산 제어와 중앙 스케줄링의 결합</h3>
+          <p>본 시스템은 다수의 자율 주행 로봇(AMR)과 머니퓰레이터(Sorting, Stacking, Packaging)를 효율적으로 협업시키기 위해 중앙 집중식 하이브리드 제어 구조를 채택했습니다.
+          </p>
+          <p>ROS 2 Action 통신망으로 AMR의 이송 명령을 제어하며, PostgreSQL 데이터베이스에 영구 적재 상태를, Redis 캐시 데이터베이스에 우선순위 큐(Sorted Set) 및
+            AMR 위치 정보를 수집하는 고성능 데이터 파이프라인을 구축했습니다.</p>
+          <ul class="overview-feature-list">
+            <li><i class="fa-solid fa-circle-check"></i> <strong>분산 월드 동기화</strong>: `TransitPackage.srv` 및
+              `WorkstationSimTrigger.msg` 토픽 채널을 활용해 분산 실행된 Isaac Sim 월드 간 실시간 조작 동기화</li>
+            <li><i class="fa-solid fa-circle-check"></i> <strong>Double Buffer 및 Look-Ahead</strong>: 인바운드와 아웃바운드 라인에 각각
+              A/B 작업대 존을 구성하고 3슬롯/7슬롯에 도달 시 예비 작업대를 선제적으로 호출하여 로봇의 대기 오버헤드 차단</li>
+            <li><i class="fa-solid fa-circle-check"></i> <strong>JIT 충돌 방지 인터로킹</strong>: 로봇 팔 기동 범주와 AMR 도킹 구역이 겹칠 시
+              180도 회전 명령을 내리고, 완료 전까지 로봇 기동을 일시정지(`pause_status`)하여 물리적 물건 드롭 방지</li>
+            <li><i class="fa-solid fa-circle-check"></i> <strong>리소스 및 주행 스케줄링</strong>: 동시 구동 AMR 대수를 최대 3대로 잠금 설정하고
+              Euclidean 거리를 활용해 가장 가까운 AMR을 우선순위 배정</li>
+          </ul>
+        </div>
+
+        <div class="pipeline-visual">
+          <h3
+            style="font-family: var(--font-outfit); font-size: 1.2rem; font-weight: 700; margin-bottom: 1.5rem; text-align: center;">
+            Data Pipeline Flow</h3>
+
+          <div class="pipeline-node">
+            <div class="pipeline-node-num">1</div>
+            <div class="pipeline-node-info">
+              <h4>BG2 Sorter & Inbound 스캔</h4>
+              <p>박스 도달 시 바코드 스캔 및 목적 영업일(오늘/내일/모레) 라우팅 분기</p>
+            </div>
+          </div>
+
+          <div class="pipeline-node">
+            <div class="pipeline-node-num">2</div>
+            <div class="pipeline-node-info">
+              <h4>ROS 2 Control Tower 스케줄링</h4>
+              <p>ZSET 우선순위 큐 조회, 3대 기동 한계 필터링 및 최단거리 AMR 매핑</p>
+            </div>
+          </div>
+
+          <div class="pipeline-node">
+            <div class="pipeline-node-num">3</div>
+            <div class="pipeline-node-info">
+              <h4>PostgreSQL WMS & Redis 캐싱</h4>
+              <p>작업대 점유도 트랜잭션 원자성 보장 및 1Hz 주기 실시간 데이터 갱신</p>
+            </div>
+          </div>
+
+          <div class="pipeline-node">
+            <div class="pipeline-node-num">4</div>
+            <div class="pipeline-node-info">
+              <h4>FastAPI & WebSockets 대시보드</h4>
+              <p>absolute-positioned 2D 그리드 레이아웃을 통해 브라우저 렉 없는 실시간 렌더링</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- --- Contributions Section --- -->
+    <section id="contributions">
+      <h2 class="section-title">담당 업무 및 핵심 기여</h2>
+      <p class="section-subtitle">물류창고 관제 시스템의 로직 견고함과 3D 디지털 트윈 환경의 시각 성능을 끌어올리기 위해 작업한 세부 영역입니다.</p>
+
+      <div class="contributions-grid">
+        <div class="contribution-card">
+          <div class="contribution-icon"><i class="fa-solid fa-diagram-project"></i></div>
+          <h3>중앙 관제탑 설계 & AMR 스케줄링</h3>
+          <ul>
+            <li><i class="fa-solid fa-chevron-right"></i> ROS 2 Humble 기반 `control_tower_node` 백엔드 핵심 설계</li>
+            <li><i class="fa-solid fa-chevron-right"></i> `MultiThreadedExecutor` 및 RLock을 통한 PostgreSQL 커서 동시성 충돌 해결
+            </li>
+            <li><i class="fa-solid fa-chevron-right"></i> Redis Sorted Set(ZSET)으로 이송 작업에 가중치 우선순위를 매겨 AMR 명령 순차 분배</li>
+            <li><i class="fa-solid fa-chevron-right"></i> 좁은 통로 내 AMR 병목을 원천 해제하기 위해 동시 기동 AMR 수 최대 3대로 하드캡 제어</li>
+          </ul>
+        </div>
+
+        <div class="contribution-card">
+          <div class="contribution-icon"><i class="fa-solid fa-clone"></i></div>
+          <h3>더블 버퍼링 & Look-Ahead 스케줄링</h3>
+          <ul>
+            <li><i class="fa-solid fa-chevron-right"></i> 작업대 적재용 입고 3라인 및 출고 포장라인에 각각 A/B 버퍼 존 구축</li>
+            <li><i class="fa-solid fa-chevron-right"></i> 3슬롯 적재 시 빈 작업대 선제 이동(Look-ahead), 8슬롯 완포 시 자동 이송 및 B존 승격 제어
+            </li>
+            <li><i class="fa-solid fa-chevron-right"></i> 영업일 EOD 마감 시점에 대기 중인 잔여 미완충 작업대 자동 강제 플러시 로직 구현</li>
+            <li><i class="fa-solid fa-chevron-right"></i> 적재 4슬롯/8슬롯 및 포장 완료 시점에 JIT 180도 회전 및 AMR 도킹 인터락 설계</li>
+          </ul>
+        </div>
+
+        <div class="contribution-card">
+          <div class="contribution-icon"><i class="fa-solid fa-cubes"></i></div>
+          <h3>OpenUSD 3D 공간 매핑 & 조명 최적화</h3>
+          <ul>
+            <li><i class="fa-solid fa-chevron-right"></i> Python script를 제작하여 물류창고 전체 바닥면에 1.5m 간격 143개의 spatial QR 코드
+              생성</li>
+            <li><i class="fa-solid fa-chevron-right"></i> 1,813개 노드를 direct 배치하는 대신 instancing 메시 구조로 USD 설계하여 VRAM 점유량
+              80% 절감</li>
+            <li><i class="fa-solid fa-chevron-right"></i> Isaac Sim 3D 뷰 내 DomeLight 조도 수정 및 Specular 반사율 개선으로 카메라 센서 스캔
+              인식률 100% 보장</li>
+          </ul>
+        </div>
+
+        <div class="contribution-card">
+          <div class="contribution-icon"><i class="fa-solid fa-database"></i></div>
+          <h3>IoT DB 트랜잭션 & 예외 복구 롤백</h3>
+          <ul>
+            <li><i class="fa-solid fa-chevron-right"></i> psycopg2 db connection pool을 구성하여 다중 스레드 데이터 I/O 지연 50ms 미만 유지
+            </li>
+            <li><i class="fa-solid fa-chevron-right"></i> AMR Action Goal 전송 단계 오류 시 이미 바뀐 스팟 점유도를 복구하는
+              `recover_workstation_move_db_state()` 트랜잭션 구현</li>
+            <li><i class="fa-solid fa-chevron-right"></i> Redis 캐시에 로봇 위치 및 진행 상태를 HSET으로 상시 캐싱하여 쿼리 조회 부하 경감</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- --- Simulator Section --- -->
+    <section id="simulator">
+      <h2 class="section-title">2D Digital Twin Live Grid Simulator</h2>
+      <p class="section-subtitle">실제 시스템 좌표계(17.5m x 20m)와 로직 스케줄러를 그대로 재현한 클라이언트 사이드 디지털 트윈 시뮬레이터입니다.</p>
+
+      <div class="sim-layout">
+
+        <!-- Left: 2D Grid Map Card -->
+        <div class="sim-map-card">
+          <div class="map-legend">
+            <div class="legend-item">
+              <div class="legend-box" style="border: 2px solid #eab308; background: #1e1b4b;"></div><span>작업대
+                (WS)</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-box" style="border: 2px solid #fff; background: #ff007f; border-radius: 50%;"></div>
+              <span>AMR 로봇</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-box"
+                style="border: 1.5px solid rgba(59, 130, 246, 0.6); background: rgba(59, 130, 246, 0.15);"></div>
+              <span>보관 Spot</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-box"
+                style="border: 1.5px solid rgba(245, 158, 11, 0.6); background: rgba(245, 158, 11, 0.15);"></div>
+              <span>대기 Spot</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-box"
+                style="border: 1.5px solid rgba(157, 78, 221, 0.6); background: rgba(157, 78, 221, 0.15);"></div>
+              <span>충전 Spot</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-box"
+                style="border: 1.5px solid rgba(16, 185, 129, 0.6); background: rgba(16, 185, 129, 0.15);"></div>
+              <span>입고 라인</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-box"
+                style="border: 1.5px solid rgba(236, 72, 153, 0.75); background: rgba(236, 72, 153, 0.18);"></div>
+              <span>출고 라인</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-box"
+                style="border: 1.5px solid rgba(6, 182, 212, 0.7); background: rgba(6, 182, 212, 0.25);"></div>
+              <span>컨베이어</span>
+            </div>
+          </div>
+
+          <div class="grid-container" id="sim-grid-container">
+            <!-- Grid Cells will be generated here by Javascript -->
+          </div>
+        </div>
+
+        <!-- Right: Control Panel Card -->
+        <div class="sim-controls-card">
+          <div class="sim-status-indicator">
+            <span>시뮬레이션 모드:</span>
+            <div class="status-badge" id="sim-mode-badge">
+              <span class="status-dot active"></span>
+              <span style="color: var(--accent-cyan);">Stand-alone Demo Mode</span>
+            </div>
+          </div>
+
+          <div class="sim-btn-grid">
+            <button class="btn-sim btn-sim-start" id="btn-start-business" onclick="toggleBusiness()">
+              <i class="fa-solid fa-power-off"></i> 영업 시작
+            </button>
+            <button class="btn-sim btn-sim-primary" id="btn-upload-csv" onclick="triggerMockCSV()" disabled>
+              <i class="fa-solid fa-file-csv"></i> Mock CSV 로드
+            </button>
+            <button class="btn-sim" id="btn-simulate-inbound" onclick="simulateInboundBox()" disabled>
+              <i class="fa-solid fa-box-open"></i> 시뮬레이션 적재
+            </button>
+            <button class="btn-sim" id="btn-simulate-outbound" onclick="simulateOutboundPack()" disabled>
+              <i class="fa-solid fa-box"></i> 시뮬레이션 포장
+            </button>
+            <button class="btn-sim btn-sim-danger" id="btn-reset-sim" onclick="resetSimulator()">
+              <i class="fa-solid fa-rotate-left"></i> DB/관제 리셋
+            </button>
+            <button class="btn-sim btn-sim-start" id="btn-toggle-auto" onclick="toggleAutoDemo()" disabled>
+              <i class="fa-solid fa-robot"></i> 자동 데모 [OFF]
+            </button>
+          </div>
+
+          <div style="font-size: 0.8rem; color: var(--text-secondary); display: flex; justify-content: space-between;">
+            <span>활성 AMR: <strong id="active-amrs-text" style="color: var(--accent-cyan);">0 / 3</strong></span>
+            <span>대기 태스크: <strong id="queue-length-text" style="color: var(--color-warning);">0</strong></span>
+            <span>포장 완료: <strong id="completed-count-text" style="color: var(--color-success);">0 / 24</strong></span>
+          </div>
+
+          <div class="sim-console" id="sim-console-log">
+            <div class="console-line info">[System] Digital Twin Simulator Initialized. 영업 시작 버튼을 눌러주세요.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Simulator Monitoring Dashboard Widgets -->
+      <div class="sim-widgets-grid">
+        <!-- Parking Spots Widget -->
+        <div class="sim-widget-panel">
+          <h4>보관 창고 주차 스팟 <span class="panel-count" id="parking-spots-count">10 / 10 Empty</span></h4>
+          <div class="widget-items" id="widget-parking-spots">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+
+        <!-- Workstations Widget -->
+        <div class="sim-widget-panel">
+          <h4>작업대 슬롯 적재율 <span class="panel-count">10 Plates Active</span></h4>
+          <div class="widget-items" id="widget-workstations-status">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+
+        <!-- Redis Queue Widget -->
+        <div class="sim-widget-panel">
+          <h4>Redis Command ZSET Queue <span class="panel-count" id="redis-queue-count">0 tasks</span></h4>
+          <div class="widget-items" id="widget-redis-queue">
+            <div style="font-size: 0.8rem; color: var(--text-muted); text-align: center; margin-top: 2rem;">대기 중인 이송 명령이
+              없습니다.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Package Tracking Log Table -->
+      <div class="packages-table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Package ID</th>
+              <th>수령인</th>
+              <th>예정 구역 (영업일)</th>
+              <th>상태</th>
+              <th>적재 작업대</th>
+              <th>슬롯 번호</th>
+              <th>출고 바코드 ID</th>
+            </tr>
+          </thead>
+          <tbody id="package-table-body">
+            <tr>
+              <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem 0;">데이터가 없습니다. CSV 로드
+                혹은 시뮬레이션 적재를 발생시켜 주세요.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- --- Troubleshooting Section --- -->
+    <section id="troubleshooting">
+      <h2 class="section-title">트러블슈팅 및 장애 복구</h2>
+      <p class="section-subtitle">개발 과정에서 마주친 다중 로봇 통신 지연, 주행 교착, DB 동시성 제어 및 브라우저 성능 병목을 해결한 기록입니다.</p>
+
+      <div class="trouble-container">
+        <!-- Left: Side tabs -->
+        <div class="trouble-tabs">
+          <button class="trouble-tab active" onclick="switchTrouble(0)">
+            <i class="fa-solid fa-road-barrier"></i> 주행 병목 및 데드락
+          </button>
+          <button class="trouble-tab" onclick="switchTrouble(1)">
+            <i class="fa-solid fa-rotate"></i> 무한 적재 루프
+          </button>
+          <button class="trouble-tab" onclick="switchTrouble(2)">
+            <i class="fa-solid fa-circle-exclamation"></i> Action 오프라인 교착
+          </button>
+          <button class="trouble-tab" onclick="switchTrouble(3)">
+            <i class="fa-solid fa-gauge-high"></i> 대시보드 웹 스크롤 렉
+          </button>
+          <button class="trouble-tab" onclick="switchTrouble(4)">
+            <i class="fa-solid fa-calendar-day"></i> EOD 강제 플러시 예외
+          </button>
+        </div>
+
+        <!-- Right: Tab content Panels -->
+        <!-- Tab 0 -->
+        <div class="trouble-content active">
+          <div class="trouble-header">
+            <h3>창고 통로 주행 병목 및 데드락(교착) 현상</h3>
+            <p>Aisle Congestion & Multi-Robot Deadlock</p>
+          </div>
+          <div class="trouble-details">
+            <div>
+              <div class="trouble-section-title symptom"><i class="fa-solid fa-triangle-exclamation"></i> 현상 및 분석</div>
+              <div class="trouble-text">좁은 메인 보관 창고 통로(폭 1.5m)에 4대 이상의 AMR이 동시에 서로 다른 작업대를 이송하기 위해 진입하면서 헤드가 마주 보고 대기
+                상태에 빠져 주행이 영구 중단되는 교착 상태 발생.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title cause"><i class="fa-solid fa-circle-info"></i> 원인</div>
+              <div class="trouble-text">최단거리(Manhattan Distance) 경로 계획에 통로 내 AMR 가동 밀도에 대한 제약 조건이 누락되어, 이송 요청이 큐에 쌓이는 즉시
+                모든 AMR이 동시에 기동했기 때문임.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title solution"><i class="fa-solid fa-square-check"></i> 해결 및 구현</div>
+              <div class="trouble-text">동시 기동 중인 AMR 이송 태스크 카운트를 실시간 모니터링하여, 동시 구동 대수가 3대를 초과할 경우 신규 이송 명령 하달을 차단하고
+                Redis ZSET 큐에 대기시키는 fleet limit 스케줄링 메커니즘을 도입함.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title"><i class="fa-solid fa-code"></i> 스케줄러 제약 코드 예시</div>
+              <pre class="code-snippet"><code style="color: #6ee7b7;"># control_tower_node.py 내 대기 큐 및 가동 제한 체크
+def execute_scheduler_tick(self):
+    active_amr_count = self.get_active_workstation_move_count()
+    if active_amr_count >= 3:
+        self.get_logger().info(f'[Scheduler] AMR capacity full ({active_amr_count}/3). Redis 대기 task 유지')
+        return
+
+    # 우선순위가 높은 태스크부터 순차 팝하여 최단거리 AMR에 배정
+    task = self.redis_client.zpopmax('queue:amr_tasks')
+    if task:
+        self.execute_amr_task(task)</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 1 -->
+        <div class="trouble-content">
+          <div class="trouble-header">
+            <h3>동일 수령인 패키지 보관 오류 및 무한 적재 루프</h3>
+            <p>Duplicate Recipient Address Resolution Loop</p>
+          </div>
+          <div class="trouble-details">
+            <div>
+              <div class="trouble-section-title symptom"><i class="fa-solid fa-triangle-exclamation"></i> 현상 및 분석</div>
+              <div class="trouble-text">분류기에서 상자 스캔 시, 데이터베이스에 등록된 기존 동일 수령인의 이송 기록과 중복 매칭되어 분류 완료된 박스가 적재 작업대 대신 창고
+                직송(Direct-shipment)으로 오판정되고 시뮬레이터가 계속해서 같은 스캔 작업을 반복하는 무한 루프 발생.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title cause"><i class="fa-solid fa-circle-info"></i> 원인</div>
+              <div class="trouble-text">수령인의 고유 텍스트 필드(`customer_name`)로만 데이터베이스 히스토리를 쿼리하다 보니, 전날 완료된 동일 수령인 내역까지 오늘 대기
+                물량으로 오판정되어 Direct-shipment 액션이 비정상적으로 조기 트리거됨.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title solution"><i class="fa-solid fa-square-check"></i> 해결 및 구현</div>
+              <div class="trouble-text">모든 쿼리와 분류 라우팅 상태 제어를 고유한 UUID 형태의 패키지 바코드 번호(`package_id`) 기반 조회로 변경하고, 합적 이송 콜백
+                수신 즉시 해당 상자의 WMS 상태를 `IN_WAREHOUSE`로 즉각 원자적 갱신하여 예외 상태 전이를 원천 차단함.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2 -->
+        <div class="trouble-content">
+          <div class="trouble-header">
+            <h3>AMR 액션 서버 오프라인으로 인한 관제탑 교착 및 DB 상태 고착</h3>
+            <p>Action Client Offline State Rollback Mechanism</p>
+          </div>
+          <div class="trouble-details">
+            <div>
+              <div class="trouble-section-title symptom"><i class="fa-solid fa-triangle-exclamation"></i> 현상 및 분석</div>
+              <div class="trouble-text">AMR 물리 시뮬레이터(Isaac Sim) 혹은 ROS 2 Action 에뮬레이터 노드가 비정상적으로 느리게 구동되거나 네트워크 단절 시,
+                관제탑 노드가 작업대 목적지 스팟을 선점한 뒤 락(Lock)을 쥔 상태로 대기하여 데이터베이스 전체 이송 프로세스가 마비됨.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title cause"><i class="fa-solid fa-circle-info"></i> 원인</div>
+              <div class="trouble-text">Action Client가 Goal을 전송하기 위해 목적지 주차 스팟을 DB에서 `OCCUPIED`로 미리 업데이트했으나, 연결 타임아웃 발생
+                시 이 상태를 초기화(Rollback)하는 예외 트랜잭션 처리 구조가 없었기 때문임.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title solution"><i class="fa-solid fa-square-check"></i> 해결 및 구현</div>
+              <div class="trouble-text">Goal 전송 대기 제한 시간(5초) 초과 혹은 거절 콜백 수신 시, 선점했던 목적 스팟은 `EMPTY`로 비우고 출발 스팟은 다시
+                `OCCUPIED`로 롤백하는 `recover_workstation_move_db_state()` 트랜잭션 복구 핸들러를 관제탑 노드에 직접 장착함.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title"><i class="fa-solid fa-code"></i> 복구 및 롤백 구현 코드</div>
+              <pre class="code-snippet"><code style="color: #6ee7b7;"># control_tower_node_dispatch_limited_v6.py 내 실제 적용된 DB 롤백 핸들러
+def recover_workstation_move_db_state(self, workstation_id, start, target):
+    with self.get_db_connection() as conn:
+        if conn:
+            with conn.cursor() as cursor:
+                # 1. 작업대 위치 및 상태 원상 복구
+                cursor.execute(
+                    "UPDATE workstations SET current_location = %s, status = 'WAITING', reserved_by = NULL WHERE workstation_id = %s;",
+                    (start, workstation_id)
+                )
+                # 2. 출발지가 창고 스팟이었던 경우 다시 점유 상태로 복구
+                if start.startswith('spot_') or start.startswith('stage_'):
+                    cursor.execute(
+                        "UPDATE warehouse_locations SET status = 'OCCUPIED', workstation_id = %s WHERE spot_id = %s;",
+                        (workstation_id, start)
+                    )
+                # 3. 목적지가 창고 스팟이었던 경우 선점했던 공간 해제
+                if target.startswith('spot_') or target.startswith('stage_'):
+                    cursor.execute(
+                        "UPDATE warehouse_locations SET status = 'EMPTY', workstation_id = NULL WHERE spot_id = %s;",
+                        (target,)
+                    )</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 3 -->
+        <div class="trouble-content">
+          <div class="trouble-header">
+            <h3>720개 격자 DOM 렌더링에 따른 대시보드 웹 브라우저 스크롤 렉</h3>
+            <p>High-Density DOM Reflow Optimization</p>
+          </div>
+          <div class="trouble-details">
+            <div>
+              <div class="trouble-section-title symptom"><i class="fa-solid fa-triangle-exclamation"></i> 현상 및 분석</div>
+              <div class="trouble-text">웹 기반 실시간 관제 대시보드 구동 시 마우스 스크롤이 끊기고, WebSocket 업데이트 이벤트 수신 때마다 CPU 점유율이 90% 이상
+                치솟으며 웹 브라우저 전체 프레임레이트(FPS)가 10 이하로 저하됨.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title cause"><i class="fa-solid fa-circle-info"></i> 원인</div>
+              <div class="trouble-text">물류창고 격자 바닥을 표현하기 위해 720개 이상의 개별 HTML `div` 요소를 테이블/그리드 내에 동적으로 생성하고, 데이터 변경 시 전체
+                DOM 레이아웃의 Reflow/Repaint가 빈번하게 발생했기 때문임.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title solution"><i class="fa-solid fa-square-check"></i> 해결 및 구현</div>
+              <div class="trouble-text">물리적 이동이 발생하는 핵심 노드(27개 스팟 및 로봇 영역)만 레이어 형태로 absolute positioning 하도록 요소를 95% 이상
+                축소하고, 컨베이어 라인은 고정 CSS 패턴으로 배경화하여 브라우저 DOM 연산량을 대폭 경감, 60fps 렌더링을 달성함.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 4 -->
+        <div class="trouble-content">
+          <div class="trouble-header">
+            <h3>영업일 종료(EOD) 직후 강제 플러시 예외 레이스 컨디션</h3>
+            <p>End-of-Day Flush Gatekeeper Race Condition</p>
+          </div>
+          <div class="trouble-details">
+            <div>
+              <div class="trouble-section-title symptom"><i class="fa-solid fa-triangle-exclamation"></i> 현상 및 분석</div>
+              <div class="trouble-text">특정 영업일 물량의 입고 CSV 명단이 업로드되어 분류가 시작되기도 전에, 관제탑 스케줄러가 이전 영업일의 마감(EOD) 처리를 감지하고 입고
+                라인의 빈 작업대들을 모두 포장존으로 강제 이송(Flush)시켜버려 입고 라인이 정지되는 오류 발생.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title cause"><i class="fa-solid fa-circle-info"></i> 원인</div>
+              <div class="trouble-text">"남은 대기 물량 0개" 감지 조건이 실제 오늘 분류 작업의 시작 여부(Inbound Started)를 판정하지 않고 단순 쿼리 개수로만
+                동작하여, 새 영업일 교체 및 CSV 대기 상황에서 레이스 컨디션을 유발했기 때문임.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title solution"><i class="fa-solid fa-square-check"></i> 해결 및 구현</div>
+              <div class="trouble-text">Redis 캐시 메모리에 `system:inbound_started` Boolean 플래그를 신설하여, 관리자가 대시보드에서 공식적으로 '영업
+                시작' 버튼을 눌렀을 때만 8개 미만의 마지막 잔여 작업대 강제 플러시 트리거가 활성화되도록 보호 조건을 도입함.</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- --- Version History Timeline --- -->
+    <section id="history">
+      <h2 class="section-title">개발 히스토리 및 타임라인</h2>
+      <p class="section-subtitle">2026년 6월 1일부터 6월 11일까지 진행된 WMS 관제 시스템의 점진적 고도화 여정입니다.</p>
+
+      <div class="timeline">
+        <div class="timeline-item left">
+          <div class="timeline-content">
+            <div class="timeline-date">Phase 1: v0.1 ~ v0.3</div>
+            <h3>관제 아키텍처 및 통신망 확립</h3>
+            <p>ROS 2 Humble을 활용한 Custom Message/Service/Action 인터페이스 설계. Docker Compose 환경 내 WMS 용 PostgreSQL 15 데이터베이스
+              스키마 정의 및 로봇 에뮬레이터 초기 빌드 완료.</p>
+          </div>
+        </div>
+
+        <div class="timeline-item right">
+          <div class="timeline-content">
+            <div class="timeline-date">Phase 2: v0.4 ~ v0.5</div>
+            <h3>실시간 데이터 파이프라인 및 웹 대시보드 구축</h3>
+            <p>FastAPI 웹 서버와 WebSockets 기술을 결합하여 실시간 관제 대시보드 런칭. Redis를 가볍고 정교한 AMR 위치 정보 실시간 캐시 스페이스로 할당 및 WMS 데이터 이중화
+              파이프라인 정합성 검증.</p>
+          </div>
+        </div>
+
+        <div class="timeline-item left">
+          <div class="timeline-content">
+            <div class="timeline-date">Phase 3: v0.6 ~ v0.7</div>
+            <h3>3D 환경 공간 동기화 및 렌더링 최적화</h3>
+            <p>Isaac Sim 내에 1.5m 간격으로 143개의 바닥 QR 격자 Mesh 배치. OpenUSD 파일 Instancing 방식을 도입하여 GPU VRAM 누수 문제 완화.
+              DomeLight 반사율 최적화를 통해 카메라 센서 물류 바코드 인식률 100% 확보.</p>
+          </div>
+        </div>
+
+        <div class="timeline-item right">
+          <div class="timeline-content">
+            <div class="timeline-date">Phase 4: v0.8 ~ v0.9+</div>
+            <h3>더블 버퍼, JIT 인터락 및 장애 복구 로직</h3>
+            <p>인/아웃바운드 A/B 더블 버퍼링 및 Look-ahead, 180도 회전 시 로봇 팔 정지 인터락 설계. AMR 3대 구동 한계 ZSET 스케줄링 통합 및 Action 클라이언트 오류 시
+              예외 롤백 트랜잭션 완비.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- --- Footer --- -->
+  <footer>
+    <div class="footer-logo">
+      <i class="fa-solid fa-server"></i> Skynet FC (SKFC)
+    </div>
+    <p>&copy; 2026 Yoon. NVIDIA Isaac Sim & ROS 2 Humble Warehouse Control System Portfolio.</p>
+  </footer>
+
+  <script>
+    /* --- Troubleshooting Tabs Interactivity --- */
+    function switchTrouble(index) {
+      const tabs = document.querySelectorAll('.trouble-tab');
+      const contents = document.querySelectorAll('.trouble-content');
+
+      tabs.forEach(tab => tab.classList.remove('active'));
+      contents.forEach(content => content.classList.remove('active'));
+
+      tabs[index].classList.add('active');
+      contents[index].classList.add('active');
+    }
+
+    /* --- Interactive Digital Twin Simulator Logic --- */
+
+    // Grid Coordinates Definition from PHYSICAL_LAYOUT.md
+    const X_MIN = -6.0;
+    const Y_MAX = 9.0;
+    const GRID_STEP = 1.5;
+    const CELL_PX = 36;
+    const GAP = 4;
+    const COLS = 11;
+    const ROWS = 13;
+
+    // Mapping logic
+    function getCellLeft(col) { return col * (CELL_PX + GAP) + 2; }
+    function getCellTop(row) { return row * (CELL_PX + GAP) + 2; }
+
+    const cellMappings = {
+      // Storage spots (spot_01 to spot_10)
+      "3,12": { type: "spot", label: "S01", id: "spot_01" },
+      "2,12": { type: "spot", label: "S02", id: "spot_02" },
+      "3,10": { type: "spot", label: "S03", id: "spot_03" },
+      "2,10": { type: "spot", label: "S04", id: "spot_04" },
+      "3,8": { type: "spot", label: "S05", id: "spot_05" },
+      "2,8": { type: "spot", label: "S06", id: "spot_06" },
+      "3,6": { type: "spot", label: "S07", id: "spot_07" },
+      "2,6": { type: "spot", label: "S08", id: "spot_08" },
+      "3,4": { type: "spot", label: "S09", id: "spot_09" },
+      "2,4": { type: "spot", label: "S10", id: "spot_10" },
+
+      // Staging spots (stage_01 to stage_04)
+      "7,0": { type: "stage", label: "ST1", id: "stage_01" },
+      "7,1": { type: "stage", label: "ST2", id: "stage_02" },
+      "9,0": { type: "stage", label: "ST3", id: "stage_03" },
+      "9,1": { type: "stage", label: "ST4", id: "stage_04" },
+
+      // Charging spots (charging_01 to charging_05)
+      "0,12": { type: "charging", label: "C1", id: "charging_01" },
+      "0,11": { type: "charging", label: "C2", id: "charging_02" },
+      "0,10": { type: "charging", label: "C3", id: "charging_03" },
+      "0,9": { type: "charging", label: "C4", id: "charging_04" },
+      "0,8": { type: "charging", label: "C5", id: "charging_05" },
+
+      // Inbound line spots
+      "9,5": { type: "zone-sg2-in", label: "I1A", id: "sg2_in_01_A" },
+      "8,5": { type: "zone-sg2-in", label: "I1B", id: "sg2_in_01_B" },
+      "9,8": { type: "zone-sg2-in", label: "I2A", id: "sg2_in_02_A" },
+      "8,8": { type: "zone-sg2-in", label: "I2B", id: "sg2_in_02_B" },
+      "9,11": { type: "zone-sg2-in", label: "I3A", id: "sg2_in_03_A" },
+      "8,11": { type: "zone-sg2-in", label: "I3B", id: "sg2_in_03_B" },
+
+      // Outbound line spots
+      "1,0": { type: "zone-sg2-out", label: "O_A", id: "sg2_out_00_A" },
+      "1,1": { type: "zone-sg2-out", label: "O_B", id: "sg2_out_00_B" }
+    };
+
+    // Static Sorter/Packaging Robots
+    const robotPlacements = [
+      { col: 8, row: 4, width: 76, height: 36, label: "SG2-1", type: "fixed-sg2-robot" }, // Line 1
+      { col: 8, row: 7, width: 76, height: 36, label: "SG2-2", type: "fixed-sg2-robot" }, // Line 2
+      { col: 8, row: 10, width: 76, height: 36, label: "SG2-3", type: "fixed-sg2-robot" }, // Line 3
+      { col: 0, row: 0, width: 36, height: 76, label: "SG2-O", type: "fixed-sg2-robot" }  // Outbound
+    ];
+
+    // Excluded coords because they are merged inside robot shapes
+    const skipCoords = ["9,4", "9,7", "9,10", "0,1"];
+
+    // Initialize Grid UI Elements
+    function buildGridMap() {
+      const container = document.getElementById("sim-grid-container");
+      container.innerHTML = "";
+
+      // Render standard cells
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          const coordKey = `${c},${r}`;
+          if (skipCoords.includes(coordKey)) continue;
+
+          const cellEl = document.createElement("div");
+          cellEl.id = `cell-${c}-${r}`;
+          cellEl.style.left = `${getCellLeft(c)}px`;
+          cellEl.style.top = `${getCellTop(r)}px`;
+
+          // Check special mapped structures
+          if (c === 10) {
+            // Conveyor Belt line on column 10
+            cellEl.className = "grid-cell conveyor-belt";
+            cellEl.style.backgroundColor = "rgba(6, 182, 212, 0.1)";
+            cellEl.innerHTML = `<i class="fa-solid fa-chevron-down" style="color: var(--accent-cyan); font-size: 0.5rem; opacity: 0.3;"></i>`;
+          } else if (cellMappings[coordKey]) {
+            const map = cellMappings[coordKey];
+            cellEl.className = `grid-cell ${map.type}`;
+            cellEl.textContent = map.label;
+            cellEl.title = map.id;
+          } else {
+            cellEl.className = "grid-cell";
+            cellEl.style.border = "1px solid rgba(255,255,255,0.015)";
+          }
+          container.appendChild(cellEl);
+        }
+      }
+
+      // Render merged robots
+      robotPlacements.forEach(robot => {
+        const robEl = document.createElement("div");
+        robEl.className = `grid-cell ${robot.type}`;
+        robEl.style.left = `${getCellLeft(robot.col)}px`;
+        robEl.style.top = `${getCellTop(robot.row)}px`;
+        robEl.style.width = `${robot.width}px`;
+        robEl.style.height = `${robot.height}px`;
+        robEl.textContent = robot.label;
+        container.appendChild(robEl);
+      });
+    }
+
+    // --- Simulation State Machine ---
+    let simStarted = false;
+    let autoDemoActive = false;
+    let activeAmrCount = 0;
+    let totalCompleted = 0;
+
+    // Log console helper
+    function logSim(message, type = "info") {
+      const consoleLog = document.getElementById("sim-console-log");
+      const timeStr = new Date().toLocaleTimeString([], { hour12: false });
+      const line = document.createElement("div");
+      line.className = `console-line ${type}`;
+      line.textContent = `[${timeStr}] ${message}`;
+      consoleLog.appendChild(line);
+      consoleLog.scrollTop = consoleLog.scrollHeight;
+    }
+
+    // Mock Database Variables
+    const parkingSpots = [];
+    const workstations = [];
+    const packages = [];
+    const amrs = [];
+    const redisQueue = [];
+
+    const CUSTOMER_NAMES = ["김철수", "이영희", "박민수", "최수현", "정재원", "한지은", "강현우", "송은지"];
+    const ZONE_DATES = ["Today (오늘)", "Tomorrow (내일)", "Day-After (모레)"];
+
+    // Initialize Database Mock State
+    function initMockData() {
+      parkingSpots.length = 0;
+      workstations.length = 0;
+      packages.length = 0;
+      amrs.length = 0;
+      redisQueue.length = 0;
+      activeAmrCount = 0;
+      totalCompleted = 0;
+
+      // Spots (S01 to S10 empty)
+      for (let i = 1; i <= 10; i++) {
+        parkingSpots.push({ id: `spot_${i.toString().padStart(2, '0')}`, occupied: false, workstationId: null });
+      }
+      // Staging spots (ST1 to ST4 empty)
+      for (let i = 1; i <= 4; i++) {
+        parkingSpots.push({ id: `stage_${i.toString().padStart(2, '0')}`, occupied: false, workstationId: null });
+      }
+
+      // Workstations (WS01 to WS10 parked in storage spots S01-S10)
+      for (let i = 1; i <= 10; i++) {
+        const spotId = `spot_${i.toString().padStart(2, '0')}`;
+        workstations.push({
+          id: `WS${i.toString().padStart(2, '0')}`,
+          location: spotId,
+          status: "WAITING",
+          slots: Array(8).fill(null), // 8 slots representation
+          robotPaused: false
+        });
+        const spot = parkingSpots.find(s => s.id === spotId);
+        spot.occupied = true;
+        spot.workstationId = `WS${i.toString().padStart(2, '0')}`;
+      }
+
+      // AMRs (AMR 1-5 parked in charging spots C1-C5)
+      for (let i = 1; i <= 5; i++) {
+        const chargingSpot = `charging_0${i}`;
+        const coord = getCoordFromLoc(chargingSpot);
+        amrs.push({
+          id: `AMR_0${i}`,
+          col: coord.col,
+          row: coord.row,
+          status: "IDLE",
+          targetCol: coord.col,
+          targetRow: coord.row,
+          path: [],
+          carriedWS: null,
+          currentTask: null
+        });
+      }
+
+      updateWidgetsUI();
+    }
+
+    // Coordinates logic helpers
+    function getCoordFromLoc(loc) {
+      // Find matches in cellMappings
+      for (let key of Object.keys(cellMappings)) {
+        if (cellMappings[key].id === loc) {
+          const parts = key.split(",");
+          return { col: parseInt(parts[0]), row: parseInt(parts[1]) };
+        }
+      }
+      // Defaults/Fallbacks
+      return { col: 5, row: 6 };
+    }
+
+    function isObstacle(c, r, targetC, targetR) {
+      if (c === targetC && r === targetR) return false;
+      // Conveyor belt is obstacled for AMR except during dockings
+      if (c === 10) return true;
+      // Robots cells are obstacle blocks
+      const obstacleBlocks = [
+        "8,4", "9,4", "8,7", "9,7", "8,10", "9,10", "0,0", "0,1"
+      ];
+      if (obstacleBlocks.includes(`${c},${r}`)) return true;
+      return false;
+    }
+
+    // BFS Pathfinder on 11x13 Grid
+    function findPathBFS(startC, startR, targetC, targetR) {
+      const queue = [[startC, startR, []]];
+      const visited = new Set();
+      visited.add(`${startC},${startR}`);
+
+      while (queue.length > 0) {
+        const [c, r, path] = queue.shift();
+        if (c === targetC && r === targetR) {
+          return path.concat([{ col: c, row: r }]);
+        }
+
+        const directions = [[0, 1], [0, -1], [1, 0], [-1, 0]];
+        for (const [dc, dr] of directions) {
+          const nc = c + dc;
+          const nr = r + dr;
+
+          if (nc >= 0 && nc < COLS && nr >= 0 && nr < ROWS) {
+            const key = `${nc},${nr}`;
+            if (!visited.has(key) && !isObstacle(nc, nr, targetC, targetR)) {
+              visited.add(key);
+              queue.push([nc, nr, path.concat([{ col: c, row: r }])]);
+            }
+          }
+        }
+      }
+      // Fallback Manhattan path if BFS blocked
+      const fallback = [];
+      let currC = startC, currR = startR;
+      while (currC !== targetC) {
+        currC += Math.sign(targetC - currC);
+        fallback.push({ col: currC, row: currR });
+      }
+      while (currR !== targetR) {
+        currR += Math.sign(targetR - currR);
+        fallback.push({ col: currC, row: currR });
+      }
+      return fallback;
+    }
+
+    // Update Dashboard Widgets
+    function updateWidgetsUI() {
+      // 1. Parking Spots Widget
+      const parkingList = document.getElementById("widget-parking-spots");
+      parkingList.innerHTML = "";
+      const emptyParking = parkingSpots.filter(s => s.id.startsWith("spot_") && !s.occupied).length;
+      document.getElementById("parking-spots-count").textContent = `${emptyParking} / 10 Empty`;
+
+      parkingSpots.slice(0, 10).forEach(spot => {
+        const el = document.createElement("div");
+        el.className = `widget-spot ${spot.occupied ? 'occupied' : ''}`;
+        el.innerHTML = `
+          <span>Spot ID: <strong>${spot.id.replace('spot_', 'S')}</strong></span>
+          <span class="badge-status ${spot.occupied ? 'occupied' : 'empty'}">${spot.occupied ? spot.workstationId : 'EMPTY'}</span>
+        `;
+        parkingList.appendChild(el);
+      });
+
+      // 2. Workstations Widget
+      const wsList = document.getElementById("widget-workstations-status");
+      wsList.innerHTML = "";
+      workstations.forEach(ws => {
+        const el = document.createElement("div");
+        el.className = "widget-ws";
+
+        let dotsHtml = "";
+        ws.slots.forEach(slot => {
+          dotsHtml += `<div class="ws-slot-dot ${slot ? 'full' : ''}"></div>`;
+        });
+
+        let pausedBadge = ws.robotPaused ? `<span style="font-size: 0.65rem; padding: 1px 6px; border-radius: 4px; background: var(--color-danger); color: #fff; font-weight: 700; animation: pulse 1s infinite;">PAUSED</span>` : "";
+
+        el.innerHTML = `
+          <div class="ws-title-row">
+            <span>${ws.id} ${pausedBadge}</span>
+            <span class="ws-loc-text">${ws.location}</span>
+          </div>
+          <div class="ws-slots-visual">
+            ${dotsHtml}
+          </div>
+        `;
+        wsList.appendChild(el);
+      });
+
+      // 3. Redis queue Widget
+      const queueList = document.getElementById("widget-redis-queue");
+      queueList.innerHTML = "";
+      document.getElementById("redis-queue-count").textContent = `${redisQueue.length} tasks`;
+      document.getElementById("queue-length-text").textContent = redisQueue.length;
+
+      if (redisQueue.length === 0) {
+        queueList.innerHTML = `<div style="font-size: 0.8rem; color: var(--text-muted); text-align: center; margin-top: 2rem;">대기 중인 이송 명령이 없습니다.</div>`;
+      } else {
+        redisQueue.forEach(task => {
+          const el = document.createElement("div");
+          el.className = "widget-task";
+          el.innerHTML = `
+            <div class="task-title">${task.task_type} (WS: ${task.workstation_id})</div>
+            <div class="task-desc">${task.description}</div>
+          `;
+          queueList.appendChild(el);
+        });
+      }
+
+      // 4. Update AMR dot locations
+      amrs.forEach(amr => {
+        let dotEl = document.getElementById(`dot-${amr.id}`);
+        if (!dotEl) {
+          dotEl = document.createElement("div");
+          dotEl.id = `dot-${amr.id}`;
+          dotEl.className = "amr-dot";
+          dotEl.style.backgroundColor = "#ff007f";
+          dotEl.textContent = amr.id.replace("AMR_0", "");
+          document.getElementById("sim-grid-container").appendChild(dotEl);
+        }
+
+        // Calculate coordinates based on col and row
+        const leftPx = getCellLeft(amr.col) + 18;
+        const topPx = getCellTop(amr.row) + 18;
+        dotEl.style.left = `${leftPx}px`;
+        dotEl.style.top = `${topPx}px`;
+      });
+
+      // 5. Update cell colors if workstation resides there
+      document.querySelectorAll(".grid-cell").forEach(cell => {
+        cell.classList.remove("has-ws");
+        // Remove text if it was overridden by workstation ID
+        const cellId = cell.title;
+        if (cellId && cellId.startsWith("sg2_in")) {
+          cell.textContent = cellId.replace("sg2_in_0", "I").replace("_a", "A").replace("_b", "B");
+        } else if (cellId && cellId.startsWith("sg2_out")) {
+          cell.textContent = cellId.replace("sg2_out_00_", "O");
+        } else if (cellId && cellId.startsWith("spot")) {
+          cell.textContent = cellId.replace("spot_", "S");
+        } else if (cellId && cellId.startsWith("stage")) {
+          cell.textContent = cellId.replace("stage_", "ST");
+        } else if (cellId && cellId.startsWith("charging")) {
+          cell.textContent = cellId.replace("charging_", "C");
+        }
+      });
+
+      workstations.forEach(ws => {
+        if (!ws.location.startsWith("AMR")) {
+          const coord = getCoordFromLoc(ws.location);
+          const cell = document.getElementById(`cell-${coord.col}-${coord.row}`);
+          if (cell) {
+            cell.classList.add("has-ws");
+            cell.textContent = ws.id.replace("WS0", "W").replace("WS", "W");
+          }
+        }
+      });
+
+      // 6. Update general texts
+      document.getElementById("active-amrs-text").textContent = `${activeAmrCount} / 3`;
+      document.getElementById("completed-count-text").textContent = `${totalCompleted} / 24`;
+    }
+
+    // Toggle day operations
+    function toggleBusiness() {
+      const btn = document.getElementById("btn-start-business");
+      if (!simStarted) {
+        simStarted = true;
+        btn.classList.add("active");
+        btn.innerHTML = `<i class="fa-solid fa-square"></i> 영업 종료`;
+        logSim("영업이 개시되었습니다! 관제탑 제어 루프가 실행됩니다.", "info");
+        document.getElementById("btn-upload-csv").disabled = false;
+        document.getElementById("btn-simulate-inbound").disabled = false;
+        document.getElementById("btn-simulate-outbound").disabled = false;
+        document.getElementById("btn-toggle-auto").disabled = false;
+
+        // Auto feed empty workstations to Inbound A buffer zones
+        const lines = ["sg2_in_01", "sg2_in_02", "sg2_in_03"];
+        lines.forEach(line => {
+          const wsA = workstations.find(w => w.location === `${line}_A`);
+          if (!wsA) {
+            // Deploy empty ws to line A
+            deployWorkstationTo(line + "_A");
+          }
+        });
+      } else {
+        simStarted = false;
+        btn.classList.remove("active");
+        btn.innerHTML = `<i class="fa-solid fa-power-off"></i> 영업 시작`;
+        logSim("영업이 공식 마감되었습니다. 스케줄러가 대기 상태로 들어갑니다.", "warn");
+
+        if (autoDemoActive) toggleAutoDemo();
+        document.getElementById("btn-upload-csv").disabled = true;
+        document.getElementById("btn-simulate-inbound").disabled = true;
+        document.getElementById("btn-simulate-outbound").disabled = true;
+        document.getElementById("btn-toggle-auto").disabled = true;
+      }
+      updateWidgetsUI();
+    }
+
+    // Deploy empty workstation
+    function deployWorkstationTo(dest) {
+      // Find a workstation parked in S01-S10 with empty slots
+      const emptyWS = workstations.find(ws => ws.location.startsWith("spot_") && ws.slots.every(s => s === null));
+      if (emptyWS) {
+        const fromSpot = emptyWS.location;
+        emptyWS.location = "MOVING_TO_" + dest.toUpperCase();
+        emptyWS.status = "MOVING";
+
+        // Push task to Redis Command Queue
+        const task = {
+          uuid: Math.random().toString(36).substring(7),
+          task_type: "DEPLOY_EMPTY_WORKSTATION",
+          workstation_id: emptyWS.id,
+          from: fromSpot,
+          to: dest,
+          priority: 80,
+          description: `입고 라인 호출: 빈 작업대 ${emptyWS.id} 배치 ➡️ ${dest}`
+        };
+        redisQueue.push(task);
+        logSim(`[Redis Queue] 신규 태스크 적재: DEPLOY_EMPTY_WORKSTATION (${emptyWS.id})`, "info");
+
+        // Mark parking spot empty
+        const spot = parkingSpots.find(s => s.id === fromSpot);
+        if (spot) {
+          spot.occupied = false;
+          spot.workstationId = null;
+        }
+      } else {
+        logSim("대기 중인 여분의 빈 작업대가 부족합니다. 이송을 보류합니다.", "error");
+      }
+    }
+
+    // CSV upload simulator
+    function triggerMockCSV() {
+      logSim("입고 명단(mock_packages.csv) 업로드 완료. 24개의 WAITING 박스가 적재되었습니다.", "info");
+
+      const tbody = document.getElementById("package-table-body");
+      tbody.innerHTML = "";
+
+      for (let i = 1; i <= 24; i++) {
+        // Randomly route today/tomorrow/day_after
+        const dateIdx = Math.floor(Math.random() * 3);
+        const dateStr = ZONE_DATES[dateIdx];
+        const custName = CUSTOMER_NAMES[Math.floor(Math.random() * CUSTOMER_NAMES.length)];
+        const pkgId = `pkg_20260612_${i.toString().padStart(3, '0')}`;
+
+        packages.push({
+          id: pkgId,
+          customer: custName,
+          zone: dateStr,
+          status: "WAITING",
+          workstationId: null,
+          slot: null,
+          barcode: null
+        });
+
+        const row = document.createElement("tr");
+        row.id = `pkg-row-${pkgId}`;
+        row.innerHTML = `
+          <td style="font-weight: 600; color: #fff;">${pkgId}</td>
+          <td>${custName}</td>
+          <td>${dateStr}</td>
+          <td><span class="status-pill waiting" id="pill-${pkgId}">WAITING</span></td>
+          <td id="ws-${pkgId}">—</td>
+          <td id="slot-${pkgId}">—</td>
+          <td style="font-family: var(--font-mono); color: var(--accent-cyan);" id="barcode-${pkgId}">—</td>
+        `;
+        tbody.appendChild(row);
+      }
+      updateWidgetsUI();
+    }
+
+    // Simulate Inbound Box 적재
+    function simulateInboundBox() {
+      // Find a WAITING package
+      const pkg = packages.find(p => p.status === "WAITING");
+      if (!pkg) {
+        logSim("적재할 대기(WAITING) 박스가 존재하지 않습니다. 먼저 CSV를 로드해주세요.", "error");
+        return;
+      }
+
+      // Determine inbound line based on zone
+      let line = "sg2_in_01"; // today
+      if (pkg.zone.includes("Tomorrow")) line = "sg2_in_02";
+      else if (pkg.zone.includes("Day-After")) line = "sg2_in_03";
+
+      // Find active workstation at Line_A
+      const activeWS = workstations.find(ws => ws.location === `${line}_A`);
+      if (!activeWS) {
+        logSim(`${line}_A 에 배치된 작업대가 없어 적재를 보류합니다.`, "error");
+        return;
+      }
+
+      if (activeWS.robotPaused) {
+        logSim(`${line} 적재 로봇이 회전 동작 대기로 인해 일시정지 중입니다.`, "warn");
+        return;
+      }
+
+      // Load package into slot
+      const emptySlotIdx = activeWS.slots.findIndex(s => s === null);
+      if (emptySlotIdx !== -1) {
+        activeWS.slots[emptySlotIdx] = pkg.id;
+        pkg.status = "IN_WORKSTATION";
+        pkg.workstationId = activeWS.id;
+        pkg.slot = emptySlotIdx + 1;
+
+        // Update Table
+        document.getElementById(`pill-${pkg.id}`).className = "status-pill in_workstation";
+        document.getElementById(`pill-${pkg.id}`).textContent = "IN_WORKSTATION";
+        document.getElementById(`ws-${pkg.id}`).textContent = activeWS.id;
+        document.getElementById(`slot-${pkg.id}`).textContent = emptySlotIdx + 1;
+
+        logSim(`[적재] 상자 ${pkg.id} ➡️ ${activeWS.id}의 #${emptySlotIdx + 1} 슬롯에 적재 완료.`, "info");
+
+        const filledSlotsCount = activeWS.slots.filter(s => s !== null).length;
+
+        // 1. JIT Rotation Trigger at 4th slot
+        if (filledSlotsCount === 4) {
+          activeWS.robotPaused = true;
+          logSim(`[JIT Interlock] ${activeWS.id}의 4번째 슬롯 적재 완료! 180도 회전 명령을 스케줄링합니다.`, "warn");
+
+          const task = {
+            uuid: Math.random().toString(36).substring(7),
+            task_type: "ROTATE_WORKSTATION",
+            workstation_id: activeWS.id,
+            from: `${line}_A`,
+            to: `${line}_A`,
+            priority: 100,
+            description: `제자리 회전: ${activeWS.id} 4슬롯 완충 ➡️ 180도 회전 도킹`
+          };
+          redisQueue.push(task);
+        }
+
+        // 2. Full workstation swap at 8th slot
+        if (filledSlotsCount === 8) {
+          activeWS.robotPaused = true;
+          logSim(`[완충] 작업대 ${activeWS.id} 8개 슬롯 풀 적재 완료! 이송 및 교체를 트리거합니다.`, "info");
+
+          let dest = "warehouse";
+          if (line === "sg2_in_01") dest = "staging"; // Today's packages go to outbound cross-docking staging
+          else if (line === "sg2_in_02") dest = "staging";
+
+          // Dispatch retrieve full WS
+          const retrieveTask = {
+            uuid: Math.random().toString(36).substring(7),
+            task_type: "RETRIEVE_FULL_WORKSTATION",
+            workstation_id: activeWS.id,
+            from: `${line}_A`,
+            to: dest,
+            priority: 90,
+            description: `완충 회수: 작업대 ${activeWS.id} ➡️ ${dest} 이송`
+          };
+          redisQueue.push(retrieveTask);
+
+          // Mark WS location as moving
+          activeWS.location = "MOVING_TO_" + dest.toUpperCase();
+          activeWS.status = "MOVING";
+
+          // Immediately deploy a new empty workstation to A to keep pipeline alive
+          deployWorkstationTo(line + "_A");
+        }
+      }
+      updateWidgetsUI();
+    }
+
+    // Simulate Outbound Packaging 포장 수행
+    function simulateOutboundPack() {
+      // Find active workstation at sg2_out_00_A
+      const activeWS = workstations.find(ws => ws.location === "sg2_out_00_A");
+      if (!activeWS) {
+        // If empty, fetch a full workstation from staging or warehouse
+        const fullWS = workstations.find(ws => (ws.location.startsWith("spot_") || ws.location.startsWith("stage_")) && ws.slots.every(s => s !== null));
+        if (fullWS) {
+          const fromLoc = fullWS.location;
+          fullWS.location = "MOVING_TO_SG2_OUT_00_A";
+          fullWS.status = "MOVING";
+
+          // Free its previous spot
+          const spot = parkingSpots.find(s => s.id === fromLoc);
+          if (spot) {
+            spot.occupied = false;
+            spot.workstationId = null;
+          }
+
+          const fetchTask = {
+            uuid: Math.random().toString(36).substring(7),
+            task_type: "FETCH_FOR_PACKAGING",
+            workstation_id: fullWS.id,
+            from: fromLoc,
+            to: "sg2_out_00_A",
+            priority: 85,
+            description: `포장 호출: 완충 작업대 ${fullWS.id} ➡️ 포장존 A 이송`
+          };
+          redisQueue.push(fetchTask);
+          logSim(`[포장존] 완충 작업대 ${fullWS.id} 이송 요청 발행 완료.`, "info");
+        } else {
+          logSim("포장 라인에 공급할 완충된 작업대가 창고에 존재하지 않습니다.", "error");
+        }
+        updateWidgetsUI();
+        return;
+      }
+
+      // Pack packages one by one
+      const filledSlotIdx = activeWS.slots.findIndex(s => s !== null);
+      if (filledSlotIdx !== -1) {
+        const pkgId = activeWS.slots[filledSlotIdx];
+        const pkg = packages.find(p => p.id === pkgId);
+
+        activeWS.slots[filledSlotIdx] = null; // Free slot
+        totalCompleted++;
+
+        if (pkg) {
+          pkg.status = "COMPLETED";
+          const barVal = `BARCODE-${activeWS.id}-${filledSlotIdx + 1}-${Math.floor(1000 + Math.random() * 9000)}`;
+          pkg.barcode = barVal;
+
+          // Update Table row
+          document.getElementById(`pill-${pkg.id}`).className = "status-pill completed";
+          document.getElementById(`pill-${pkg.id}`).textContent = "COMPLETED";
+          document.getElementById(`barcode-${pkg.id}`).textContent = barVal;
+        }
+
+        logSim(`[포장] 작업대 ${activeWS.id}의 #${filledSlotIdx + 1} 패키지 포장 및 출고 완료.`, "info");
+
+        // 1. Look-ahead Pre-fetch at 7th completed slot
+        const emptySlotsCount = activeWS.slots.filter(s => s === null).length;
+        if (emptySlotsCount === 7) {
+          logSim(`[Look-ahead] ${activeWS.id}의 7번째 패키지 포장 완료! 예비 작업대를 B존으로 호출합니다.`, "warn");
+
+          const nextFullWS = workstations.find(ws => (ws.location.startsWith("spot_") || ws.location.startsWith("stage_")) && ws.slots.every(s => s !== null));
+          if (nextFullWS) {
+            const fromLoc = nextFullWS.location;
+            nextFullWS.location = "MOVING_TO_SG2_OUT_00_B";
+            nextFullWS.status = "MOVING";
+
+            const spot = parkingSpots.find(s => s.id === fromLoc);
+            if (spot) { spot.occupied = false; spot.workstationId = null; }
+
+            const task = {
+              uuid: Math.random().toString(36).substring(7),
+              task_type: "DEPLOY_PACKAGING_WORKSTATION",
+              workstation_id: nextFullWS.id,
+              from: fromLoc,
+              to: "sg2_out_00_B",
+              priority: 70,
+              description: `Look-ahead 예비배치: ${nextFullWS.id} ➡️ 포장존 B`
+            };
+            redisQueue.push(task);
+          }
+        }
+
+        // 2. Fully cleared WS swap
+        if (emptySlotsCount === 8) {
+          logSim(`[출고 완료] 작업대 ${activeWS.id}의 모든 패키지 포장 종료! 빈 작업대를 창고로 복귀시킵니다.`, "info");
+
+          const retrieveTask = {
+            uuid: Math.random().toString(36).substring(7),
+            task_type: "RETRIEVE_EMPTY_WORKSTATION",
+            workstation_id: activeWS.id,
+            from: "sg2_out_00_A",
+            to: "warehouse",
+            priority: 40,
+            description: `빈작업대 복귀: ${activeWS.id} ➡️ 창고 보관`
+          };
+          redisQueue.push(retrieveTask);
+          activeWS.location = "MOVING_TO_WAREHOUSE";
+          activeWS.status = "MOVING";
+
+          // Check if there is an empty pre-fetched WS waiting at B zone, promote it to A
+          const standbyWS = workstations.find(ws => ws.location === "sg2_out_00_B");
+          if (standbyWS) {
+            standbyWS.location = "sg2_out_00_A";
+            logSim(`[Keep-Alive 승격] B구역에 대기 중이던 작업대 ${standbyWS.id}를 활성 포장존 A로 즉각 승격시켰습니다.`, "info");
+          }
+        }
+      }
+      updateWidgetsUI();
+    }
+
+    // Reset simulator
+    function resetSimulator() {
+      if (confirm("모든 DB 상태 및 관제 로그를 리셋하시겠습니까?")) {
+        initMockData();
+        logSim("시뮬레이터 데이터베이스 및 Redis 큐 정보가 원자적으로 리셋되었습니다.", "warn");
+
+        // Reset package log table
+        document.getElementById("package-table-body").innerHTML = `
+          <tr>
+            <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem 0;">데이터가 없습니다. CSV 로드 혹은 시뮬레이션 적재를 발생시켜 주세요.</td>
+          </tr>
+        `;
+      }
+    }
+
+    // Toggle Automated Demo Mode Loop
+    let simTimer = null;
+    let autoCounter = 0;
+
+    function toggleAutoDemo() {
+      const btn = document.getElementById("btn-toggle-auto");
+      if (!autoDemoActive) {
+        autoDemoActive = true;
+        btn.classList.add("active");
+        btn.textContent = "자동 데모 [ON]";
+        logSim("자동 관제 스케줄러 데모 루프가 활성화되었습니다. (속도: 1.2s/tick)", "info");
+
+        simTimer = setInterval(() => {
+          // 1. Spawns package inbound randomly
+          if (packages.length > 0 && autoCounter % 2 === 0) {
+            simulateInboundBox();
+          }
+          // 2. Packs outbound packaging zone randomly
+          if (autoCounter % 3 === 0) {
+            simulateOutboundPack();
+          }
+
+          autoCounter++;
+        }, 1200);
+      } else {
+        autoDemoActive = false;
+        btn.classList.remove("active");
+        btn.textContent = "자동 데모 [OFF]";
+        logSim("자동 관제 데모 루프가 일시정지되었습니다.", "warn");
+        clearInterval(simTimer);
+        simTimer = null;
+      }
+    }
+
+    // AMR Scheduler Tick loop (Runs client-side scheduler ticks at 300ms intervals)
+    setInterval(() => {
+      if (!simStarted) return;
+
+      // 1. Move active AMRs step-by-step
+      amrs.forEach(amr => {
+        if (amr.status === "MOVING" && amr.path.length > 0) {
+          const nextNode = amr.path.shift();
+          amr.col = nextNode.col;
+          amr.row = nextNode.row;
+
+          // Trace path grid cell style
+          const cell = document.getElementById(`cell-${nextNode.col}-${nextNode.row}`);
+          if (cell) {
+            cell.classList.add("path-trace");
+            setTimeout(() => cell.classList.remove("path-trace"), 600);
+          }
+
+          // Check destination arrival
+          if (amr.col === amr.targetCol && amr.row === amr.targetRow) {
+            amr.status = "IDLE";
+            activeAmrCount--;
+            logSim(`[AMR] ${amr.id}가 목적지 (${amr.targetCol}, ${amr.targetRow})에 도착 완료하여 대기 상태로 들어갑니다.`, "info");
+
+            // Task callback handling
+            const task = amr.currentTask;
+            if (task) {
+              const ws = workstations.find(w => w.id === task.workstation_id);
+              if (ws) {
+                if (task.task_type === "ROTATE_WORKSTATION") {
+                  ws.robotPaused = false; // Unpause robot arms after 180 deg rotation
+                  logSim(`[JIT Interlock] ${ws.id} 회전 완료! 적재 로봇이 연속 작업을 재개합니다.`, "info");
+                } else {
+                  ws.location = task.to;
+                  ws.status = "WAITING";
+
+                  // Occupy destination spot if warehouse spot
+                  if (task.to.startsWith("spot_") || task.to.startsWith("stage_")) {
+                    const spot = parkingSpots.find(s => s.id === task.to);
+                    if (spot) {
+                      spot.occupied = true;
+                      spot.workstationId = ws.id;
+                    }
+                  }
+                }
+              }
+              amr.currentTask = null;
+            }
+            updateWidgetsUI();
+          }
+        }
+      });
+
+      // 2. Dispatch commands from Redis priority ZSET queue if capacity budget available
+      if (activeAmrCount < 3 && redisQueue.length > 0) {
+        // Sort queue by priority descending
+        redisQueue.sort((a, b) => b.priority - a.priority);
+        const task = redisQueue.shift();
+
+        // Assign task to nearest IDLE AMR
+        const idleAMR = amrs.find(a => a.status === "IDLE");
+        if (idleAMR) {
+          activeAmrCount++;
+          idleAMR.status = "MOVING";
+          idleAMR.currentTask = task;
+
+          const startCoords = getCoordFromLoc(task.from);
+          const destCoords = getCoordFromLoc(task.to);
+
+          idleAMR.targetCol = destCoords.col;
+          idleAMR.targetRow = destCoords.row;
+
+          // Generate path
+          idleAMR.path = findPathBFS(idleAMR.col, idleAMR.row, destCoords.col, destCoords.row);
+
+          logSim(`[스케줄러] 태스크 배정: ${task.task_type} ➡️ ${idleAMR.id} (우선순위: ${task.priority})`, "info");
+          updateWidgetsUI();
+        } else {
+          // Re-queue task if no AMR available
+          redisQueue.unshift(task);
+        }
+      }
+    }, 300);
+
+    // Initial setup on window load
+    window.onload = function () {
+      buildGridMap();
+      initMockData();
+    };
+  </script>
+</body>
+
+</html>
