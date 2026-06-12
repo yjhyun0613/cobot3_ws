@@ -1817,6 +1817,18 @@
           <button class="trouble-tab" onclick="switchTrouble(4)">
             <i class="fa-solid fa-calendar-day"></i> EOD 강제 플러시 예외
           </button>
+          <button class="trouble-tab" onclick="switchTrouble(5)">
+            <i class="fa-solid fa-lock"></i> ROS 2 멀티스레드 데드락
+          </button>
+          <button class="trouble-tab" onclick="switchTrouble(6)">
+            <i class="fa-solid fa-database"></i> DB 스키마 정규화 및 최적화
+          </button>
+          <button class="trouble-tab" onclick="switchTrouble(7)">
+            <i class="fa-solid fa-lightbulb"></i> USD 조명 물리 글레어
+          </button>
+          <button class="trouble-tab" onclick="switchTrouble(8)">
+            <i class="fa-solid fa-network-wired"></i> 분산 시뮬레이션 상자 동기화
+          </button>
         </div>
 
         <!-- Right: Tab content Panels -->
@@ -1980,6 +1992,102 @@ def recover_workstation_move_db_state(self, workstation_id, start, target):
               <div class="trouble-section-title solution"><i class="fa-solid fa-square-check"></i> 해결 및 구현</div>
               <div class="trouble-text">Redis 캐시 메모리에 `system:inbound_started` Boolean 플래그를 신설하여, 관리자가 대시보드에서 공식적으로 '영업
                 시작' 버튼을 눌렀을 때만 8개 미만의 마지막 잔여 작업대 강제 플러시 트리거가 활성화되도록 보호 조건을 도입함.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 5 -->
+        <div class="trouble-content">
+          <div class="trouble-header">
+            <h3>ROS 2 멀티스레드 대기 상태 교착(Deadlock) 장애</h3>
+            <p>ROS 2 Multithreaded Executor Deadlock Prevention</p>
+          </div>
+          <div class="trouble-details">
+            <div>
+              <div class="trouble-section-title symptom"><i class="fa-solid fa-triangle-exclamation"></i> 현상 및 분석</div>
+              <div class="trouble-text">MultiThreadedExecutor 환경에서 특정 서비스나 액션 콜백이 내부적으로 다른 비동기 결과(Future)를 동기적으로 대기(spin_until_future_complete 등)하면서 스레드 풀의 가용 스레드를 소진하고 무한 대기하는 교착 상태가 빈번히 발생함.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title cause"><i class="fa-solid fa-circle-info"></i> 원인</div>
+              <div class="trouble-text">ROS 2의 스레드 스케줄링 특성상, 실행기 콜백 스레드가 블로킹되어 완료 대기하는 경우 다른 스레드가 완료 통지를 처리하지 못해 발생하는 스레드 풀 고갈 현상임.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title solution"><i class="fa-solid fa-square-check"></i> 해결 및 구현</div>
+              <div class="trouble-text">콜백 스레드를 블로킹하지 않도록 call_async 호출 후 루프를 돌며 time.sleep(0.01) 등으로 스레드 제어권을 Executor에 명시적으로 양보하고 future.done()만 논블로킹 방식으로 체크하는 폴링 구조를 적용하여 데드락을 원천 해결함.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title"><i class="fa-solid fa-code"></i> 논블로킹 비동기 대기 코드</div>
+              <pre class="code-snippet"><code style="color: #6ee7b7;"># 비동기 호출 후 논블로킹 방식으로 상태 체크 및 스레드 양보
+future = self.cli_report_progress.call_async(req)
+while not future.done():
+    time.sleep(0.01) # 실행기 루프가 돌 수 있도록 양보
+response = future.result()</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 6 -->
+        <div class="trouble-content">
+          <div class="trouble-header">
+            <h3>작업대 정보 테이블 중복 슬롯 및 데이터 무결성 위반</h3>
+            <p>Database Schema Normalization & Query Optimization</p>
+          </div>
+          <div class="trouble-details">
+            <div>
+              <div class="trouble-section-title symptom"><i class="fa-solid fa-triangle-exclamation"></i> 현상 및 분석</div>
+              <div class="trouble-text">작업대와 패키지 정보가 어긋나 특정 작업대의 슬롯이 가득 찼음에도 WMS 데이터베이스 상에서는 빈 슬롯으로 나타나 적재를 추가 시도하다가 충돌하거나 누락되는 데이터 무결성 붕괴 발생.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title cause"><i class="fa-solid fa-circle-info"></i> 원인</div>
+              <div class="trouble-text">초기 WMS DB 설계 시 workstations 테이블에 slot_1_status, slot_1_customer 등 슬롯 컬럼을 1부터 8까지 직접 정의한 역정규화(Denormalization) 구조를 취하여 packages 테이블과의 매핑 상태 동기화 누수가 발생함.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title solution"><i class="fa-solid fa-square-check"></i> 해결 및 구현</div>
+              <div class="trouble-text">workstations 테이블의 모든 슬롯 컬럼들을 제거하는 정규화(Normalization) 작업을 수행하고, packages 테이블에 workstation_id와 slot_number(1~8)를 외래키로 등록하여 JOIN과 서브쿼리로 슬롯 채움 상태를 실시간 뷰로 동적 도출하는 Single Source of Truth(SSOT) 아키텍처를 구현함.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 7 -->
+        <div class="trouble-content">
+          <div class="trouble-header">
+            <h3>Isaac Sim 바닥 Specular 반사로 인한 QR코드 카메라 디코딩 실패</h3>
+            <p>USD Lighting Specular Glare & Vision Decoding Failure</p>
+          </div>
+          <div class="trouble-details">
+            <div>
+              <div class="trouble-section-title symptom"><i class="fa-solid fa-triangle-exclamation"></i> 현상 및 분석</div>
+              <div class="trouble-text">시뮬레이션 구동 중 AMR이 바닥에 다다랐을 때 장착된 카메라 비전 센서에 하얗게 빛이 번져(Specular Glare) 텍스처 형태가 씻겨 나가면서 바닥 QR 디코딩 및 로컬라이제이션이 실패하고 탈선하는 오작동 발생.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title cause"><i class="fa-solid fa-circle-info"></i> 원인</div>
+              <div class="trouble-text">USD 씬 내부에 세팅된 기본 조명(DistantLight)의 방향성 조도가 3000.0 이상으로 지나치게 강하여 씬 평면의 난반사와 금속성 반사 필터 처리에 따라 반사광 오버플로우를 유발했기 때문임.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title solution"><i class="fa-solid fa-square-check"></i> 해결 및 구현</div>
+              <div class="trouble-text">바닥 면의 Specular 반사를 잡기 위해 DistantLight의 강도를 600.0 수준으로 약화시키고, 대신 그림자를 상쇄하고 전체 조도를 고르게 유지해주는 1200.0 강도의 Diffuse DomeLight를 추가 구성하여 카메라 스캐닝 인식률 100%를 달성함.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 8 -->
+        <div class="trouble-content">
+          <div class="trouble-header">
+            <h3>PC 간 분산 실행된 Isaac Sim 환경의 상자 적재 및 순간이동 유실</h3>
+            <p>Distributed Multi-Simulator Package Transit Synchronization</p>
+          </div>
+          <div class="trouble-details">
+            <div>
+              <div class="trouble-section-title symptom"><i class="fa-solid fa-triangle-exclamation"></i> 현상 및 분석</div>
+              <div class="trouble-text">서로 다른 노트북에서 각각 실행 중인 BG2 입고 분류 시뮬레이션과 SG2 적재/포장 시뮬레이션 간에 상자가 연동되지 못하고 분류 라인 끝에서 낙하하거나 소멸되어 시뮬레이션이 연쇄 중단되는 장애가 발생함.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title cause"><i class="fa-solid fa-circle-info"></i> 원인</div>
+              <div class="trouble-text">각 물리 월드가 격리되어 있어, WMS DB에 패키지 입고 상태가 반영되더라도 3D 물리 공간 객체(USD Prim)의 소멸과 상대 월드로의 실시간 순간이동(Teleportation) 조작 채널이 유실되었기 때문임.</div>
+            </div>
+            <div>
+              <div class="trouble-section-title solution"><i class="fa-solid fa-square-check"></i> 해결 및 구현</div>
+              <div class="trouble-text">이송과 텔레포트 트레이싱을 전담 처리하는 sim_sync_node.py를 구축하고, 커스텀 ROS 2 서비스 TransitPackage.srv를 기동하여 패키지가 인바운드를 통과하는 즉시 원격 시뮬레이터 측으로 순간이동 API(USD Prim 생성 및 강제 좌표 변환)를 발행하고 DB 상태를 동기 업데이트함.</div>
             </div>
           </div>
         </div>

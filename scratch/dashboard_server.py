@@ -1195,8 +1195,7 @@ def index():
             if (startBtn) {
                 const systemRunning = data.day_status === 'RUNNING';
                 const packagesWaiting = (data.packages || []).some(pkg => pkg.status === 'WAITING');
-                const hasConnectedAMR = data.amr_states && Object.keys(data.amr_states).length > 0;
-                const ready = packagesWaiting && !systemRunning && data.day_status !== 'PENDING_TRANSITION' && hasConnectedAMR;
+                const ready = packagesWaiting && !systemRunning && data.day_status !== 'PENDING_TRANSITION';
 
                 if (systemRunning) {
                     startBtn.classList.remove('ready');
